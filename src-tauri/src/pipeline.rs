@@ -7,7 +7,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::config::CleanupLevel;
-use crate::db::{queries, Db};
+use crate::db::{dictionary, queries, Db};
 use crate::state::AppState;
 use crate::{audio, events, injection, text_processing, window_mgmt};
 
@@ -81,8 +81,14 @@ pub async fn process(app: AppHandle) {
     // Keep a copy of the WAV for storage/replay unless the user opted out.
     let audio_bytes = if store_audio { Some(wav.clone()) } else { None };
 
+    // Phase 4: load dictionary terms to boost recognition (Whisper `prompt`).
+    let hints = {
+        let conn = db.lock();
+        dictionary::hints(&conn, 100).unwrap_or_default()
+    };
+
     // Transcribe.
-    let raw = match transcriber.transcribe(wav, language, Vec::new()).await {
+    let raw = match transcriber.transcribe(wav, language, hints).await {
         Ok(t) => t,
         Err(e) => {
             window_mgmt::fail(&app, &friendly_error(&e.to_string()));
@@ -101,9 +107,17 @@ pub async fn process(app: AppHandle) {
         events::TranscriptPayload { text: raw.clone() },
     );
 
+    // Phase 4: apply dictionary misspelling→correction mappings before any
+    // other processing so downstream steps and the LLM see the corrected terms.
+    let corrections = {
+        let conn = db.lock();
+        dictionary::corrections(&conn).unwrap_or_default()
+    };
+    let dict_corrected = text_processing::apply_corrections(&raw, &corrections);
+
     // Deterministic course-correction runs BEFORE the LLM so the model never
     // sees the retracted clause.
-    let corrected = text_processing::course_correct(&raw);
+    let corrected = text_processing::course_correct(&dict_corrected);
 
     // LLM polish (no-op for CleanupLevel::None; fall back to raw text on error).
     let polished = polisher

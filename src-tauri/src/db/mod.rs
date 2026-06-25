@@ -8,6 +8,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use rusqlite::Connection;
 
+pub mod dictionary;
 pub mod queries;
 
 /// Shared, lockable connection. rusqlite's `Connection` is `Send` but `!Sync`,
@@ -15,6 +16,7 @@ pub mod queries;
 pub type Db = Arc<Mutex<Connection>>;
 
 const MIGRATION_001: &str = include_str!("migrations/001_initial.sql");
+const MIGRATION_002: &str = include_str!("migrations/002_dictionary.sql");
 
 /// Open (or create) the database at `path` and apply any pending migrations.
 pub fn open(path: &Path) -> anyhow::Result<Db> {
@@ -32,6 +34,10 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
     if version < 1 {
         conn.execute_batch(MIGRATION_001)?;
         conn.pragma_update(None, "user_version", 1i64)?;
+    }
+    if version < 2 {
+        conn.execute_batch(MIGRATION_002)?;
+        conn.pragma_update(None, "user_version", 2i64)?;
     }
     Ok(())
 }

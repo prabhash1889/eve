@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { api, DEFAULT_SETTINGS, type Settings, type CleanupLevel } from "./lib/api";
 import { HistoryPage } from "./pages/HistoryPage";
+import { DictionaryPage } from "./pages/DictionaryPage";
 
 const SHORTCUT_CHOICES = ["F8", "F9", "F10", "CmdOrCtrl+Shift+Space", "Alt+Q"];
 
@@ -43,7 +44,7 @@ const COPY_SHORTCUT_CHOICES = [
   "Alt+C",
 ];
 
-type Nav = "dashboard" | "settings" | "history";
+type Nav = "dashboard" | "settings" | "history" | "dictionary";
 
 export function Hub() {
   const [nav, setNav] = useState<Nav>("dashboard");
@@ -78,10 +79,10 @@ export function Hub() {
 
         <NavItem icon={<LayoutDashboard size={18} />} label="Dashboard" active={nav === "dashboard"} onClick={() => setNav("dashboard")} />
         <NavItem icon={<History size={18} />} label="History" active={nav === "history"} onClick={() => setNav("history")} />
+        <NavItem icon={<BookMarked size={18} />} label="Dictionary" active={nav === "dictionary"} onClick={() => setNav("dictionary")} />
         <NavItem icon={<SettingsIcon size={18} />} label="Settings" active={nav === "settings"} onClick={() => setNav("settings")} />
 
         <div className="mt-4 mb-1 px-3 text-[11px] font-semibold uppercase tracking-wide text-ink-faint">Coming soon</div>
-        <NavItem icon={<BookMarked size={18} />} label="Dictionary" disabled />
         <NavItem icon={<Sparkles size={18} />} label="Styles" disabled />
 
         <div className="mt-auto">
@@ -102,6 +103,8 @@ export function Hub() {
             <Dashboard settings={settings} hasKey={hasKey} onConfigure={() => setNav("settings")} />
           ) : nav === "history" ? (
             <HistoryPage />
+          ) : nav === "dictionary" ? (
+            <DictionaryPage />
           ) : (
             <SettingsPanel
               settings={settings}

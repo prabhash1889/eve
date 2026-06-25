@@ -70,6 +70,21 @@ export interface Stats {
 
 export type StatsRange = "day" | "week" | "month" | "all";
 
+// ---------------------------------------------------------------------------
+// Dictionary (Phase 4) — mirrors src-tauri/src/db/dictionary.rs
+// ---------------------------------------------------------------------------
+
+export interface DictionaryEntry {
+  id: number;
+  word: string;
+  replacement: string | null; // null = boost-only (no substitution)
+  isStarred: boolean;
+  source: string; // "user" | "auto" | "import"
+  learnedCount: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 /** Convert a stored audio file path into an asset:// URL the `<audio>` tag can load. */
 export const audioSrc = (path: string): string => convertFileSrc(path);
 
@@ -126,4 +141,12 @@ export const api = {
   recoverTranscript: (id: number) => invoke<void>("recover_transcript", { id }),
   clearHistory: () => invoke<void>("clear_history"),
   getStats: (range: StatsRange) => invoke<Stats>("get_stats", { range }),
+  // Dictionary (Phase 4)
+  getDictionary: (query?: string) =>
+    invoke<DictionaryEntry[]>("get_dictionary", { query: query ?? null }),
+  upsertDictionaryEntry: (word: string, replacement: string | null, isStarred: boolean) =>
+    invoke<number>("upsert_dictionary_entry", { word, replacement, isStarred }),
+  deleteDictionaryEntry: (id: number) => invoke<void>("delete_dictionary_entry", { id }),
+  importDictionaryCsv: (csv: string) => invoke<number>("import_dictionary_csv", { csv }),
+  exportDictionaryCsv: () => invoke<string>("export_dictionary_csv"),
 };

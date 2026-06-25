@@ -105,6 +105,11 @@ pub fn run() {
             commands::recover_transcript,
             commands::clear_history,
             commands::get_stats,
+            commands::get_dictionary,
+            commands::upsert_dictionary_entry,
+            commands::delete_dictionary_entry,
+            commands::import_dictionary_csv,
+            commands::export_dictionary_csv,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -21,8 +21,8 @@ Local on-device Whisper is deferred behind a trait (not built in v1).
 | 0 | Scaffolding | ✅ Done |
 | 1 | Walking-skeleton MVP (hold → Groq → inject) | ✅ Done (compiles & links; live dictation untested) |
 | 2 | AI polish + Flow Bar UX | ✅ Done (build-verified; live dictation untested) |
-| 3 | History & DB (SQLite) | ⬜ Next |
-| 4 | Dictionary | ⬜ |
+| 3 | History & DB (SQLite) | ✅ Done |
+| 4 | Dictionary | ✅ Done (build-verified) |
 | 5 | Snippets | ⬜ |
 | 6 | Flow Styles + context awareness | ⬜ |
 | 7 | Command Mode + Transforms | ⬜ |
@@ -225,9 +225,26 @@ delete/recover. Build gates green: `npm run build`, `cargo check`.
 **Verify:** run ~10 dictations → all appear in History, FTS search finds them,
 audio replays, delete/recover work, retention prunes on the next launch.
 
-## ⬜ Phase 4 — Dictionary — NEXT
+## ✅ Phase 4 — Dictionary — DONE (build-verified)
 
 **Goal:** word boosting + misspelling correction baked into every transcription.
+
+**Status:** built. New migration `002_dictionary.sql` adds a `dictionary` table
+(word UNIQUE NOCASE, nullable `replacement`, `is_starred`, `source`,
+`learned_count`, timestamps); `db/dictionary.rs` holds the typed queries
+(`upsert`/`list`/`delete`/`hints`/`corrections`). `pipeline.rs` now loads the
+top-100 starred+recent terms and passes them to Whisper as the `prompt`
+(boosting was already plumbed via `Transcriber::transcribe`'s `hints` arg), and
+applies `text_processing::apply_corrections` (whole-word, case-insensitive,
+longest-first) to the raw transcript before `course_correct`. Commands
+`get_dictionary` / `upsert_dictionary_entry` / `delete_dictionary_entry` /
+`import_dictionary_csv` / `export_dictionary_csv` are wired through
+`generate_handler!` and `api.ts`. The Dictionary sidebar item is now a real page
+(`src/pages/DictionaryPage.tsx`): searchable list, inline add/edit, star toggle,
+delete, CSV import (file picker) + export (download). Auto-learn (deliverable 5)
+was left as a future enhancement — the `source`/`learned_count` columns are in
+place for it. Gates green: `cargo check`, `cargo test` (14/14 incl. 3 new
+correction tests), `npm run build`.
 
 **Deliverables:**
 1. **Schema** — `dictionary` (id, word UNIQUE, replacement NULLABLE,

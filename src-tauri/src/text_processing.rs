@@ -91,6 +91,64 @@ pub fn course_correct(text: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Dictionary corrections (post-transcription, pre-course-correct)
+// ---------------------------------------------------------------------------
+
+/// Apply dictionary misspelling→correction mappings as whole-word,
+/// case-insensitive substitutions.
+///
+/// `dict` is a list of `(from, to)` pairs (e.g. `("tail wind", "Tailwind")`).
+/// Each `from` may be multiple words; matches must sit on word boundaries so a
+/// term never rewrites inside a larger word. Callers should pass the longest
+/// `from` first so multi-word terms win over their substrings.
+pub fn apply_corrections(text: &str, dict: &[(String, String)]) -> String {
+    let mut result = text.to_string();
+    for (from, to) in dict {
+        if from.trim().is_empty() {
+            continue;
+        }
+        result = replace_word_ci(&result, from, to);
+    }
+    result
+}
+
+/// Replace every whole-word, ASCII-case-insensitive occurrence of `needle` in
+/// `haystack` with `replacement`. A match counts only when both ends fall on a
+/// word boundary (start/end of string or a non-alphanumeric neighbour).
+fn replace_word_ci(haystack: &str, needle: &str, replacement: &str) -> String {
+    let nlen = needle.len();
+    let mut out = String::with_capacity(haystack.len());
+    let mut i = 0;
+    while i < haystack.len() {
+        let end = i + nlen;
+        let is_match = end <= haystack.len()
+            && haystack.is_char_boundary(end)
+            && haystack.as_bytes()[i..end].eq_ignore_ascii_case(needle.as_bytes())
+            && is_word_boundary(haystack, i, end);
+        if is_match {
+            out.push_str(replacement);
+            i = end;
+        } else {
+            // Advance by a full char so `i` stays on a UTF-8 boundary.
+            let ch = haystack[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
+}
+
+/// True when `[start, end)` is flanked by non-alphanumeric chars (or text edges).
+fn is_word_boundary(s: &str, start: usize, end: usize) -> bool {
+    let before_ok = s[..start]
+        .chars()
+        .next_back()
+        .map_or(true, |c| !c.is_alphanumeric());
+    let after_ok = s[end..].chars().next().map_or(true, |c| !c.is_alphanumeric());
+    before_ok && after_ok
+}
+
+// ---------------------------------------------------------------------------
 // Spoken punctuation (post-LLM)
 // ---------------------------------------------------------------------------
 
@@ -406,6 +464,32 @@ mod tests {
         // "one ... two" is only two markers — not enough to be a list.
         let s = "one of two options";
         assert_eq!(format_lists(s), s);
+    }
+
+    #[test]
+    fn corrections_replace_whole_words_case_insensitively() {
+        let dict = vec![("tail wind".to_string(), "Tailwind".to_string())];
+        assert_eq!(
+            apply_corrections("I styled it with Tail Wind today", &dict),
+            "I styled it with Tailwind today"
+        );
+    }
+
+    #[test]
+    fn corrections_respect_word_boundaries() {
+        // "cat" must not rewrite inside "category".
+        let dict = vec![("cat".to_string(), "dog".to_string())];
+        assert_eq!(
+            apply_corrections("the cat in the category", &dict),
+            "the dog in the category"
+        );
+    }
+
+    #[test]
+    fn corrections_noop_when_absent() {
+        let dict = vec![("foo".to_string(), "bar".to_string())];
+        let s = "nothing to change here";
+        assert_eq!(apply_corrections(s, &dict), s);
     }
 
     #[test]
