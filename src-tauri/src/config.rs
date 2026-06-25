@@ -13,6 +13,18 @@ pub enum CleanupLevel {
     High,
 }
 
+impl CleanupLevel {
+    /// Stable string form persisted in the history DB (`cleanup_level` column).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CleanupLevel::None => "none",
+            CleanupLevel::Light => "light",
+            CleanupLevel::Medium => "medium",
+            CleanupLevel::High => "high",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -32,6 +44,13 @@ pub struct Settings {
     /// Flow Bar opacity (0.0–1.0). Phase 2 appearance setting.
     #[serde(default = "default_bubble_opacity")]
     pub bubble_opacity: f32,
+    /// Phase 3 audio retention: "store" (keep forever), "delete24h" (prune after
+    /// `audio_retention_hours`), or "never" (don't save audio at all).
+    #[serde(default = "default_audio_storage_policy")]
+    pub audio_storage_policy: String,
+    /// Hours to keep saved audio when the policy is "delete24h".
+    #[serde(default = "default_audio_retention_hours")]
+    pub audio_retention_hours: u32,
 }
 
 fn default_copy_shortcut() -> String {
@@ -42,6 +61,12 @@ fn default_bubble_scale() -> f32 {
 }
 fn default_bubble_opacity() -> f32 {
     1.0
+}
+fn default_audio_storage_policy() -> String {
+    "delete24h".into()
+}
+fn default_audio_retention_hours() -> u32 {
+    24
 }
 
 impl Default for Settings {
@@ -54,6 +79,8 @@ impl Default for Settings {
             copy_shortcut: default_copy_shortcut(),
             bubble_scale: default_bubble_scale(),
             bubble_opacity: default_bubble_opacity(),
+            audio_storage_policy: default_audio_storage_policy(),
+            audio_retention_hours: default_audio_retention_hours(),
         }
     }
 }

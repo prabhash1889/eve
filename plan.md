@@ -176,18 +176,241 @@ New settings (with `#[serde(default)]` so old config files still load): `copySho
 errors / 0 warnings; `npm run build` → clean. **Not yet done:** live dictation with a
 mic + Groq key (filler words at level Medium → polished text injected).
 
-## Roadmap notes for later phases
-- **P3 SQLite**: add `rusqlite` + migrations; tables transcripts(+FTS5),
-  dictionary, snippets, flow_styles, transforms, settings, daily_stats,
-  scratchpad_tabs (schema in the original plan). Build History page.
-- **P4–P5**: Dictionary (Whisper `prompt` hints already plumbed via
-  `transcribe(hints)`), Snippets expansion before injection.
-- **P6**: Win32 foreground process/title → AppCategory (HWND capture already
-  exists in `hotkey.rs`); per-app tone styles feed the polish system prompt.
-- **P7**: Command Mode shortcut + selection capture (Ctrl+C) + Transforms.
-- **P8**: Insights (recharts/d3) + vibe-coding. **P9**: Scratchpad (Tiptap).
-  **P10**: Onboarding + languages + auto-pause. **P11**: signing + updater +
-  autostart.
+## ✅ Phase 3 — History & DB (SQLite) — DONE
+
+**Goal:** persist every dictation and surface it in a searchable History page.
+This is where SQLite enters (deferred from Phase 0); it becomes the store for
+Phases 4–9 too.
+
+**Status:** built. `rusqlite` (`bundled`, FTS5) with a `PRAGMA user_version`
+migration runner in new `src-tauri/src/db/` (`mod.rs`, `queries.rs`,
+`migrations/001_initial.sql`); `db: Arc<Mutex<Connection>>` on `AppState`, opened
+in `lib.rs` setup. `pipeline::process` persists each dictation after injection
+(raw + polished, word/duration counts, optional saved WAV). Retention settings
+(`audioStoragePolicy` / `audioRetentionHours`) prune audio on launch. Commands
+`get_history` / `delete_transcript` (soft) / `recover_transcript` /
+`clear_history` / `get_stats` wired through `api.ts`. History sidebar item is a
+real page (`src/pages/HistoryPage.tsx`): paginated FTS search, per-card
+raw↔polished toggle, audio replay via `convertFileSrc` (asset protocol enabled),
+delete/recover. Build gates green: `npm run build`, `cargo check`.
+
+**Deliverables:**
+1. **DB layer** — add `rusqlite` (`bundled` feature) + a small migration runner
+   (`refinery`, or hand-rolled `PRAGMA user_version`). New `src-tauri/src/db/`
+   (`mod.rs`, `migrations/`, `queries.rs`). Open `app_data_dir/eve.db` in
+   `lib.rs` setup; add `db: Arc<Mutex<rusqlite::Connection>>` to `AppState`.
+2. **Schema (`001_initial.sql`)** — `transcripts` (id, created_at, raw_text,
+   polished_text, cleanup_level, language, audio_path, app_process, app_title,
+   app_category, word_count, duration_ms, was_polished, deleted_at) + FTS5
+   `transcripts_fts` mirror for search; `daily_stats` (date PK, word_count,
+   session_count, total_ms, correction_count, app_usage JSON).
+3. **Persist on success** — in `pipeline.rs`, after injection, insert a row
+   (raw, polished, word count = whitespace split, duration from the buffer
+   length / rate, app info as plain "" until Phase 6). Optionally save the WAV to
+   disk and store `audio_path`.
+4. **Retention** — settings `audioStoragePolicy` (`store` | `delete24h` |
+   `never`) + `audioRetentionHours`; a startup task in `lib.rs` prunes audio
+   files + rows past the window.
+5. **Commands** — `get_history(page, per_page, query)`, `delete_transcript(id)`
+   (soft delete), `recover_transcript(id)`, `clear_history`, and extend
+   `get_stats(range)`.
+6. **History page** — promote the disabled "History" sidebar item in `Hub.tsx`
+   to a real page (or `src/pages/HistoryPage.tsx`): paginated list, FTS search
+   box, per-card raw↔polished toggle, audio replay (`<audio>` via
+   `convertFileSrc`), delete/recover.
+
+**Files:** new `db/`; modify `state.rs`, `lib.rs`, `pipeline.rs`, `commands.rs`,
+`config.rs` (retention fields, `#[serde(default)]`), `Hub.tsx` + new page,
+`lib/api.ts`.
+**Verify:** run ~10 dictations → all appear in History, FTS search finds them,
+audio replays, delete/recover work, retention prunes on the next launch.
+
+## ⬜ Phase 4 — Dictionary — NEXT
+
+**Goal:** word boosting + misspelling correction baked into every transcription.
+
+**Deliverables:**
+1. **Schema** — `dictionary` (id, word UNIQUE, replacement NULLABLE,
+   is_starred, source `user|auto|import`, learned_count, timestamps).
+2. **CRUD + CSV** — commands `upsert_dictionary_entry`, `get_dictionary`,
+   `delete_dictionary_entry`, `import_dictionary_csv`, `export_dictionary_csv`.
+3. **Boosting (already plumbed)** — `Transcriber::transcribe` already takes a
+   `hints: Vec<String>` arg that maps to Whisper's `prompt`. In `pipeline.rs`
+   load starred + recent words from the DB and pass them in (currently an empty
+   `Vec`).
+4. **Correction** — apply `replacement` mappings (misspelling → correct) as a
+   post-transcription step. Add `apply_corrections(text, &dict)` to
+   `text_processing.rs`, run before `course_correct`.
+5. **Auto-learn (optional)** — after a session, detect proper nouns / repeated
+   corrections; insert with `source='auto'` after N occurrences.
+6. **Dictionary page** — promote the sidebar item: table with add/edit/delete,
+   star, search, CSV import.
+
+**Files:** db migration, `commands.rs`, `pipeline.rs`, `text_processing.rs`,
+new `DictionaryPage.tsx`, `lib/api.ts`.
+**Verify:** add "Tailwind" → dictating "tail wind" yields "Tailwind"; a
+misspelling→correct mapping is applied in the injected text.
+
+## ⬜ Phase 5 — Snippets
+
+**Goal:** spoken trigger phrases expand to long-form text.
+
+**Deliverables:**
+1. **Schema** — `snippets` (id, trigger_phrase UNIQUE, expansion, is_active,
+   timestamps).
+2. **CRUD + JSON import/export** commands.
+3. **Expansion** — after `finalize`, before injection, scan for trigger phrases
+   (case-insensitive; fuzzy ≤1 edit for short triggers) and substitute. New
+   `expand_snippets(text, &snippets)` in `text_processing.rs` (unit-tested).
+4. **Snippets page** — promote sidebar item; list + add/edit + JSON import.
+
+**Files:** db migration, `commands.rs`, `pipeline.rs`, `text_processing.rs`,
+new `SnippetsPage.tsx`, `lib/api.ts`.
+**Verify:** define `my email → …@gmail.com`; dictating the phrase expands it
+before injection.
+
+## ⬜ Phase 6 — Flow Styles + context awareness
+
+**Goal:** per-app tone — the polish prompt adapts to the focused app.
+
+**Deliverables:**
+1. **Active-window module** — new `src-tauri/src/context/active_window.rs`
+   (Windows): `GetForegroundWindow` → `GetWindowThreadProcessId` →
+   `QueryFullProcessImageNameW` (process name) + `GetWindowTextW` (title).
+   Needs `windows` features `Win32_System_Threading` +
+   `Win32_System_ProcessStatus`. `classify(process, title) -> AppCategory`
+   (`Email | WorkMsg | PersonalMsg | Code | Other`) via a lookup table + browser
+   title/URL heuristics (gmail/outlook → Email, etc.).
+2. **Capture context at record start** — `hotkey::on_press` already grabs the
+   HWND; also resolve process/title/category and store on `AppState`, then fill
+   `app_process/app_title/app_category` when persisting (Phase 3).
+3. **Schema** — `flow_styles` (id, name, app_category, tone
+   `casual|formal|excited|very_casual`, system_prompt, writing_sample,
+   is_active).
+4. **Prompt builder** — extend `polish.rs::system_prompt` to take the active
+   `FlowStyle` (tone + category + optional writing sample); `pipeline::process`
+   looks up the style for the current category before polishing.
+5. **Styles page** — 4×4 grid (category × tone) with text previews + a writing
+   sample field; manual per-app override.
+
+**Files:** new `context/active_window.rs` (+ `Cargo.toml` windows features),
+`polish.rs`, `pipeline.rs`, `state.rs`, db migration, `commands.rs`, new
+`StylesPage.tsx`, `lib/api.ts`.
+**Verify:** Gmail tab focused → formal email tone; Slack → casual tone.
+
+## ⬜ Phase 7 — Command Mode + Transforms
+
+**Goal:** rewrite selected text (or generate inline) by voice; saved rewrite
+prompts bound to shortcuts.
+
+**Deliverables:**
+1. **Shared LLM helper** — factor the Groq chat-completions call out of
+   `polish.rs` into `llm.rs::chat(system, user)` so Command Mode/Transforms
+   reuse it.
+2. **Command-Mode shortcut** — a second global shortcut (e.g.
+   `CmdOrCtrl+Shift+Alt+Space`) registered like the main one; gives the Flow Bar
+   a distinct visual (e.g. purple). Handler in `hotkey.rs` / new
+   `command_mode.rs`.
+3. **Selection vs inline** — on activate, simulate Ctrl+C and read the clipboard;
+   non-empty → "rewrite selection" mode, empty → "inline generation" mode. After
+   the LLM returns, replace selection (clipboard + paste) or inject inline.
+   Command `command_mode_rewrite(selected_text, instruction)`.
+4. **Transforms** — `transforms` table (name, system_prompt, shortcut,
+   auto_apply, app_category) + `transform_shortcuts`. Dynamically register each
+   transform's shortcut; `apply_transform(id, text)`; `auto_apply` transforms run
+   after dictation before injection.
+5. **Transforms page** — create/edit named transforms, assign shortcut,
+   auto-apply toggle, app-category filter.
+
+**Files:** new `llm.rs`, `command_mode.rs`; modify `polish.rs`, `hotkey.rs`,
+`lib.rs` (register), db migration, `commands.rs`, new `TransformsPage.tsx`,
+`lib/api.ts`.
+**Verify:** select text in VS Code → Command-Mode shortcut → say "make this more
+concise" → selection is replaced.
+
+## ⬜ Phase 8 — Insights + vibe-coding
+
+**Goal:** usage analytics dashboard + developer-specific niceties.
+
+**Deliverables:**
+1. **Aggregation** — track a per-session correction count in `pipeline.rs`
+   (filler/punctuation/dictionary edits) into `daily_stats`. Extend `get_stats`
+   to return WPM (words / (duration_ms/60000)), totals, app-usage breakdown,
+   streak series.
+2. **Insights page** — WPM radial gauge + "Top X%" badge (benchmark ≈ 50 WPM
+   typed), corrections/total words, app-usage horizontal bar (`recharts`), streak
+   heatmap (`d3`/SVG), "Your Voice" profile unlocked after 2000 words.
+3. **Vibe-coding** — when the focused app is VS Code/Cursor (from Phase 6):
+   backtick-wrap "backtick X backtick" → `` `X` `` and pass through `@file`
+   tags; Settings toggle.
+
+**Files:** `pipeline.rs`, `commands.rs`/`db`, new `InsightsPage.tsx`,
+`text_processing.rs` (backticks), `config.rs` (vibe toggle), `lib/api.ts`. New
+npm deps: `recharts`, `d3`, `date-fns`.
+**Verify:** after several sessions Insights shows real WPM and filled streak
+cells; backtick variables wrap in a code editor.
+
+## ⬜ Phase 9 — Scratchpad
+
+**Goal:** a floating multi-tab rich-text notepad you can dictate into.
+
+**Deliverables:**
+1. **New window** — `scratchpad` in `tauri.conf.json` (frameless-ish, resizable,
+   always-on-top) + `scratchpad.html` vite entry + `src/scratchpad.tsx`.
+2. **Schema** — `scratchpad_tabs` (id, title, content, position, timestamps) +
+   CRUD commands; autosave.
+3. **Editor** — Tiptap (`@tiptap/react`) rich text, multi-tab, image paste
+   (base64 or file).
+4. **Focus-aware dictation** — when the Scratchpad is focused, route the polished
+   text into the active editor instead of OS paste.
+5. **Entry points** — a Scratchpad open shortcut + Hub sidebar item.
+
+**Files:** `tauri.conf.json` + `vite.config.ts` (new input), `src/scratchpad.tsx`,
+db migration, `commands.rs`, `lib/api.ts`. New npm deps: `@tiptap/react`,
+`@tiptap/starter-kit`.
+**Verify:** open Scratchpad, create 3 tabs, dictate into each, paste an image,
+content survives a restart.
+
+## ⬜ Phase 10 — Onboarding + languages + auto-pause
+
+**Goal:** first-run experience, multi-language selection, privacy guards.
+
+**Deliverables:**
+1. **Onboarding** — shown when `onboardingComplete` is false: mic permission +
+   live mic test (amplitude meter), language multi-select, shortcut capture,
+   2–3 practice dictations, style personalization. New
+   `src/components/onboarding/*`; set the flag on completion.
+2. **Languages** — multi-select UI + auto-detect; language already flows to
+   Whisper via settings.
+3. **Auto-pause** — `pausedApps` setting (default-seeded with common banking
+   process names). In `hotkey::on_press`, if the foreground app (Phase 6) is in
+   the list, suppress recording and emit a "paused" hint to the Flow Bar.
+4. **Privacy** — surface retention (Phase 3) + a context-awareness toggle.
+
+**Files:** onboarding components, `config.rs` (`onboarding_complete`,
+`paused_apps`), `hotkey.rs`, `commands.rs`, `lib/api.ts`.
+**Verify:** fresh install runs onboarding; a banking app blocks recording;
+Japanese dictation transcribes correctly.
+
+## ⬜ Phase 11 — Packaging + signing + auto-update
+
+**Goal:** a distributable, self-updating Windows app.
+
+**Deliverables:**
+1. **CI build** — `.github/workflows/release.yml` using `tauri-action` to build
+   the NSIS installer + MSI.
+2. **Code signing** — Azure Trusted Signing (recommended) or an EV cert, wired
+   via CI secrets (`TAURI_SIGNING_*`).
+3. **Auto-update** — `tauri-plugin-updater` against a GitHub Releases feed +
+   an update prompt in the tray; `tauri-plugin-autostart` with a
+   "Launch at startup" toggle in Settings.
+4. **Crash reporting (optional)** — opt-in only, behind a privacy setting.
+
+**Files:** `.github/workflows/release.yml`, `tauri.conf.json` (updater + bundle),
+`Cargo.toml` (`tauri-plugin-updater`, `tauri-plugin-autostart`), `lib.rs`
+(plugin init), `commands.rs` (autostart toggle), Settings UI.
+**Verify:** install the signed NSIS build on a clean Windows VM; it launches on
+startup; a simulated release feed shows an update prompt.
 
 ## Known risks / things to watch (from the plan)
 - Injection reliability per app (terminals need Shift+Insert; UAC-elevated targets

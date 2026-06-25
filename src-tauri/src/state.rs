@@ -11,6 +11,7 @@ use parking_lot::Mutex;
 use tauri_plugin_global_shortcut::Shortcut;
 
 use crate::config::Settings;
+use crate::db::Db;
 use crate::polish::{GroqPolisher, Polisher};
 use crate::transcription::{GroqTranscriber, Transcriber};
 
@@ -31,10 +32,13 @@ pub struct AppState {
     pub settings_path: PathBuf,
     pub transcriber: Arc<dyn Transcriber>,
     pub polisher: Arc<dyn Polisher>,
+    /// Phase 3: history/stats store (SQLite), shared with the audio thread-free
+    /// pipeline and the history commands.
+    pub db: Db,
 }
 
 impl AppState {
-    pub fn new(settings: Settings, settings_path: PathBuf) -> Self {
+    pub fn new(settings: Settings, settings_path: PathBuf, db: Db) -> Self {
         let main = parse_shortcut(&settings.shortcut);
         let copy = parse_shortcut(&settings.copy_shortcut);
         let escape = Shortcut::from_str("Escape").expect("valid escape shortcut");
@@ -54,6 +58,7 @@ impl AppState {
             // Always GroqPolisher: it no-ops for CleanupLevel::None, so the
             // level can change at runtime without rebuilding state.
             polisher: Arc::new(GroqPolisher::new()),
+            db,
         }
     }
 }

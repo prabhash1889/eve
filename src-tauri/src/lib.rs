@@ -1,6 +1,7 @@
 mod audio;
 mod commands;
 mod config;
+mod db;
 mod events;
 mod hotkey;
 mod injection;
@@ -57,7 +58,15 @@ pub fn run() {
             let settings_path = config_dir.join("settings.json");
             let settings = config::load(&settings_path);
 
-            app.manage(AppState::new(settings, settings_path));
+            // History DB lives in the app data dir (Phase 3).
+            let data_dir = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&data_dir).ok();
+            let db = db::open(&data_dir.join("eve.db"))?;
+
+            // Retention: on launch, prune saved audio past the configured window.
+            prune_audio_on_launch(&db, &settings);
+
+            app.manage(AppState::new(settings, settings_path, db));
 
             // Register the push-to-talk shortcut + the copy-last-transcript
             // shortcut. The copy shortcut is best-effort: a bad/duplicate
@@ -91,7 +100,29 @@ pub fn run() {
             commands::store_api_key,
             commands::has_api_key,
             commands::clear_api_key,
+            commands::get_history,
+            commands::delete_transcript,
+            commands::recover_transcript,
+            commands::clear_history,
+            commands::get_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Phase 3 retention: when the policy is "delete24h", remove saved audio (file +
+/// DB pointer) older than `audio_retention_hours`. Best-effort; runs on launch.
+fn prune_audio_on_launch(db: &db::Db, settings: &config::Settings) {
+    if settings.audio_storage_policy != "delete24h" {
+        return;
+    }
+    let cutoff = chrono::Utc::now().timestamp_millis()
+        - (settings.audio_retention_hours as i64) * 3_600_000;
+    let stale = {
+        let conn = db.lock();
+        db::queries::prune_audio(&conn, cutoff).unwrap_or_default()
+    };
+    for path in stale {
+        let _ = std::fs::remove_file(&path);
+    }
 }

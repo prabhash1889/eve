@@ -14,7 +14,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-global-shortcut = "2"
@@ -34,6 +34,11 @@ reqwest = { version = "0.12", features = ["multipart", "json"] }
 # Secure API-key storage in the OS credential store (Windows Credential Manager).
 # For macOS/Linux later, add the matching backend feature under a target table.
 keyring = { version = "3", features = ["windows-native"] }
+
+# History persistence (Phase 3). `bundled` compiles SQLite (FTS5 enabled) so
+# there's no system dependency. `chrono` for timestamps + daily-stats date keys.
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", features = ["clock"] }
 
 # Misc
 anyhow = "1"

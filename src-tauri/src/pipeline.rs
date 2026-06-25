@@ -6,12 +6,14 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::config::CleanupLevel;
+use crate::db::{queries, Db};
 use crate::state::AppState;
 use crate::{audio, events, injection, text_processing, window_mgmt};
 
 pub async fn process(app: AppHandle) {
     // Snapshot the Arc-backed state up front so we never hold the guard across an await.
-    let (buffer, sample_rate, settings, transcriber, polisher, last_transcript, hwnd) = {
+    let (buffer, sample_rate, settings, transcriber, polisher, last_transcript, db, hwnd) = {
         let st = app.state::<AppState>();
         (
             st.audio_buffer.clone(),
@@ -20,6 +22,7 @@ pub async fn process(app: AppHandle) {
             st.transcriber.clone(),
             st.polisher.clone(),
             st.last_transcript.clone(),
+            st.db.clone(),
             st.foreground_hwnd.load(Ordering::SeqCst),
         )
     };
@@ -42,6 +45,9 @@ pub async fn process(app: AppHandle) {
         return;
     }
 
+    // Capture length BEFORE `samples` is moved into the encode closure.
+    let duration_ms = (samples.len() as i64 * 1000) / (rate.max(1) as i64);
+
     // Resample to 16 kHz + WAV-encode (CPU-bound → off the async runtime).
     let wav = match tauri::async_runtime::spawn_blocking(move || {
         let resampled = audio::resample_to_16k(&samples, rate);
@@ -56,15 +62,24 @@ pub async fn process(app: AppHandle) {
         }
     };
 
-    let (language, level, strategy) = {
+    let (language, lang_label, level, strategy, store_audio) = {
         let s = settings.lock();
         let lang = if s.language == "auto" {
             None
         } else {
             Some(s.language.clone())
         };
-        (lang, s.cleanup_level, s.inject_strategy.clone())
+        (
+            lang,
+            s.language.clone(),
+            s.cleanup_level,
+            s.inject_strategy.clone(),
+            s.audio_storage_policy != "never",
+        )
     };
+
+    // Keep a copy of the WAV for storage/replay unless the user opted out.
+    let audio_bytes = if store_audio { Some(wav.clone()) } else { None };
 
     // Transcribe.
     let raw = match transcriber.transcribe(wav, language, Vec::new()).await {
@@ -120,8 +135,56 @@ pub async fn process(app: AppHandle) {
     .await;
 
     *last_transcript.lock() = Some(text.clone());
+
+    // Phase 3: persist this dictation to history (after all awaits, so we never
+    // hold the DB guard across one). Best-effort — a failed insert must not
+    // break the user-visible flow.
+    persist(&app, &db, &raw, &text, level, &lang_label, duration_ms, audio_bytes);
+
     let _ = app.emit_to(events::FLOWBAR, events::DONE, events::DonePayload { text });
     window_mgmt::hide_flowbar_after(app, 900);
+}
+
+/// Save the dictation to the history DB, optionally writing the WAV to disk for
+/// replay/retention. `app_*` fields stay empty until Phase 6 adds context.
+#[allow(clippy::too_many_arguments)]
+fn persist(
+    app: &AppHandle,
+    db: &Db,
+    raw: &str,
+    text: &str,
+    level: CleanupLevel,
+    language: &str,
+    duration_ms: i64,
+    wav: Option<Vec<u8>>,
+) {
+    let created_at = chrono::Utc::now().timestamp_millis();
+    let word_count = text.split_whitespace().count() as i64;
+    let was_polished = !matches!(level, CleanupLevel::None);
+
+    let audio_path = wav.and_then(|bytes| {
+        let dir = app.path().app_data_dir().ok()?.join("audio");
+        std::fs::create_dir_all(&dir).ok()?;
+        let path = dir.join(format!("{created_at}.wav"));
+        std::fs::write(&path, bytes).ok()?;
+        Some(path.to_string_lossy().into_owned())
+    });
+
+    let row = queries::NewTranscript {
+        created_at,
+        raw_text: raw.to_string(),
+        polished_text: text.to_string(),
+        cleanup_level: level.as_str().to_string(),
+        language: language.to_string(),
+        audio_path,
+        app_process: String::new(),
+        app_title: String::new(),
+        app_category: String::new(),
+        word_count,
+        duration_ms,
+        was_polished,
+    };
+    let _ = queries::insert_transcript(&db.lock(), &row);
 }
 
 fn friendly_error(err: &str) -> String {

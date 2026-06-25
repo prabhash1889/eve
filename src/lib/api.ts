@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn, type EventCallback } from "@tauri-apps/api/event";
 
 // ---------------------------------------------------------------------------
@@ -6,6 +6,8 @@ import { listen, type UnlistenFn, type EventCallback } from "@tauri-apps/api/eve
 // ---------------------------------------------------------------------------
 
 export type CleanupLevel = "none" | "light" | "medium" | "high";
+
+export type AudioStoragePolicy = "store" | "delete24h" | "never";
 
 export interface Settings {
   shortcut: string;
@@ -15,6 +17,8 @@ export interface Settings {
   copyShortcut: string;
   bubbleScale: number; // Flow Bar size multiplier (1.0 = default)
   bubbleOpacity: number; // Flow Bar opacity (0–1)
+  audioStoragePolicy: AudioStoragePolicy; // retention of saved audio (Phase 3)
+  audioRetentionHours: number; // window for "delete24h"
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -25,7 +29,49 @@ export const DEFAULT_SETTINGS: Settings = {
   copyShortcut: "CmdOrCtrl+Shift+C",
   bubbleScale: 1.0,
   bubbleOpacity: 1.0,
+  audioStoragePolicy: "delete24h",
+  audioRetentionHours: 24,
 };
+
+// ---------------------------------------------------------------------------
+// History (Phase 3) — mirrors src-tauri/src/db/queries.rs
+// ---------------------------------------------------------------------------
+
+export interface Transcript {
+  id: number;
+  createdAt: number; // unix epoch ms (UTC)
+  rawText: string;
+  polishedText: string;
+  cleanupLevel: string;
+  language: string;
+  audioPath: string | null;
+  appProcess: string;
+  appTitle: string;
+  appCategory: string;
+  wordCount: number;
+  durationMs: number;
+  wasPolished: boolean;
+  deletedAt: number | null;
+}
+
+export interface HistoryPage {
+  items: Transcript[];
+  total: number;
+  page: number;
+  perPage: number;
+}
+
+export interface Stats {
+  totalWords: number;
+  totalSessions: number;
+  totalMs: number;
+  since: number;
+}
+
+export type StatsRange = "day" | "week" | "month" | "all";
+
+/** Convert a stored audio file path into an asset:// URL the `<audio>` tag can load. */
+export const audioSrc = (path: string): string => convertFileSrc(path);
 
 // ---------------------------------------------------------------------------
 // Pipeline events (emitted by Rust to the Flow Bar window)
@@ -73,4 +119,11 @@ export const api = {
   storeApiKey: (key: string) => invoke<void>("store_api_key", { key }),
   hasApiKey: () => invoke<boolean>("has_api_key"),
   clearApiKey: () => invoke<void>("clear_api_key"),
+  // History (Phase 3)
+  getHistory: (page: number, perPage: number, query?: string) =>
+    invoke<HistoryPage>("get_history", { page, perPage, query: query ?? null }),
+  deleteTranscript: (id: number) => invoke<void>("delete_transcript", { id }),
+  recoverTranscript: (id: number) => invoke<void>("recover_transcript", { id }),
+  clearHistory: () => invoke<void>("clear_history"),
+  getStats: (range: StatsRange) => invoke<Stats>("get_stats", { range }),
 };

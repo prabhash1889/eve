@@ -12,6 +12,7 @@ import {
   Sun,
 } from "lucide-react";
 import { api, DEFAULT_SETTINGS, type Settings, type CleanupLevel } from "./lib/api";
+import { HistoryPage } from "./pages/HistoryPage";
 
 const SHORTCUT_CHOICES = ["F8", "F9", "F10", "CmdOrCtrl+Shift+Space", "Alt+Q"];
 
@@ -42,7 +43,7 @@ const COPY_SHORTCUT_CHOICES = [
   "Alt+C",
 ];
 
-type Nav = "dashboard" | "settings";
+type Nav = "dashboard" | "settings" | "history";
 
 export function Hub() {
   const [nav, setNav] = useState<Nav>("dashboard");
@@ -76,10 +77,10 @@ export function Hub() {
         </div>
 
         <NavItem icon={<LayoutDashboard size={18} />} label="Dashboard" active={nav === "dashboard"} onClick={() => setNav("dashboard")} />
+        <NavItem icon={<History size={18} />} label="History" active={nav === "history"} onClick={() => setNav("history")} />
         <NavItem icon={<SettingsIcon size={18} />} label="Settings" active={nav === "settings"} onClick={() => setNav("settings")} />
 
         <div className="mt-4 mb-1 px-3 text-[11px] font-semibold uppercase tracking-wide text-ink-faint">Coming soon</div>
-        <NavItem icon={<History size={18} />} label="History" disabled />
         <NavItem icon={<BookMarked size={18} />} label="Dictionary" disabled />
         <NavItem icon={<Sparkles size={18} />} label="Styles" disabled />
 
@@ -99,6 +100,8 @@ export function Hub() {
         <div className="mx-auto max-w-2xl px-10 py-10">
           {nav === "dashboard" ? (
             <Dashboard settings={settings} hasKey={hasKey} onConfigure={() => setNav("settings")} />
+          ) : nav === "history" ? (
+            <HistoryPage />
           ) : (
             <SettingsPanel
               settings={settings}
@@ -338,6 +341,37 @@ function SettingsPanel({
         </div>
         <p className="mt-3 text-xs text-ink-faint">
           Takes effect the next time the Flow Bar appears.
+        </p>
+      </Section>
+
+      <Section title="Audio storage" icon={<History size={16} />}>
+        <Select
+          value={settings.audioStoragePolicy}
+          onChange={(v) =>
+            persist({ ...settings, audioStoragePolicy: v as Settings["audioStoragePolicy"] })
+          }
+          options={[
+            { value: "store", label: "Keep recordings" },
+            { value: "delete24h", label: "Auto-delete after a while" },
+            { value: "never", label: "Don't save audio" },
+          ]}
+        />
+        {settings.audioStoragePolicy === "delete24h" && (
+          <div className="mt-4">
+            <Range
+              label="Keep for"
+              min={1}
+              max={168}
+              step={1}
+              value={settings.audioRetentionHours}
+              format={(v) => `${v} h`}
+              onChange={(v) => persist({ ...settings, audioRetentionHours: Math.round(v) })}
+            />
+          </div>
+        )}
+        <p className="mt-3 text-xs text-ink-faint">
+          Recordings let you replay a dictation from History. They're pruned on launch when
+          auto-delete is on. Transcript text is always kept.
         </p>
       </Section>
     </div>
