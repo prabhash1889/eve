@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+/* Class-based dark mode: toggle `.dark` on <html>. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+  Editorial / "quiet-luxury" tokens inspired by Wispr Flow:
+  Figtree for UI, Fraunces for editorial headings, soft neutrals,
+  a calm green accent. Colors resolve to CSS variables so light/dark
+  is a single class toggle.
+*/
+@theme {
+  --font-sans: "Figtree", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Fraunces", ui-serif, Georgia, serif;
+
+  --color-canvas: var(--c-canvas);
+  --color-surface: var(--c-surface);
+  --color-surface-2: var(--c-surface-2);
+  --color-border: var(--c-border);
+  --color-ink: var(--c-ink);
+  --color-ink-soft: var(--c-ink-soft);
+  --color-ink-faint: var(--c-ink-faint);
+  --color-accent: var(--c-accent);
+  --color-accent-soft: var(--c-accent-soft);
+  --color-danger: var(--c-danger);
+
+  --radius-xl: 1rem;
+  --radius-2xl: 1.25rem;
+}
+
+:root {
+  --c-canvas: #f6f4ef; /* warm paper */
+  --c-surface: #fffdf9;
+  --c-surface-2: #efece4;
+  --c-border: #e2ded4;
+  --c-ink: #1f1d1a;
+  --c-ink-soft: #4a463f;
+  --c-ink-faint: #8a857a;
+  --c-accent: #3f9b6e; /* calm vitality green */
+  --c-accent-soft: #d8ebe1;
+  --c-danger: #c0573f;
+}
+
+.dark {
+  --c-canvas: #16150f;
+  --c-surface: #1f1e17;
+  --c-surface-2: #272620;
+  --c-border: #34322a;
+  --c-ink: #f3f0e8;
+  --c-ink-soft: #c3bfb3;
+  --c-ink-faint: #8c887d;
+  --c-accent: #5cc591;
+  --c-accent-soft: #1f3a2c;
+  --c-danger: #e07a62;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-canvas);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The Flow Bar window is transparent — its body must not paint a background. */
+body.flowbar {
+  background: transparent !important;
+}
+
+::selection {
+  background: var(--color-accent-soft);
+}

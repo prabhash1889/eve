@@ -1,0 +1,48 @@
+[package]
+name = "eve"
+version = "0.1.0"
+description = "Eve — system-wide AI voice dictation"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+# The `_lib` suffix avoids a name clash with the binary on Windows.
+name = "eve_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Audio capture (WASAPI on Windows) + WAV encoding
+cpal = "0.15"
+hound = "3"
+
+# Text injection
+enigo = "0.3"
+
+# Groq HTTP API (multipart upload + JSON)
+reqwest = { version = "0.12", features = ["multipart", "json"] }
+
+# Secure API-key storage in the OS credential store (Windows Credential Manager).
+# For macOS/Linux later, add the matching backend feature under a target table.
+keyring = { version = "3", features = ["windows-native"] }
+
+# Misc
+anyhow = "1"
+parking_lot = "0.12"
+async-trait = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
