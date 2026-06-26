@@ -149,6 +149,7 @@ pub fn run() {
             commands::update_settings,
             commands::set_shortcut,
             commands::set_copy_shortcut,
+            commands::list_input_devices,
             commands::store_api_key,
             commands::has_api_key,
             commands::clear_api_key,

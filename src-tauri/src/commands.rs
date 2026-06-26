@@ -69,6 +69,13 @@ pub fn set_copy_shortcut(
     Ok(())
 }
 
+/// Available microphone names for the Settings picker. The UI prepends a
+/// "System default" choice (the empty string) itself.
+#[tauri::command]
+pub fn list_input_devices() -> Vec<String> {
+    crate::audio::input_devices()
+}
+
 #[tauri::command]
 pub fn store_api_key(key: String) -> Result<(), String> {
     secrets::set_api_key(&key).map_err(|e| e.to_string())

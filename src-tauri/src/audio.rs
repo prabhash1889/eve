@@ -16,20 +16,46 @@ use tauri::{AppHandle, Emitter};
 use crate::events;
 use crate::window_mgmt;
 
+/// Names of available capture devices, for the Settings picker. The empty-string
+/// choice ("system default") is added by the UI, not here. Best-effort: returns
+/// an empty list if the host can't enumerate.
+pub fn input_devices() -> Vec<String> {
+    let host = cpal::default_host();
+    host.input_devices()
+        .map(|devs| devs.filter_map(|d| d.name().ok()).collect())
+        .unwrap_or_default()
+}
+
+/// Resolve the configured device name to a cpal device. An empty name (or a name
+/// that no longer matches any device, e.g. the mic was unplugged) falls back to
+/// the system default input device.
+fn select_input_device(host: &cpal::Host, name: &str) -> Option<cpal::Device> {
+    if !name.is_empty() {
+        if let Ok(mut devices) = host.input_devices() {
+            if let Some(d) = devices.find(|d| d.name().map(|n| n == name).unwrap_or(false)) {
+                return Some(d);
+            }
+        }
+    }
+    host.default_input_device()
+}
+
 /// Spawn the capture thread. Runs until `is_recording` is set to false.
+/// `device_name` selects the capture device by name (empty = system default).
 pub fn start_capture(
     app: AppHandle,
     is_recording: Arc<AtomicBool>,
     buffer: Arc<Mutex<Vec<f32>>>,
     sample_rate: Arc<AtomicU32>,
     amp: Arc<Mutex<f32>>,
+    device_name: String,
 ) {
     thread::spawn(move || {
         buffer.lock().clear();
         *amp.lock() = 0.0;
 
         let host = cpal::default_host();
-        let Some(device) = host.default_input_device() else {
+        let Some(device) = select_input_device(&host, &device_name) else {
             is_recording.store(false, Ordering::SeqCst);
             window_mgmt::fail(&app, "No microphone found");
             return;

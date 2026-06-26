@@ -20,6 +20,7 @@ import {
   NotebookPen,
   ShieldCheck,
   Languages,
+  Mic,
   Plus,
   X,
   RefreshCw,
@@ -343,6 +344,12 @@ function SettingsPanel({
 }) {
   const [apiKey, setApiKey] = useState("");
   const [savedFlash, setSavedFlash] = useState(false);
+  const [inputDevices, setInputDevices] = useState<string[]>([]);
+
+  // Enumerate capture devices for the microphone picker (best-effort).
+  useEffect(() => {
+    api.listInputDevices().then(setInputDevices).catch(() => {});
+  }, []);
 
   const persist = async (next: Settings) => {
     setSettings(next);
@@ -405,6 +412,26 @@ function SettingsPanel({
           options={SHORTCUT_CHOICES.map((s) => ({ value: s, label: s }))}
         />
         <p className="mt-2 text-xs text-ink-faint">Hold this key to record; release to transcribe.</p>
+      </Section>
+
+      <Section title="Microphone" icon={<Mic size={16} />}>
+        <Select
+          value={settings.inputDevice}
+          onChange={(v) => persist({ ...settings, inputDevice: v })}
+          options={[
+            { value: "", label: "System default" },
+            // Keep the saved device selectable even if it's currently unplugged.
+            ...(settings.inputDevice && !inputDevices.includes(settings.inputDevice)
+              ? [{ value: settings.inputDevice, label: `${settings.inputDevice} (disconnected)` }]
+              : []),
+            ...inputDevices.map((d) => ({ value: d, label: d })),
+          ]}
+        />
+        <p className="mt-2 text-xs text-ink-faint">
+          Which microphone to record from. “System default” follows your Windows input device.
+          The choice applies to your next dictation; if the selected mic is unavailable, Eve
+          falls back to the default.
+        </p>
       </Section>
 
       <Section title="Languages" icon={<Languages size={16} />}>

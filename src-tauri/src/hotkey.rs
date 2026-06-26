@@ -82,12 +82,14 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
     // Allow Esc to cancel while recording (registered off the callback thread).
     register_escape(app, st);
 
+    let device_name = st.settings.lock().input_device.clone();
     audio::start_capture(
         app.clone(),
         st.is_recording.clone(),
         st.audio_buffer.clone(),
         st.sample_rate.clone(),
         st.current_amplitude.clone(),
+        device_name,
     );
 }
 

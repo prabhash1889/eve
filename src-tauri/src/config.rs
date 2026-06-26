@@ -33,6 +33,11 @@ pub struct Settings {
     pub cleanup_level: CleanupLevel,
     /// "paste" (clipboard + Ctrl+V) or "type" (char-by-char).
     pub inject_strategy: String,
+    /// Capture device name (as reported by cpal). Empty = follow the Windows
+    /// default input device. Resolved fresh at each record start; falls back to
+    /// the system default if the named device is unplugged.
+    #[serde(default)]
+    pub input_device: String,
     /// Global shortcut to copy the last transcript to the clipboard (Phase 2).
     /// `#[serde(default)]` so settings files written before this field existed
     /// still deserialize instead of resetting every field to defaults.
@@ -157,6 +162,7 @@ impl Default for Settings {
             language: "auto".into(),
             cleanup_level: CleanupLevel::None,
             inject_strategy: "paste".into(),
+            input_device: String::new(),
             copy_shortcut: default_copy_shortcut(),
             command_shortcut: default_command_shortcut(),
             scratchpad_shortcut: default_scratchpad_shortcut(),

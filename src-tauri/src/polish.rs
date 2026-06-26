@@ -275,9 +275,11 @@ impl Polisher for LocalPolisher {
 
         let system = system_prompt(level, style.as_ref());
         let user = text.clone();
-        let generated = tauri::async_runtime::spawn_blocking(move || generate(&model, &system, &user))
-            .await
-            .map_err(|e| anyhow::anyhow!("Polish task failed: {e}"))??;
+        let fmt = chat_format_for(&id);
+        let generated =
+            tauri::async_runtime::spawn_blocking(move || generate(&model, fmt, &system, &user))
+                .await
+                .map_err(|e| anyhow::anyhow!("Polish task failed: {e}"))??;
 
         let cleaned = strip_wrapping(&generated);
         if cleaned.is_empty() {
@@ -314,17 +316,59 @@ fn llm_backend() -> anyhow::Result<&'static llama_cpp_2::llama_backend::LlamaBac
         .ok_or_else(|| anyhow::anyhow!("llama backend unavailable"))
 }
 
-/// Greedy single-turn generation using a ChatML prompt (works for Qwen/Llama
-/// instruct GGUFs). Bounded to keep latency reasonable for a polish pass.
+/// The chat prompt format an instruct GGUF expects. Different model families use
+/// different turn delimiters; feeding a model the wrong ones badly degrades
+/// output, so we pick per selected model.
+#[cfg(feature = "local-models")]
+#[derive(Debug, Clone, Copy)]
+enum ChatFormat {
+    /// ChatML — Qwen2.5 et al. (`<|im_start|>` / `<|im_end|>`).
+    ChatMl,
+    /// Llama 3.x Instruct (`<|start_header_id|>` headers / `<|eot_id|>`).
+    Llama3,
+}
+
+/// Pick the chat format from a catalog model id. Llama models use the Llama 3
+/// template; everything else defaults to ChatML (Qwen and most other small
+/// instruct GGUFs).
+#[cfg(feature = "local-models")]
+fn chat_format_for(id: &str) -> ChatFormat {
+    if id.starts_with("llama") {
+        ChatFormat::Llama3
+    } else {
+        ChatFormat::ChatMl
+    }
+}
+
+/// Build the single-turn chat prompt for the given format. The leading
+/// begin-of-text/BOS token is added by the tokenizer (`AddBos::Always`), so it
+/// is intentionally omitted from the Llama 3 template here.
+#[cfg(feature = "local-models")]
+fn build_chat_prompt(fmt: ChatFormat, system: &str, user: &str) -> String {
+    match fmt {
+        ChatFormat::ChatMl => format!(
+            "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n"
+        ),
+        ChatFormat::Llama3 => format!(
+            "<|start_header_id|>system<|end_header_id|>\n\n{system}<|eot_id|>\
+             <|start_header_id|>user<|end_header_id|>\n\n{user}<|eot_id|>\
+             <|start_header_id|>assistant<|end_header_id|>\n\n"
+        ),
+    }
+}
+
+/// Greedy single-turn generation using the model's chat template (ChatML for
+/// Qwen, Llama 3 for Llama). Bounded to keep latency reasonable for a polish pass.
 #[cfg(feature = "local-models")]
 fn generate(
     model: &llama_cpp_2::model::LlamaModel,
+    fmt: ChatFormat,
     system: &str,
     user: &str,
 ) -> anyhow::Result<String> {
     use llama_cpp_2::context::params::LlamaContextParams;
     use llama_cpp_2::llama_batch::LlamaBatch;
-    use llama_cpp_2::model::{AddBos, Special};
+    use llama_cpp_2::model::AddBos;
     use llama_cpp_2::sampling::LlamaSampler;
     use std::num::NonZeroU32;
 
@@ -335,9 +379,7 @@ fn generate(
         .new_context(backend, ctx_params)
         .map_err(|e| anyhow::anyhow!("llama context: {e}"))?;
 
-    let prompt = format!(
-        "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n"
-    );
+    let prompt = build_chat_prompt(fmt, system, user);
     let tokens = model
         .str_to_token(&prompt, AddBos::Always)
         .map_err(|e| anyhow::anyhow!("tokenize: {e}"))?;
@@ -356,6 +398,9 @@ fn generate(
     let mut sampler = LlamaSampler::greedy();
     let mut n_cur = batch.n_tokens();
     let mut out = String::new();
+    // One decoder reused across tokens so multi-byte UTF-8 split across pieces
+    // decodes correctly.
+    let mut decoder = encoding_rs::UTF_8.new_decoder();
 
     while (n_cur as usize) < max_new {
         let token = sampler.sample(&ctx, batch.n_tokens() - 1);
@@ -364,7 +409,7 @@ fn generate(
             break;
         }
         let piece = model
-            .token_to_str(token, Special::Tokenize)
+            .token_to_piece(token, &mut decoder, false, None)
             .unwrap_or_default();
         out.push_str(&piece);
 
@@ -376,8 +421,16 @@ fn generate(
         ctx.decode(&mut batch).map_err(|e| anyhow::anyhow!("decode: {e}"))?;
     }
 
-    // Strip any trailing ChatML end marker the model may emit.
-    let out = out.split("<|im_end|>").next().unwrap_or(&out).trim().to_string();
+    // Strip any trailing turn-end marker the model may emit (ChatML or Llama 3).
+    let out = out
+        .split("<|im_end|>")
+        .next()
+        .unwrap_or("")
+        .split("<|eot_id|>")
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
     Ok(out)
 }
 

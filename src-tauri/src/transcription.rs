@@ -200,11 +200,13 @@ impl Transcriber for LocalTranscriber {
                 .full(params, &samples)
                 .map_err(|e| anyhow::anyhow!("Whisper inference failed: {e}"))?;
 
-            let n = state.full_n_segments().unwrap_or(0);
+            let n = state.full_n_segments();
             let mut out = String::new();
             for i in 0..n {
-                if let Ok(seg) = state.full_get_segment_text(i) {
-                    out.push_str(&seg);
+                if let Some(seg) = state.get_segment(i) {
+                    if let Ok(text) = seg.to_str() {
+                        out.push_str(text);
+                    }
                 }
             }
             Ok(out.trim().to_string())

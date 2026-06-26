@@ -33,6 +33,15 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # On-device inference (`local-models`) builds whisper.cpp + llama.cpp from
+      # source. CMake + MSVC ship on windows-latest; bindgen additionally needs
+      # libclang, so point it at the runner's preinstalled LLVM.
+      - name: Locate libclang (for bindgen)
+        shell: pwsh
+        run: |
+          $llvm = if ($env:LLVM_PATH) { "$env:LLVM_PATH\bin" } else { "C:\Program Files\LLVM\bin" }
+          echo "LIBCLANG_PATH=$llvm" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Install frontend deps
         run: npm ci
 
@@ -56,5 +65,6 @@ jobs:
           releaseBody: "See the assets below to download and install."
           releaseDraft: true
           prerelease: false
-          # Produce NSIS + MSI installers and the updater artifacts/`latest.json`.
-          args: --bundles nsis,msi,updater
+          # Produce NSIS + MSI installers and the updater artifacts/`latest.json`,
+          # and compile on-device whisper.cpp / llama.cpp (`local-models`).
+          args: --features local-models --bundles nsis,msi,updater

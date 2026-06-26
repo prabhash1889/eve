@@ -17,6 +17,7 @@ export interface Settings {
   language: string; // "auto" or an ISO-639-1 code
   cleanupLevel: CleanupLevel;
   injectStrategy: "paste" | "type";
+  inputDevice: string; // capture device name ("" = system default)
   copyShortcut: string;
   commandShortcut: string; // Phase 7: Command Mode push-to-talk shortcut
   scratchpadShortcut: string; // Phase 9: opens the floating Scratchpad window
@@ -41,6 +42,7 @@ export const DEFAULT_SETTINGS: Settings = {
   language: "auto",
   cleanupLevel: "none",
   injectStrategy: "paste",
+  inputDevice: "",
   copyShortcut: "CmdOrCtrl+Shift+C",
   commandShortcut: "CmdOrCtrl+Shift+Alt+Space",
   scratchpadShortcut: "CmdOrCtrl+Shift+S",
@@ -285,6 +287,7 @@ export const api = {
   updateSettings: (settings: Settings) => invoke<void>("update_settings", { settings }),
   setShortcut: (shortcut: string) => invoke<void>("set_shortcut", { shortcut }),
   setCopyShortcut: (shortcut: string) => invoke<void>("set_copy_shortcut", { shortcut }),
+  listInputDevices: () => invoke<string[]>("list_input_devices"),
   storeApiKey: (key: string) => invoke<void>("store_api_key", { key }),
   hasApiKey: () => invoke<boolean>("has_api_key"),
   clearApiKey: () => invoke<void>("clear_api_key"),

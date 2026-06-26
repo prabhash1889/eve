@@ -18,7 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 # — this requires CMake + a C/C++ compiler (LLVM/clang or MSVC) to build
 # whisper.cpp / llama.cpp, and noticeably increases build time and binary size.
 default = []
-local-models = ["dep:whisper-rs", "dep:llama-cpp-2"]
+local-models = ["dep:whisper-rs", "dep:llama-cpp-2", "dep:encoding_rs"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -50,8 +50,10 @@ futures-util = "0.3"
 
 # On-device inference (behind the `local-models` feature — see [features]).
 # These compile whisper.cpp / llama.cpp via CMake + a C/C++ toolchain.
-whisper-rs = { version = "0.14", optional = true }
+whisper-rs = { version = "0.16", optional = true }
 llama-cpp-2 = { version = "0.1", optional = true }
+# Decoder for llama.cpp `token_to_piece` (must match llama-cpp-2's encoding_rs).
+encoding_rs = { version = "0.8", optional = true }
 
 # Secure API-key storage in the OS credential store (Windows Credential Manager).
 # For macOS/Linux later, add the matching backend feature under a target table.
