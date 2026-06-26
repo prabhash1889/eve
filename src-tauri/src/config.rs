@@ -43,6 +43,10 @@ pub struct Settings {
     /// inline if nothing is selected).
     #[serde(default = "default_command_shortcut")]
     pub command_shortcut: String,
+    /// Phase 9: global shortcut that opens (and focuses) the floating Scratchpad
+    /// window. Dictating while it's focused routes text into the editor.
+    #[serde(default = "default_scratchpad_shortcut")]
+    pub scratchpad_shortcut: String,
     /// Flow Bar size multiplier (1.0 = default). Phase 2 appearance setting.
     #[serde(default = "default_bubble_scale")]
     pub bubble_scale: f32,
@@ -88,6 +92,9 @@ fn default_copy_shortcut() -> String {
 fn default_command_shortcut() -> String {
     "CmdOrCtrl+Shift+Alt+Space".into()
 }
+fn default_scratchpad_shortcut() -> String {
+    "CmdOrCtrl+Shift+S".into()
+}
 fn default_bubble_scale() -> f32 {
     1.0
 }
@@ -113,6 +120,7 @@ impl Default for Settings {
             inject_strategy: "paste".into(),
             copy_shortcut: default_copy_shortcut(),
             command_shortcut: default_command_shortcut(),
+            scratchpad_shortcut: default_scratchpad_shortcut(),
             bubble_scale: default_bubble_scale(),
             bubble_opacity: default_bubble_opacity(),
             audio_storage_policy: default_audio_storage_policy(),

@@ -26,6 +26,11 @@ pub const MODEL_ERROR: &str = "model://error";
 pub const FLOWBAR: &str = "flowbar";
 /// The Hub window — model-download progress events are emitted here.
 pub const MAIN: &str = "main";
+/// Phase 9: the floating Scratchpad window.
+pub const SCRATCHPAD: &str = "scratchpad";
+/// Phase 9: dictated text to insert into the focused Scratchpad editor (instead
+/// of OS paste). Reuses `TranscriptPayload`.
+pub const SCRATCHPAD_INSERT: &str = "scratchpad://insert";
 
 #[derive(Clone, Serialize)]
 pub struct DonePayload {

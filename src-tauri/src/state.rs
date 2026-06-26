@@ -37,6 +37,11 @@ pub struct AppState {
     /// pipeline rather than the dictation one).
     pub command_shortcut: Arc<Mutex<Shortcut>>,
     pub is_command_mode: Arc<AtomicBool>,
+    /// Phase 9: global shortcut that opens the Scratchpad window, plus a flag set
+    /// at record start when the Scratchpad window had focus — so the pipeline
+    /// routes the dictation into its editor instead of OS-pasting.
+    pub scratchpad_shortcut: Arc<Mutex<Shortcut>>,
+    pub to_scratchpad: Arc<AtomicBool>,
     /// Phase 7: registered transform accelerators paired with their transform
     /// id. A Vec (not a map) so we don't depend on `Shortcut: Hash`; the handler
     /// linear-scans it like the other reserved shortcuts. Rebuilt at launch and
@@ -63,6 +68,7 @@ impl AppState {
         let main = parse_shortcut(&settings.shortcut);
         let copy = parse_shortcut(&settings.copy_shortcut);
         let command = parse_shortcut(&settings.command_shortcut);
+        let scratchpad = parse_shortcut(&settings.scratchpad_shortcut);
         let escape = Shortcut::from_str("Escape").expect("valid escape shortcut");
         // Build the shared settings Arc first so the routers can read live
         // backend selections from the same source the commands write to.
@@ -79,6 +85,8 @@ impl AppState {
             copy_shortcut: Arc::new(Mutex::new(copy)),
             command_shortcut: Arc::new(Mutex::new(command)),
             is_command_mode: Arc::new(AtomicBool::new(false)),
+            scratchpad_shortcut: Arc::new(Mutex::new(scratchpad)),
+            to_scratchpad: Arc::new(AtomicBool::new(false)),
             transform_shortcuts: Arc::new(Mutex::new(Vec::new())),
             last_transcript: Arc::new(Mutex::new(None)),
             transcriber: Arc::new(RoutingTranscriber::new(

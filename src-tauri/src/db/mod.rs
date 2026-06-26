@@ -11,6 +11,7 @@ use rusqlite::Connection;
 pub mod dictionary;
 pub mod flow_styles;
 pub mod queries;
+pub mod scratchpad;
 pub mod snippets;
 pub mod transforms;
 
@@ -23,6 +24,7 @@ const MIGRATION_002: &str = include_str!("migrations/002_dictionary.sql");
 const MIGRATION_003: &str = include_str!("migrations/003_snippets.sql");
 const MIGRATION_004: &str = include_str!("migrations/004_flow_styles.sql");
 const MIGRATION_005: &str = include_str!("migrations/005_transforms.sql");
+const MIGRATION_006: &str = include_str!("migrations/006_scratchpad.sql");
 
 /// Open (or create) the database at `path` and apply any pending migrations.
 pub fn open(path: &Path) -> anyhow::Result<Db> {
@@ -56,6 +58,10 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
     if version < 5 {
         conn.execute_batch(MIGRATION_005)?;
         conn.pragma_update(None, "user_version", 5i64)?;
+    }
+    if version < 6 {
+        conn.execute_batch(MIGRATION_006)?;
+        conn.pragma_update(None, "user_version", 6i64)?;
     }
     Ok(())
 }

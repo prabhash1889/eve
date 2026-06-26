@@ -37,6 +37,7 @@ pub fn run() {
                     let is_escape = st.escape_shortcut == *shortcut;
                     let is_copy = *st.copy_shortcut.lock() == *shortcut;
                     let is_command = *st.command_shortcut.lock() == *shortcut;
+                    let is_scratchpad = *st.scratchpad_shortcut.lock() == *shortcut;
                     // Phase 7: transform accelerators (linear-scanned, like the
                     // reserved shortcuts above).
                     let transform_id = st
@@ -55,6 +56,8 @@ pub fn run() {
                                 hotkey::on_cancel(app, st);
                             } else if is_copy {
                                 hotkey::on_copy(app, st);
+                            } else if is_scratchpad {
+                                window_mgmt::open_scratchpad(app);
                             } else if let Some(id) = transform_id {
                                 command_mode::on_transform(app, st, id);
                             }
@@ -103,6 +106,9 @@ pub fn run() {
                 // Phase 7: Command Mode + any transform accelerators (best-effort).
                 let command = state.command_shortcut.lock().clone();
                 let _ = app.global_shortcut().register(command);
+                // Phase 9: Scratchpad open shortcut (best-effort).
+                let scratchpad = state.scratchpad_shortcut.lock().clone();
+                let _ = app.global_shortcut().register(scratchpad);
                 command_mode::register_transform_shortcuts(app.handle(), &state);
             }
 
@@ -111,8 +117,10 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Closing the Hub hides it (the app keeps running in the tray).
-            if window.label() == "main" {
+            // Closing the Hub (or the Scratchpad) hides it rather than quitting —
+            // the app keeps running in the tray, and the Scratchpad's tabs stay
+            // loaded so reopening is instant.
+            if matches!(window.label(), "main" | "scratchpad") {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = window.hide();
@@ -151,6 +159,12 @@ pub fn run() {
             commands::upsert_transform,
             commands::delete_transform,
             commands::apply_transform,
+            commands::set_scratchpad_shortcut,
+            commands::open_scratchpad,
+            commands::get_scratchpad_tabs,
+            commands::create_scratchpad_tab,
+            commands::save_scratchpad_tab,
+            commands::delete_scratchpad_tab,
             commands::list_models,
             commands::download_model,
             commands::cancel_model_download,

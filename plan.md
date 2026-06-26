@@ -28,7 +28,7 @@ Local on-device Whisper is deferred behind a trait (not built in v1).
 | L | Local models (on-device transcription + polish) | ✅ Done (default build; `local-models` feature untested) |
 | 7 | Command Mode + Transforms | ✅ Done (build-verified) |
 | 8 | Insights + vibe-coding | ✅ Done (build-verified) |
-| 9 | Scratchpad | ⬜ |
+| 9 | Scratchpad | ✅ Done (build-verified) |
 | 10 | Onboarding + languages + auto-pause | ⬜ |
 | 11 | Packaging + signing + auto-update | ⬜ |
 
@@ -475,9 +475,33 @@ npm deps: `recharts`, `d3`, `date-fns`.
 **Verify:** after several sessions Insights shows real WPM and filled streak
 cells; backtick variables wrap in a code editor.
 
-## ⬜ Phase 9 — Scratchpad
+## ✅ Phase 9 — Scratchpad — DONE (build-verified)
 
 **Goal:** a floating multi-tab rich-text notepad you can dictate into.
+
+**Status:** built. A third window `scratchpad` (`tauri.conf.json`: resizable,
+always-on-top, `skipTaskbar:false`, hidden until opened) joins `main`/`flowbar`
+as a rollup input (`scratchpad.html` + `src/scratchpad.tsx`); closing it hides
+rather than quits (like the Hub), so tabs stay loaded. New migration
+`006_scratchpad.sql` + `db/scratchpad.rs` back `scratchpad_tabs` (title, HTML
+content, position, timestamps) with `list`/`create`/`save`/`delete`; commands
+`get_scratchpad_tabs` / `create_scratchpad_tab` / `save_scratchpad_tab`
+(autosave) / `delete_scratchpad_tab` / `open_scratchpad` / `set_scratchpad_shortcut`
+are wired through `generate_handler!` + `api.ts`. The editor is Tiptap
+(`@tiptap/react` + `starter-kit` + `extension-image`, base64 paste handler),
+single editor instance swapped per active tab, debounced autosave, inline title
++ multi-tab strip. **Focus-aware dictation:** `hotkey::on_press` compares the
+foreground HWND against the Scratchpad window's `hwnd()` (new
+`window_mgmt::scratchpad_hwnd`) and sets `AppState.to_scratchpad`; `pipeline`
+snapshots it and, when set, emits the finished text as a new
+`scratchpad://insert` event the window inserts at the cursor instead of
+OS-pasting. **Entry points:** a global open shortcut (`Settings.scratchpad_shortcut`,
+default `CmdOrCtrl+Shift+S`, registered in `lib.rs` + routed in the shortcut
+handler) and a Hub sidebar item / Settings section that invoke `open_scratchpad`.
+The new window is added to `capabilities/default.json` so it can listen for
+events. Gates green: `cargo build` (0 warnings), `npm run build` clean.
+**Untested:** live dictation into the editor + image paste (needs a mic + Groq
+key + a running GUI).
 
 **Deliverables:**
 1. **New window** — `scratchpad` in `tauri.conf.json` (frameless-ish, resizable,
@@ -490,9 +514,12 @@ cells; backtick variables wrap in a code editor.
    text into the active editor instead of OS paste.
 5. **Entry points** — a Scratchpad open shortcut + Hub sidebar item.
 
-**Files:** `tauri.conf.json` + `vite.config.ts` (new input), `src/scratchpad.tsx`,
-db migration, `commands.rs`, `lib/api.ts`. New npm deps: `@tiptap/react`,
-`@tiptap/starter-kit`.
+**Files:** `tauri.conf.json` + `vite.config.ts` (new input), `scratchpad.html`,
+`src/scratchpad.tsx`, `db/scratchpad.rs` + migration, `db/mod.rs`, `config.rs`,
+`state.rs`, `events.rs`, `hotkey.rs`, `pipeline.rs`, `window_mgmt.rs`,
+`commands.rs`, `lib.rs`, `capabilities/default.json`, `Hub.tsx`, `lib/api.ts`.
+New npm deps: `@tiptap/react`, `@tiptap/starter-kit`, `@tiptap/extension-image`,
+`@tiptap/pm`.
 **Verify:** open Scratchpad, create 3 tabs, dictate into each, paste an image,
 content survives a restart.
 

@@ -19,6 +19,7 @@ export interface Settings {
   injectStrategy: "paste" | "type";
   copyShortcut: string;
   commandShortcut: string; // Phase 7: Command Mode push-to-talk shortcut
+  scratchpadShortcut: string; // Phase 9: opens the floating Scratchpad window
   bubbleScale: number; // Flow Bar size multiplier (1.0 = default)
   bubbleOpacity: number; // Flow Bar opacity (0–1)
   audioStoragePolicy: AudioStoragePolicy; // retention of saved audio (Phase 3)
@@ -37,6 +38,7 @@ export const DEFAULT_SETTINGS: Settings = {
   injectStrategy: "paste",
   copyShortcut: "CmdOrCtrl+Shift+C",
   commandShortcut: "CmdOrCtrl+Shift+Alt+Space",
+  scratchpadShortcut: "CmdOrCtrl+Shift+S",
   bubbleScale: 1.0,
   bubbleOpacity: 1.0,
   audioStoragePolicy: "delete24h",
@@ -170,6 +172,19 @@ export interface Transform {
 export const audioSrc = (path: string): string => convertFileSrc(path);
 
 // ---------------------------------------------------------------------------
+// Scratchpad (Phase 9) — mirrors src-tauri/src/db/scratchpad.rs
+// ---------------------------------------------------------------------------
+
+export interface ScratchpadTab {
+  id: number;
+  title: string;
+  content: string; // editor HTML
+  position: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+// ---------------------------------------------------------------------------
 // Local models — mirrors src-tauri/src/models.rs
 // ---------------------------------------------------------------------------
 
@@ -210,6 +225,8 @@ export const EVT = {
   transcriptRaw: "session://transcript-raw",
   transcriptPolished: "session://transcript-polished",
   copied: "session://copied",
+  // Phase 9: dictated text routed into the focused Scratchpad editor.
+  scratchpadInsert: "scratchpad://insert",
   // Local-model download lifecycle (emitted to the Hub window).
   modelProgress: "model://progress",
   modelDone: "model://done",
@@ -307,6 +324,16 @@ export const api = {
   deleteTransform: (id: number) => invoke<void>("delete_transform", { id }),
   applyTransform: (id: number, text: string) =>
     invoke<string>("apply_transform", { id, text }),
+  // Scratchpad (Phase 9)
+  setScratchpadShortcut: (shortcut: string) =>
+    invoke<void>("set_scratchpad_shortcut", { shortcut }),
+  openScratchpad: () => invoke<void>("open_scratchpad"),
+  getScratchpadTabs: () => invoke<ScratchpadTab[]>("get_scratchpad_tabs"),
+  createScratchpadTab: (title?: string) =>
+    invoke<ScratchpadTab>("create_scratchpad_tab", { title: title ?? null }),
+  saveScratchpadTab: (id: number, title: string, content: string) =>
+    invoke<void>("save_scratchpad_tab", { id, title, content }),
+  deleteScratchpadTab: (id: number) => invoke<void>("delete_scratchpad_tab", { id }),
   // Local models
   listModels: () => invoke<ModelStatus[]>("list_models"),
   downloadModel: (id: string) => invoke<void>("download_model", { id }),

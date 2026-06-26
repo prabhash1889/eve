@@ -21,11 +21,18 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
 
     // Remember the app that had focus so we can paste back into it, and resolve
     // its context (process/title/category) for per-app Flow Styles + history.
+    // Reset the Scratchpad routing flag each press; set it below if our own
+    // Scratchpad window had focus (Phase 9 focus-aware dictation).
+    st.to_scratchpad.store(false, Ordering::SeqCst);
     #[cfg(windows)]
     unsafe {
         let hwnd = GetForegroundWindow();
-        st.foreground_hwnd.store(hwnd.0 as isize, Ordering::SeqCst);
+        let fg = hwnd.0 as isize;
+        st.foreground_hwnd.store(fg, Ordering::SeqCst);
         *st.current_context.lock() = Some(crate::context::active_window::resolve(hwnd));
+        if fg != 0 && window_mgmt::scratchpad_hwnd(app) == Some(fg) {
+            st.to_scratchpad.store(true, Ordering::SeqCst);
+        }
     }
 
     // Tell the (event-only) Flow Bar how to size/fade itself for this session.

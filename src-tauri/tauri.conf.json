@@ -36,6 +36,20 @@
         "focus": false,
         "shadow": false,
         "visible": false
+      },
+      {
+        "label": "scratchpad",
+        "title": "Eve Scratchpad",
+        "url": "scratchpad.html",
+        "width": 460,
+        "height": 600,
+        "minWidth": 340,
+        "minHeight": 320,
+        "resizable": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": false,
+        "center": true,
+        "visible": false
       }
     ],
     "security": {

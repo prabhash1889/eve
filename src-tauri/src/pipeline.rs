@@ -15,7 +15,7 @@ use crate::{audio, events, injection, text_processing, window_mgmt};
 
 pub async fn process(app: AppHandle) {
     // Snapshot the Arc-backed state up front so we never hold the guard across an await.
-    let (buffer, sample_rate, settings, transcriber, polisher, last_transcript, db, hwnd, context) = {
+    let (buffer, sample_rate, settings, transcriber, polisher, last_transcript, db, hwnd, context, to_scratchpad) = {
         let st = app.state::<AppState>();
         // Bind the guarded clone to a local so the MutexGuard temporary drops
         // before the block's value (the tuple) is returned.
@@ -30,6 +30,7 @@ pub async fn process(app: AppHandle) {
             st.db.clone(),
             st.foreground_hwnd.load(Ordering::SeqCst),
             context,
+            st.to_scratchpad.load(Ordering::SeqCst),
         )
     };
     let context = context.unwrap_or_else(AppContext::unknown);
@@ -195,13 +196,24 @@ pub async fn process(app: AppHandle) {
         events::TranscriptPayload { text: text.clone() },
     );
 
-    // Inject into the focused app (blocking: clipboard + key simulation).
-    let app_for_inject = app.clone();
-    let inject_text = text.clone();
-    let _ = tauri::async_runtime::spawn_blocking(move || {
-        injection::inject(&app_for_inject, &inject_text, hwnd, &strategy)
-    })
-    .await;
+    // Phase 9: if the Scratchpad window had focus at record start, route the
+    // text into its editor (the window listens for `scratchpad://insert`)
+    // instead of OS-pasting into a foreign app.
+    if to_scratchpad {
+        let _ = app.emit_to(
+            events::SCRATCHPAD,
+            events::SCRATCHPAD_INSERT,
+            events::TranscriptPayload { text: text.clone() },
+        );
+    } else {
+        // Inject into the focused app (blocking: clipboard + key simulation).
+        let app_for_inject = app.clone();
+        let inject_text = text.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            injection::inject(&app_for_inject, &inject_text, hwnd, &strategy)
+        })
+        .await;
+    }
 
     *last_transcript.lock() = Some(text.clone());
 

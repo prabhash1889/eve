@@ -16,6 +16,7 @@ export default defineConfig(async () => ({
       input: {
         main: resolve(__dirname, "index.html"),
         flowbar: resolve(__dirname, "flowbar.html"),
+        scratchpad: resolve(__dirname, "scratchpad.html"),
       },
     },
   },

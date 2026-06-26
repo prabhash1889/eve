@@ -28,6 +28,26 @@ pub fn position_flowbar(app: &AppHandle) {
     }
 }
 
+/// Phase 9: show (and focus) the floating Scratchpad window. Created hidden in
+/// `tauri.conf.json`; opened via the Hub button or the global shortcut.
+pub fn open_scratchpad(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window(events::SCRATCHPAD) {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+/// Phase 9: the Scratchpad window's top-level HWND (as isize), or `None` if the
+/// window doesn't exist. Used to detect when a dictation should route into the
+/// editor rather than OS-paste.
+#[cfg(windows)]
+pub fn scratchpad_hwnd(app: &AppHandle) -> Option<isize> {
+    app.get_webview_window(events::SCRATCHPAD)
+        .and_then(|w| w.hwnd().ok())
+        .map(|h| h.0 as isize)
+}
+
 pub fn hide_flowbar_after(app: AppHandle, ms: u64) {
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(ms));

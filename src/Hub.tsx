@@ -17,6 +17,7 @@ import {
   Wand2,
   BarChart3,
   Code2,
+  NotebookPen,
 } from "lucide-react";
 import { api, DEFAULT_SETTINGS, type Settings, type CleanupLevel, type Stats } from "./lib/api";
 import { HistoryPage } from "./pages/HistoryPage";
@@ -61,6 +62,13 @@ const COMMAND_SHORTCUT_CHOICES = [
   "CmdOrCtrl+Shift+Space",
   "CmdOrCtrl+Alt+Space",
   "Alt+Space",
+];
+
+const SCRATCHPAD_SHORTCUT_CHOICES = [
+  "CmdOrCtrl+Shift+S",
+  "CmdOrCtrl+Shift+N",
+  "CmdOrCtrl+Alt+S",
+  "Alt+S",
 ];
 
 type Nav =
@@ -112,6 +120,7 @@ export function Hub() {
         <NavItem icon={<Zap size={18} />} label="Snippets" active={nav === "snippets"} onClick={() => setNav("snippets")} />
         <NavItem icon={<Sparkles size={18} />} label="Styles" active={nav === "styles"} onClick={() => setNav("styles")} />
         <NavItem icon={<Wand2 size={18} />} label="Transforms" active={nav === "transforms"} onClick={() => setNav("transforms")} />
+        <NavItem icon={<NotebookPen size={18} />} label="Scratchpad" onClick={() => api.openScratchpad().catch(() => {})} />
         <NavItem icon={<Cpu size={18} />} label="Local models" active={nav === "models"} onClick={() => setNav("models")} />
         <NavItem icon={<SettingsIcon size={18} />} label="Settings" active={nav === "settings"} onClick={() => setNav("settings")} />
 
@@ -425,6 +434,28 @@ function SettingsPanel({
           nothing selected, it generates text at your cursor. Uses Groq Llama (needs your
           API key).
         </p>
+      </Section>
+
+      <Section title="Scratchpad" icon={<NotebookPen size={16} />}>
+        <Select
+          value={settings.scratchpadShortcut}
+          onChange={async (v) => {
+            const next = { ...settings, scratchpadShortcut: v };
+            setSettings(next);
+            await api.setScratchpadShortcut(v).catch(() => {});
+          }}
+          options={SCRATCHPAD_SHORTCUT_CHOICES.map((s) => ({ value: s, label: s }))}
+        />
+        <p className="mt-2 text-xs text-ink-faint">
+          Opens the floating multi-tab notepad. While it's focused, dictation lands
+          in the editor at your cursor instead of pasting into another app.
+        </p>
+        <button
+          onClick={() => api.openScratchpad().catch(() => {})}
+          className="mt-3 rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+        >
+          Open Scratchpad
+        </button>
       </Section>
 
       <Section title="Vibe-coding" icon={<Code2 size={16} />}>
