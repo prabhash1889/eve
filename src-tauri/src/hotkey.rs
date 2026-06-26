@@ -19,11 +19,13 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
         return;
     }
 
-    // Remember the app that had focus so we can paste back into it.
+    // Remember the app that had focus so we can paste back into it, and resolve
+    // its context (process/title/category) for per-app Flow Styles + history.
     #[cfg(windows)]
     unsafe {
         let hwnd = GetForegroundWindow();
         st.foreground_hwnd.store(hwnd.0 as isize, Ordering::SeqCst);
+        *st.current_context.lock() = Some(crate::context::active_window::resolve(hwnd));
     }
 
     // Tell the (event-only) Flow Bar how to size/fade itself for this session.
@@ -38,6 +40,7 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
         events::StartPayload {
             bubble_scale,
             bubble_opacity,
+            mode: "dictation".into(),
         },
     );
 
@@ -71,6 +74,8 @@ pub fn on_cancel(app: &AppHandle, st: &AppState) {
     if !st.is_recording.swap(false, Ordering::SeqCst) {
         return;
     }
+    // Reset Command Mode too — Esc cancels either capture.
+    st.is_command_mode.store(false, Ordering::SeqCst);
     unregister_escape(app, st);
     st.audio_buffer.lock().clear();
     let _ = app.emit_to(events::FLOWBAR, events::CANCEL, ());
@@ -96,7 +101,7 @@ pub fn on_copy(app: &AppHandle, st: &AppState) {
     window_mgmt::hide_flowbar_after(app.clone(), 1200);
 }
 
-fn register_escape(app: &AppHandle, st: &AppState) {
+pub(crate) fn register_escape(app: &AppHandle, st: &AppState) {
     let handle = app.clone();
     let esc = st.escape_shortcut.clone();
     tauri::async_runtime::spawn(async move {
@@ -104,7 +109,7 @@ fn register_escape(app: &AppHandle, st: &AppState) {
     });
 }
 
-fn unregister_escape(app: &AppHandle, st: &AppState) {
+pub(crate) fn unregister_escape(app: &AppHandle, st: &AppState) {
     let handle = app.clone();
     let esc = st.escape_shortcut.clone();
     tauri::async_runtime::spawn(async move {

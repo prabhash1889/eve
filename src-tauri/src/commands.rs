@@ -3,10 +3,14 @@
 use tauri::{AppHandle, State};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
+use crate::command_mode;
 use crate::config::{self, Settings};
 use crate::db::dictionary::{self, DictionaryEntry};
+use crate::db::flow_styles::{self, FlowStyle};
 use crate::db::queries::{self, HistoryPage, Stats};
 use crate::db::snippets::{self, Snippet, SnippetImport};
+use crate::db::transforms::{self, Transform};
+use crate::models::{self, ModelStatus};
 use crate::secrets;
 use crate::state::{self, AppState};
 
@@ -283,6 +287,183 @@ pub fn export_snippets_json(state: State<AppState>) -> Result<String, String> {
         })
         .collect();
     serde_json::to_string_pretty(&items).map_err(|e| e.to_string())
+}
+
+// --- Phase 6: Flow Styles ----------------------------------------------------
+
+#[tauri::command]
+pub fn get_flow_styles(state: State<AppState>) -> Result<Vec<FlowStyle>, String> {
+    flow_styles::list(&state.db.lock()).map_err(|e| e.to_string())
+}
+
+/// Insert or update the Flow Style for an app category (one style per category).
+/// `name` defaults to the category label when blank.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn upsert_flow_style(
+    state: State<AppState>,
+    name: String,
+    app_category: String,
+    tone: String,
+    system_prompt: String,
+    writing_sample: String,
+    is_active: bool,
+) -> Result<i64, String> {
+    let category = app_category.trim();
+    if category.is_empty() {
+        return Err("Category cannot be empty".into());
+    }
+    let name = {
+        let n = name.trim();
+        if n.is_empty() { category } else { n }
+    };
+    let now = chrono::Utc::now().timestamp_millis();
+    flow_styles::upsert(
+        &state.db.lock(),
+        name,
+        category,
+        tone.trim(),
+        system_prompt.trim(),
+        writing_sample.trim(),
+        is_active,
+        now,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_flow_style(state: State<AppState>, id: i64) -> Result<(), String> {
+    flow_styles::delete(&state.db.lock(), id).map_err(|e| e.to_string())
+}
+
+// --- Phase 7: Command Mode + Transforms --------------------------------------
+
+/// Set (and re-register) the Command Mode push-to-talk shortcut.
+#[tauri::command]
+pub fn set_command_shortcut(
+    app: AppHandle,
+    state: State<AppState>,
+    shortcut: String,
+) -> Result<(), String> {
+    let new_shortcut = state::parse_shortcut(&shortcut);
+    let old_shortcut = state.command_shortcut.lock().clone();
+
+    let gs = app.global_shortcut();
+    let _ = gs.unregister(old_shortcut);
+    gs.register(new_shortcut.clone()).map_err(|e| e.to_string())?;
+
+    *state.command_shortcut.lock() = new_shortcut;
+
+    let mut s = state.settings.lock();
+    s.command_shortcut = shortcut;
+    let _ = config::save(&state.settings_path, &s);
+    Ok(())
+}
+
+/// Run the Command Mode LLM step directly (selection rewrite or inline
+/// generation). Exposed for the UI / scripting; the live flow calls the same
+/// `command_mode::run_command` internally.
+#[tauri::command]
+pub async fn command_mode_rewrite(
+    selected_text: Option<String>,
+    instruction: String,
+) -> Result<String, String> {
+    command_mode::run_command(selected_text.as_deref(), &instruction)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_transforms(state: State<AppState>) -> Result<Vec<Transform>, String> {
+    transforms::list(&state.db.lock()).map_err(|e| e.to_string())
+}
+
+/// Insert (id `None`) or update a transform, then re-register transform
+/// accelerators so a changed/added/removed shortcut takes effect immediately.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn upsert_transform(
+    app: AppHandle,
+    state: State<AppState>,
+    id: Option<i64>,
+    name: String,
+    system_prompt: String,
+    shortcut: String,
+    auto_apply: bool,
+    app_category: String,
+    is_active: bool,
+) -> Result<i64, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Name cannot be empty".into());
+    }
+    let now = chrono::Utc::now().timestamp_millis();
+    let new_id = transforms::upsert(
+        &state.db.lock(),
+        id,
+        name,
+        system_prompt.trim(),
+        shortcut.trim(),
+        auto_apply,
+        app_category.trim(),
+        is_active,
+        now,
+    )
+    .map_err(|e| e.to_string())?;
+    command_mode::register_transform_shortcuts(&app, &state);
+    Ok(new_id)
+}
+
+#[tauri::command]
+pub fn delete_transform(app: AppHandle, state: State<AppState>, id: i64) -> Result<(), String> {
+    transforms::delete(&state.db.lock(), id).map_err(|e| e.to_string())?;
+    command_mode::register_transform_shortcuts(&app, &state);
+    Ok(())
+}
+
+/// Apply a saved transform's prompt to arbitrary text and return the result.
+#[tauri::command]
+pub async fn apply_transform(
+    state: State<'_, AppState>,
+    id: i64,
+    text: String,
+) -> Result<String, String> {
+    let transform = {
+        let conn = state.db.lock();
+        transforms::get(&conn, id).map_err(|e| e.to_string())?
+    };
+    let transform = transform.ok_or_else(|| "Transform not found".to_string())?;
+    command_mode::run_transform(&transform.system_prompt, &text)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// --- Local models ------------------------------------------------------------
+
+/// The local-model catalog with per-model installed/active/downloading flags.
+#[tauri::command]
+pub fn list_models(app: AppHandle, state: State<AppState>) -> Vec<ModelStatus> {
+    models::list(&app, &state)
+}
+
+/// Start (or no-op if already running) a streamed download. Progress is reported
+/// via `model://progress` / `model://done` / `model://error` events.
+#[tauri::command]
+pub fn download_model(app: AppHandle, id: String) -> Result<(), String> {
+    models::start_download(app, id)
+}
+
+/// Request cancellation of an in-flight download.
+#[tauri::command]
+pub fn cancel_model_download(state: State<AppState>, id: String) -> Result<(), String> {
+    models::cancel(&state, &id);
+    Ok(())
+}
+
+/// Delete a downloaded model file from disk.
+#[tauri::command]
+pub fn delete_model(app: AppHandle, id: String) -> Result<(), String> {
+    models::delete(&app, &id)
 }
 
 /// Minimal RFC-4180-ish CSV line parser: handles `"`-quoted fields with escaped

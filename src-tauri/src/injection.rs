@@ -15,7 +15,7 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 use windows::Win32::Foundation::HWND;
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    keybd_event, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_CONTROL, VK_V,
+    keybd_event, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_C, VK_CONTROL, VK_V,
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
@@ -56,6 +56,39 @@ fn inject_paste(_app: &AppHandle, text: &str, _hwnd: isize) -> anyhow::Result<()
     inject_type(text)
 }
 
+/// Phase 7 (Command Mode / Transforms): copy the focused app's current
+/// selection by restoring focus to `hwnd` and simulating Ctrl+C, then reading
+/// the clipboard. Returns `None` when nothing is selected. The user's prior
+/// clipboard is preserved (we clear it first to detect an empty selection, then
+/// restore it before returning).
+#[cfg(windows)]
+pub fn capture_selection(app: &AppHandle, hwnd: isize) -> Option<String> {
+    let clip = app.clipboard();
+    let previous = clip.read_text().ok();
+
+    // Clear so a Ctrl+C with no selection leaves the clipboard empty (rather
+    // than echoing whatever was there before).
+    let _ = clip.write_text(String::new());
+
+    restore_focus(hwnd);
+    thread::sleep(Duration::from_millis(40));
+    send_ctrl_c();
+    thread::sleep(Duration::from_millis(120));
+
+    let selected = clip.read_text().ok().filter(|s| !s.is_empty());
+
+    // Restore the user's prior clipboard.
+    if let Some(prev) = previous {
+        let _ = clip.write_text(prev);
+    }
+    selected
+}
+
+#[cfg(not(windows))]
+pub fn capture_selection(_app: &AppHandle, _hwnd: isize) -> Option<String> {
+    None
+}
+
 fn inject_type(text: &str) -> anyhow::Result<()> {
     use enigo::{Enigo, Keyboard, Settings};
     let mut enigo =
@@ -82,6 +115,16 @@ fn send_ctrl_v() {
         keybd_event(VK_CONTROL.0 as u8, 0, KEYBD_EVENT_FLAGS(0), 0);
         keybd_event(VK_V.0 as u8, 0, KEYBD_EVENT_FLAGS(0), 0);
         keybd_event(VK_V.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+        keybd_event(VK_CONTROL.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+    }
+}
+
+#[cfg(windows)]
+fn send_ctrl_c() {
+    unsafe {
+        keybd_event(VK_CONTROL.0 as u8, 0, KEYBD_EVENT_FLAGS(0), 0);
+        keybd_event(VK_C.0 as u8, 0, KEYBD_EVENT_FLAGS(0), 0);
+        keybd_event(VK_C.0 as u8, 0, KEYEVENTF_KEYUP, 0);
         keybd_event(VK_CONTROL.0 as u8, 0, KEYEVENTF_KEYUP, 0);
     }
 }

@@ -31,6 +31,13 @@ The two Tauri webview UIs: the **Hub** (Dashboard + Settings) and the **Flow Bar
   Rust (`pipeline.rs`/`hotkey.rs`), handle it in `flow-bar.tsx`.
 - **New window**: new `.html` at repo root + new rollup input in `../vite.config.ts` +
   window entry in `../src-tauri/tauri.conf.json`.
+- **New Hub page**: own component in `pages/` (fetch-on-mount + card layout, see
+  `StylesPage.tsx` / `LocalModelsPage.tsx`), then add it to the `Nav` union, a `NavItem`,
+  and the content switch in `Hub.tsx`.
+- **Local models** (`pages/LocalModelsPage.tsx`): backend selectors persist
+  `transcriptionBackend`/`polishBackend`; model cards drive `api.downloadModel`/`deleteModel`
+  and subscribe to `EVT.modelProgress|modelDone|modelError` for the progress bar (clean up
+  the `on()` unlisten on unmount).
 
 ## Anti-patterns
 

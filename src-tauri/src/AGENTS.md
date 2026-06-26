@@ -43,8 +43,20 @@ WAV-encode (`audio.rs`) → `Transcriber` (`transcription.rs`, Groq Whisper) →
 
 ## Patterns
 
-- Swap transcription/polish backends behind the `Transcriber` / `Polisher` traits, selected
-  in `AppState::new`. `LocalTranscriber` is the remaining deferred slot (on-device Whisper).
+- Swap transcription/polish backends behind the `Transcriber` / `Polisher` traits.
+  `AppState` installs **router** impls (`RoutingTranscriber` / `RoutingPolisher`) that hold
+  both the Groq and local backends plus a clone of the live `Arc<Mutex<Settings>>`, and pick
+  per call from `transcription_backend` / `polish_backend`. This gives runtime hot-swap and
+  Groq fallback (on local error, when a key exists) without mutating the `Arc<dyn>` fields.
+- **Local models** (`models.rs` + the `local-models` Cargo feature): on-device Whisper
+  (`whisper-rs`) and polish LLM (`llama-cpp-2`). The feature is **off by default** so
+  `cargo check`/`build` work without a C/C++ toolchain (local backends then return
+  "not built in" and routing falls back to Groq). Build real inference with
+  `cargo build --features local-models` (needs CMake + clang/MSVC). `LocalTranscriber` /
+  `LocalPolisher` lazily load + cache their model, reloading only when the selected id
+  changes; inference runs under `spawn_blocking`. `models.rs` owns the download manager
+  (streamed `reqwest` → `.part` → sha256 → rename), emitting `model://progress|done|error`
+  to the `main` window; weights live in `app_data_dir/models/`.
 - Windows-only OS calls (HWND, `SendInput`, keychain) go behind `#[cfg(windows)]`.
 
 ## Anti-patterns

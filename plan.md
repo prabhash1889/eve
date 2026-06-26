@@ -24,8 +24,9 @@ Local on-device Whisper is deferred behind a trait (not built in v1).
 | 3 | History & DB (SQLite) | ✅ Done |
 | 4 | Dictionary | ✅ Done (build-verified) |
 | 5 | Snippets | ⬜ |
-| 6 | Flow Styles + context awareness | ⬜ |
-| 7 | Command Mode + Transforms | ⬜ |
+| 6 | Flow Styles + context awareness | ✅ Done (build-verified) |
+| L | Local models (on-device transcription + polish) | ✅ Done (default build; `local-models` feature untested) |
+| 7 | Command Mode + Transforms | ✅ Done (build-verified) |
 | 8 | Insights + vibe-coding | ⬜ |
 | 9 | Scratchpad | ⬜ |
 | 10 | Onboarding + languages + auto-pause | ⬜ |
@@ -286,9 +287,31 @@ new `SnippetsPage.tsx`, `lib/api.ts`.
 **Verify:** define `my email → …@gmail.com`; dictating the phrase expands it
 before injection.
 
-## ⬜ Phase 6 — Flow Styles + context awareness
+## ✅ Phase 6 — Flow Styles + context awareness — DONE (build-verified)
 
 **Goal:** per-app tone — the polish prompt adapts to the focused app.
+
+**Status:** built. New `src-tauri/src/context/` (`mod.rs`, `active_window.rs`):
+on Windows, `resolve(hwnd)` reads the title (`GetWindowTextW`) + owning process
+(`GetWindowThreadProcessId` → `OpenProcess` → `QueryFullProcessImageNameW`) and
+`classify(process, title)` maps it onto `AppCategory`
+(`Email | WorkMsg | PersonalMsg | Code | Other`) via a process lookup table +
+browser title/URL heuristics (added `windows` features `Win32_System_Threading`
++ `Win32_System_ProcessStatus`). `hotkey::on_press` resolves the context at
+record start and stores it on `AppState.current_context`; `pipeline::process`
+snapshots it, fills `app_process/app_title/app_category` when persisting (Phase
+3 fields, previously empty), and looks up the active Flow Style for the
+category. `polish.rs` gained a `StyleHint` (tone + category + custom prompt +
+writing sample) that `system_prompt` weaves into the base cleanup prompt; the
+trait/`pipeline` pass it through. New migration `004_flow_styles.sql` +
+`db/flow_styles.rs` (`upsert` keyed by `app_category` UNIQUE / `list` /
+`delete` / `active_for`). Commands `get_flow_styles` / `upsert_flow_style` /
+`delete_flow_style` wired through `generate_handler!` + `api.ts`. The Styles
+sidebar item is now a real page (`src/pages/StylesPage.tsx`): one card per
+category with a 4-tone selector (preview text), an active toggle, a writing
+sample, and extra-instructions field; styles only apply when cleanup is above
+None. Gates green: `cargo check`, `cargo test` (22/22 incl. 3 new classify
+tests), `npm run build`.
 
 **Deliverables:**
 1. **Active-window module** — new `src-tauri/src/context/active_window.rs`
@@ -315,10 +338,70 @@ before injection.
 `StylesPage.tsx`, `lib/api.ts`.
 **Verify:** Gmail tab focused → formal email tone; Slack → casual tone.
 
-## ⬜ Phase 7 — Command Mode + Transforms
+## ✅ Phase L — Local models (on-device transcription + polish) — DONE (default build)
+
+**Goal:** run speech→text and AI polish fully on-device as an alternative to
+Groq, selectable per-step in the UI, with in-app model downloads, instant
+hot-swap, and automatic Groq fallback on local failure.
+
+**Status:** built. Both AI steps now route through `RoutingTranscriber` /
+`RoutingPolisher` (`transcription.rs` / `polish.rs`), which hold both the Groq
+and local backends plus a clone of the live `Settings` and pick per call —
+giving runtime hot-swap and Groq fallback without mutating `AppState`'s
+`Arc<dyn>` fields. On-device inference (`whisper-rs` + `llama-cpp-2`) sits behind
+the **`local-models` Cargo feature** (off by default so `cargo check`/`build`
+need no C/C++ toolchain; the local backends then report "not built in" and
+routing falls back to Groq).
+
+1. **Settings:** `transcriptionBackend`/`polishBackend` (`"groq"|"local"`),
+   `localWhisperModel`/`localLlmModel` (catalog ids) — `config.rs` + `lib/api.ts`.
+2. **Download manager** (`models.rs`): static catalog (Whisper GGML + LLM GGUF),
+   streamed `reqwest` download → `.part` → sha256 → atomic rename, cancel flag,
+   `model://progress|done|error` events → `main` window. Weights in
+   `app_data_dir/models/`. Commands `list_models`/`download_model`/
+   `cancel_model_download`/`delete_model`.
+3. **Engines:** `LocalTranscriber` (cached `WhisperContext`, WAV→f32 decode) and
+   `LocalPolisher` (cached `LlamaModel`, reuses `system_prompt`/`strip_wrapping`),
+   both lazily loaded + run under `spawn_blocking`.
+4. **UI:** new `pages/LocalModelsPage.tsx` (backend selectors + model cards with
+   download/delete + live progress bar), wired into `Hub.tsx` nav.
+
+**Files:** new `models.rs`, `LocalModelsPage.tsx`; `config.rs`, `transcription.rs`,
+`polish.rs`, `state.rs`, `lib.rs`, `commands.rs`, `events.rs`, `pipeline.rs`,
+`Cargo.toml`, `lib/api.ts`, `Hub.tsx`.
+**Verify (default build):** `cargo check`/`clippy` 0 warnings, `npm run build`
+clean. **Untested:** `--features local-models` build (needs CMake + clang/MSVC;
+the `whisper-rs`/`llama-cpp-2` glue may need minor API tweaks for the pinned
+versions) and live on-device dictation.
+
+## ✅ Phase 7 — Command Mode + Transforms — DONE (build-verified)
 
 **Goal:** rewrite selected text (or generate inline) by voice; saved rewrite
 prompts bound to shortcuts.
+
+**Status:** built. New `llm.rs::chat`/`chat_with` factors the Groq
+chat-completions round-trip out of `polish.rs` (GroqPolisher now just builds the
+prompt + unwraps via the now-`pub strip_wrapping`); Command Mode and Transforms
+reuse it. New `command_mode.rs` adds a second push-to-talk
+(`Settings.commandShortcut`, default `CmdOrCtrl+Shift+Alt+Space`): hold → speak
+an instruction → on release we transcribe it, read the focused selection via a
+new `injection::capture_selection` (clear clipboard → `SetForegroundWindow` +
+Ctrl+C → read → restore), then either rewrite the selection or generate inline
+(`run_command`) and inject. The Flow Bar gets a distinct violet "Command" look
+via a new `mode` field on `StartPayload`. Migration `005_transforms.sql` +
+`db/transforms.rs` back the `transforms` table (name, system_prompt, shortcut,
+auto_apply, app_category, is_active); active transforms with a shortcut are
+registered as global accelerators at launch and re-registered after any edit
+(`register_transform_shortcuts`, tracked in `AppState.transform_shortcuts`).
+A transform shortcut rewrites the current selection; auto-apply transforms run
+in `pipeline::process` after polish (scoped by app category). Commands
+`set_command_shortcut` / `command_mode_rewrite` / `get_transforms` /
+`upsert_transform` / `delete_transform` / `apply_transform` wired through
+`generate_handler!` + `api.ts`. New `pages/TransformsPage.tsx` (create/edit/
+delete, shortcut + auto-apply scope) + Hub nav item and a Command Mode settings
+section. Gates green: `cargo check` (0 warnings), `cargo test` (22/22),
+`npm run build` clean. **Untested:** live Command Mode / transform dictation
+(needs a mic + Groq key + a real selection).
 
 **Deliverables:**
 1. **Shared LLM helper** — factor the Groq chat-completions call out of

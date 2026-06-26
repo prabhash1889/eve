@@ -10,11 +10,19 @@ import {
   Check,
   Moon,
   Sun,
+  Type,
+  Gauge,
+  AudioLines,
+  Cpu,
+  Wand2,
 } from "lucide-react";
-import { api, DEFAULT_SETTINGS, type Settings, type CleanupLevel } from "./lib/api";
+import { api, DEFAULT_SETTINGS, type Settings, type CleanupLevel, type Stats } from "./lib/api";
 import { HistoryPage } from "./pages/HistoryPage";
 import { DictionaryPage } from "./pages/DictionaryPage";
 import { SnippetsPage } from "./pages/SnippetsPage";
+import { StylesPage } from "./pages/StylesPage";
+import { TransformsPage } from "./pages/TransformsPage";
+import { LocalModelsPage } from "./pages/LocalModelsPage";
 
 const SHORTCUT_CHOICES = ["F8", "F9", "F10", "CmdOrCtrl+Shift+Space", "Alt+Q"];
 
@@ -45,7 +53,21 @@ const COPY_SHORTCUT_CHOICES = [
   "Alt+C",
 ];
 
-type Nav = "dashboard" | "settings" | "history" | "dictionary" | "snippets";
+const COMMAND_SHORTCUT_CHOICES = [
+  "CmdOrCtrl+Shift+Alt+Space",
+  "CmdOrCtrl+Shift+Space",
+  "CmdOrCtrl+Alt+Space",
+  "Alt+Space",
+];
+
+type Nav =
+  | "dashboard"
+  | "settings"
+  | "dictionary"
+  | "snippets"
+  | "styles"
+  | "transforms"
+  | "models";
 
 export function Hub() {
   const [nav, setNav] = useState<Nav>("dashboard");
@@ -80,14 +102,13 @@ export function Hub() {
           </div>
         </div>
 
-        <NavItem icon={<LayoutDashboard size={18} />} label="Dashboard" active={nav === "dashboard"} onClick={() => setNav("dashboard")} />
-        <NavItem icon={<History size={18} />} label="History" active={nav === "history"} onClick={() => setNav("history")} />
+        <NavItem icon={<LayoutDashboard size={18} />} label="Home" active={nav === "dashboard"} onClick={() => setNav("dashboard")} />
         <NavItem icon={<BookMarked size={18} />} label="Dictionary" active={nav === "dictionary"} onClick={() => setNav("dictionary")} />
         <NavItem icon={<Zap size={18} />} label="Snippets" active={nav === "snippets"} onClick={() => setNav("snippets")} />
+        <NavItem icon={<Sparkles size={18} />} label="Styles" active={nav === "styles"} onClick={() => setNav("styles")} />
+        <NavItem icon={<Wand2 size={18} />} label="Transforms" active={nav === "transforms"} onClick={() => setNav("transforms")} />
+        <NavItem icon={<Cpu size={18} />} label="Local models" active={nav === "models"} onClick={() => setNav("models")} />
         <NavItem icon={<SettingsIcon size={18} />} label="Settings" active={nav === "settings"} onClick={() => setNav("settings")} />
-
-        <div className="mt-4 mb-1 px-3 text-[11px] font-semibold uppercase tracking-wide text-ink-faint">Coming soon</div>
-        <NavItem icon={<Sparkles size={18} />} label="Styles" disabled />
 
         <div className="mt-auto">
           <button
@@ -105,12 +126,16 @@ export function Hub() {
         <div className="mx-auto max-w-2xl px-10 py-10">
           {nav === "dashboard" ? (
             <Dashboard settings={settings} hasKey={hasKey} onConfigure={() => setNav("settings")} />
-          ) : nav === "history" ? (
-            <HistoryPage />
           ) : nav === "dictionary" ? (
             <DictionaryPage />
           ) : nav === "snippets" ? (
             <SnippetsPage />
+          ) : nav === "styles" ? (
+            <StylesPage />
+          ) : nav === "transforms" ? (
+            <TransformsPage />
+          ) : nav === "models" ? (
+            <LocalModelsPage settings={settings} setSettings={setSettings} />
           ) : (
             <SettingsPanel
               settings={settings}
@@ -174,7 +199,9 @@ function Dashboard({
         into whatever app you're using.
       </p>
 
-      <div className="mt-8 grid gap-4">
+      <TodayStats />
+
+      <div className="mt-6 grid gap-4">
         <div className="rounded-2xl border border-border bg-surface p-5">
           <div className="text-sm text-ink-faint">Push-to-talk hotkey</div>
           <div className="mt-1 flex items-center gap-3">
@@ -211,6 +238,55 @@ function Dashboard({
           </div>
         </div>
       </div>
+
+      <div className="mt-10">
+        <HistoryPage />
+      </div>
+    </div>
+  );
+}
+
+/** Today's dictation stats: words spoken and average words-per-minute. */
+function TodayStats() {
+  const [stats, setStats] = useState<Stats | null>(null);
+
+  useEffect(() => {
+    api.getStats("day").then(setStats).catch(() => {});
+  }, []);
+
+  // WPM over actual dictation time (sum of recording durations), not wall-clock.
+  const minutes = stats ? stats.totalMs / 60000 : 0;
+  const wpm = stats && minutes > 0 ? Math.round(stats.totalWords / minutes) : null;
+
+  return (
+    <div className="mt-8 grid grid-cols-3 gap-4">
+      <StatCard
+        icon={<Type size={16} />}
+        label="Words today"
+        value={stats ? stats.totalWords.toLocaleString() : "—"}
+      />
+      <StatCard
+        icon={<Gauge size={16} />}
+        label="Words / min"
+        value={wpm != null ? String(wpm) : "—"}
+      />
+      <StatCard
+        icon={<AudioLines size={16} />}
+        label="Dictations today"
+        value={stats ? String(stats.totalSessions) : "—"}
+      />
+    </div>
+  );
+}
+
+function StatCard({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border border-border bg-surface p-4">
+      <div className="flex items-center gap-1.5 text-xs text-ink-faint">
+        {icon}
+        {label}
+      </div>
+      <div className="mt-2 font-serif text-3xl tabular-nums">{value}</div>
     </div>
   );
 }
@@ -324,6 +400,23 @@ function SettingsPanel({
         />
         <p className="mt-2 text-xs text-ink-faint">
           Press this anytime to copy your most recent transcript to the clipboard.
+        </p>
+      </Section>
+
+      <Section title="Command Mode" icon={<Wand2 size={16} />}>
+        <Select
+          value={settings.commandShortcut}
+          onChange={async (v) => {
+            const next = { ...settings, commandShortcut: v };
+            setSettings(next);
+            await api.setCommandShortcut(v).catch(() => {});
+          }}
+          options={COMMAND_SHORTCUT_CHOICES.map((s) => ({ value: s, label: s }))}
+        />
+        <p className="mt-2 text-xs text-ink-faint">
+          Hold this and speak an instruction. With text selected, Eve rewrites it; with
+          nothing selected, it generates text at your cursor. Uses Groq Llama (needs your
+          API key).
         </p>
       </Section>
 

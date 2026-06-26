@@ -1,10 +1,14 @@
 mod audio;
+mod command_mode;
 mod commands;
 mod config;
+mod context;
 mod db;
 mod events;
 mod hotkey;
 mod injection;
+mod llm;
+mod models;
 mod pipeline;
 mod polish;
 mod secrets;
@@ -32,19 +36,34 @@ pub fn run() {
                     let is_main = *st.main_shortcut.lock() == *shortcut;
                     let is_escape = st.escape_shortcut == *shortcut;
                     let is_copy = *st.copy_shortcut.lock() == *shortcut;
+                    let is_command = *st.command_shortcut.lock() == *shortcut;
+                    // Phase 7: transform accelerators (linear-scanned, like the
+                    // reserved shortcuts above).
+                    let transform_id = st
+                        .transform_shortcuts
+                        .lock()
+                        .iter()
+                        .find(|(sc, _)| sc == shortcut)
+                        .map(|(_, id)| *id);
                     match event.state() {
                         ShortcutState::Pressed => {
                             if is_main {
                                 hotkey::on_press(app, st);
+                            } else if is_command {
+                                command_mode::on_press(app, st);
                             } else if is_escape {
                                 hotkey::on_cancel(app, st);
                             } else if is_copy {
                                 hotkey::on_copy(app, st);
+                            } else if let Some(id) = transform_id {
+                                command_mode::on_transform(app, st, id);
                             }
                         }
                         ShortcutState::Released => {
                             if is_main {
                                 hotkey::on_release(app, st);
+                            } else if is_command {
+                                command_mode::on_release(app, st);
                             }
                         }
                     }
@@ -63,10 +82,14 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir).ok();
             let db = db::open(&data_dir.join("eve.db"))?;
 
+            // Local-models: on-device weights live alongside the DB.
+            let models_dir = data_dir.join("models");
+            std::fs::create_dir_all(&models_dir).ok();
+
             // Retention: on launch, prune saved audio past the configured window.
             prune_audio_on_launch(&db, &settings);
 
-            app.manage(AppState::new(settings, settings_path, db));
+            app.manage(AppState::new(settings, settings_path, db, models_dir));
 
             // Register the push-to-talk shortcut + the copy-last-transcript
             // shortcut. The copy shortcut is best-effort: a bad/duplicate
@@ -77,6 +100,10 @@ pub fn run() {
                 app.global_shortcut().register(main)?;
                 let copy = state.copy_shortcut.lock().clone();
                 let _ = app.global_shortcut().register(copy);
+                // Phase 7: Command Mode + any transform accelerators (best-effort).
+                let command = state.command_shortcut.lock().clone();
+                let _ = app.global_shortcut().register(command);
+                command_mode::register_transform_shortcuts(app.handle(), &state);
             }
 
             tray::setup(app.handle())?;
@@ -115,6 +142,19 @@ pub fn run() {
             commands::delete_snippet,
             commands::import_snippets_json,
             commands::export_snippets_json,
+            commands::get_flow_styles,
+            commands::upsert_flow_style,
+            commands::delete_flow_style,
+            commands::set_command_shortcut,
+            commands::command_mode_rewrite,
+            commands::get_transforms,
+            commands::upsert_transform,
+            commands::delete_transform,
+            commands::apply_transform,
+            commands::list_models,
+            commands::download_model,
+            commands::cancel_model_download,
+            commands::delete_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

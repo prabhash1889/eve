@@ -7,14 +7,19 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::config::CleanupLevel;
-use crate::db::{dictionary, queries, snippets, Db};
+use crate::context::AppContext;
+use crate::db::{dictionary, flow_styles, queries, snippets, transforms, Db};
+use crate::polish::StyleHint;
 use crate::state::AppState;
 use crate::{audio, events, injection, text_processing, window_mgmt};
 
 pub async fn process(app: AppHandle) {
     // Snapshot the Arc-backed state up front so we never hold the guard across an await.
-    let (buffer, sample_rate, settings, transcriber, polisher, last_transcript, db, hwnd) = {
+    let (buffer, sample_rate, settings, transcriber, polisher, last_transcript, db, hwnd, context) = {
         let st = app.state::<AppState>();
+        // Bind the guarded clone to a local so the MutexGuard temporary drops
+        // before the block's value (the tuple) is returned.
+        let context = st.current_context.lock().clone();
         (
             st.audio_buffer.clone(),
             st.sample_rate.clone(),
@@ -24,8 +29,10 @@ pub async fn process(app: AppHandle) {
             st.last_transcript.clone(),
             st.db.clone(),
             st.foreground_hwnd.load(Ordering::SeqCst),
+            context,
         )
     };
+    let context = context.unwrap_or_else(AppContext::unknown);
 
     // Give the capture thread a moment to stop and flush its last samples.
     let _ = tauri::async_runtime::spawn_blocking(|| {
@@ -119,9 +126,25 @@ pub async fn process(app: AppHandle) {
     // sees the retracted clause.
     let corrected = text_processing::course_correct(&dict_corrected);
 
+    // Phase 6: look up the active Flow Style for the focused app's category and
+    // turn it into a StyleHint that shapes the polish prompt (tone, per-app
+    // context, optional custom instruction + writing sample).
+    let style = {
+        let conn = db.lock();
+        flow_styles::active_for(&conn, context.category.as_str())
+            .ok()
+            .flatten()
+    };
+    let style_hint = style.map(|s| StyleHint {
+        category: s.app_category,
+        tone: s.tone,
+        system_prompt: s.system_prompt,
+        writing_sample: s.writing_sample,
+    });
+
     // LLM polish (no-op for CleanupLevel::None; fall back to raw text on error).
     let polished = polisher
-        .polish(corrected.clone(), level)
+        .polish(corrected.clone(), level, style_hint)
         .await
         .unwrap_or(corrected);
 
@@ -135,10 +158,26 @@ pub async fn process(app: AppHandle) {
         let conn = db.lock();
         snippets::active_expansions(&conn).unwrap_or_default()
     };
-    let text = text_processing::expand_snippets(&finalized, &expansions);
+    let mut text = text_processing::expand_snippets(&finalized, &expansions);
     if text.is_empty() {
         window_mgmt::fail(&app, "No speech detected");
         return;
+    }
+
+    // Phase 7: auto-apply transforms for the focused app's category (after
+    // polish, just before injection). Each runs its saved prompt over the text
+    // via the LLM; on error or empty output we keep the prior text so a
+    // transform failure never blocks the dictation.
+    let auto_transforms = {
+        let conn = db.lock();
+        transforms::auto_apply_for(&conn, context.category.as_str()).unwrap_or_default()
+    };
+    for t in auto_transforms {
+        if let Ok(out) = crate::command_mode::run_transform(&t.system_prompt, &text).await {
+            if !out.is_empty() {
+                text = out;
+            }
+        }
     }
 
     // Show the polished/finalized result before injecting.
@@ -161,14 +200,24 @@ pub async fn process(app: AppHandle) {
     // Phase 3: persist this dictation to history (after all awaits, so we never
     // hold the DB guard across one). Best-effort — a failed insert must not
     // break the user-visible flow.
-    persist(&app, &db, &raw, &text, level, &lang_label, duration_ms, audio_bytes);
+    persist(
+        &app,
+        &db,
+        &raw,
+        &text,
+        level,
+        &lang_label,
+        duration_ms,
+        audio_bytes,
+        &context,
+    );
 
     let _ = app.emit_to(events::FLOWBAR, events::DONE, events::DonePayload { text });
     window_mgmt::hide_flowbar_after(app, 900);
 }
 
 /// Save the dictation to the history DB, optionally writing the WAV to disk for
-/// replay/retention. `app_*` fields stay empty until Phase 6 adds context.
+/// replay/retention. `app_*` fields carry the Phase 6 focused-app context.
 #[allow(clippy::too_many_arguments)]
 fn persist(
     app: &AppHandle,
@@ -179,6 +228,7 @@ fn persist(
     language: &str,
     duration_ms: i64,
     wav: Option<Vec<u8>>,
+    context: &AppContext,
 ) {
     let created_at = chrono::Utc::now().timestamp_millis();
     let word_count = text.split_whitespace().count() as i64;
@@ -199,9 +249,9 @@ fn persist(
         cleanup_level: level.as_str().to_string(),
         language: language.to_string(),
         audio_path,
-        app_process: String::new(),
-        app_title: String::new(),
-        app_category: String::new(),
+        app_process: context.process.clone(),
+        app_title: context.title.clone(),
+        app_category: context.category.as_str().to_string(),
         word_count,
         duration_ms,
         was_polished,
@@ -210,7 +260,14 @@ fn persist(
 }
 
 fn friendly_error(err: &str) -> String {
-    if err.contains("API key") {
+    if err.contains("not downloaded") || err.contains("No local") {
+        // Local backend selected but no usable model (and no Groq fallback).
+        err.to_string()
+    } else if err.contains("not built in") {
+        "Local models aren't available in this build".into()
+    } else if err.contains("Failed to load") || err.contains("load model") {
+        "Local model failed to load — try re-downloading it".into()
+    } else if err.contains("API key") {
         "Set your Groq API key in Settings".into()
     } else if err.contains("401") || err.contains("invalid_api_key") {
         "Invalid Groq API key".into()

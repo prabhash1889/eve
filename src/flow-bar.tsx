@@ -27,6 +27,8 @@ function FlowBar() {
   const [levels, setLevels] = useState<number[]>(() => new Array(BARS).fill(0.05));
   const [transcript, setTranscript] = useState("");
   const [polished, setPolished] = useState(false);
+  // Phase 7: "command" tints the bar so Command Mode is visually distinct.
+  const [mode, setMode] = useState<"dictation" | "command">("dictation");
   // Flow Bar appearance, pushed from Rust on `start`.
   const [scale, setScale] = useState(1);
   const [opacity, setOpacity] = useState(1);
@@ -37,6 +39,7 @@ function FlowBar() {
         if (e.payload) {
           setScale(e.payload.bubbleScale || 1);
           setOpacity(e.payload.bubbleOpacity ?? 1);
+          setMode(e.payload.mode === "command" ? "command" : "dictation");
         }
         setState("listening");
         setTranscript("");
@@ -77,10 +80,16 @@ function FlowBar() {
   return (
     <div className="flex h-screen w-screen items-end justify-center p-2">
       <div
-        className="flex items-center gap-3 rounded-full border border-border bg-surface/95 px-4 py-2.5 shadow-lg backdrop-blur transition-all duration-300 ease-out"
+        className={
+          "flex items-center gap-3 rounded-full border bg-surface/95 px-4 py-2.5 shadow-lg backdrop-blur transition-all duration-300 ease-out " +
+          (mode === "command" ? "border-violet-400/70 ring-2 ring-violet-400/40" : "border-border")
+        }
         style={{ transform: `scale(${scale})`, opacity, transformOrigin: "center bottom" }}
       >
-        <StatusDot state={state} />
+        <StatusDot state={state} mode={mode} />
+        {mode === "command" && state === "listening" && (
+          <span className="text-xs font-medium text-violet-500">Command</span>
+        )}
         {state === "listening" && <Waveform levels={levels} />}
         {state === "processing" && <Dots />}
         {state === "preview" && (
@@ -114,15 +123,18 @@ function FlowBar() {
   );
 }
 
-function StatusDot({ state }: { state: State }) {
+function StatusDot({ state, mode }: { state: State; mode: "dictation" | "command" }) {
+  const active = state === "listening" || state === "processing" || state === "preview";
   const color =
-    state === "listening"
-      ? "bg-accent"
-      : state === "processing" || state === "preview"
-        ? "bg-accent/70"
-        : state === "error"
-          ? "bg-danger"
-          : "bg-ink-faint";
+    active && mode === "command"
+      ? "bg-violet-500"
+      : state === "listening"
+        ? "bg-accent"
+        : state === "processing" || state === "preview"
+          ? "bg-accent/70"
+          : state === "error"
+            ? "bg-danger"
+            : "bg-ink-faint";
   return (
     <span
       className={`h-2.5 w-2.5 shrink-0 rounded-full transition-colors duration-300 ${color} ${

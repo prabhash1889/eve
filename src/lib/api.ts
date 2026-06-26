@@ -9,16 +9,24 @@ export type CleanupLevel = "none" | "light" | "medium" | "high";
 
 export type AudioStoragePolicy = "store" | "delete24h" | "never";
 
+/** Which backend runs an AI step: cloud Groq or on-device local model. */
+export type ModelBackend = "groq" | "local";
+
 export interface Settings {
   shortcut: string;
   language: string; // "auto" or an ISO-639-1 code
   cleanupLevel: CleanupLevel;
   injectStrategy: "paste" | "type";
   copyShortcut: string;
+  commandShortcut: string; // Phase 7: Command Mode push-to-talk shortcut
   bubbleScale: number; // Flow Bar size multiplier (1.0 = default)
   bubbleOpacity: number; // Flow Bar opacity (0–1)
   audioStoragePolicy: AudioStoragePolicy; // retention of saved audio (Phase 3)
   audioRetentionHours: number; // window for "delete24h"
+  transcriptionBackend: ModelBackend; // local models: speech→text backend
+  polishBackend: ModelBackend; // local models: polish backend
+  localWhisperModel: string; // catalog id of the selected local Whisper model
+  localLlmModel: string; // catalog id of the selected local polish LLM
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -27,10 +35,15 @@ export const DEFAULT_SETTINGS: Settings = {
   cleanupLevel: "none",
   injectStrategy: "paste",
   copyShortcut: "CmdOrCtrl+Shift+C",
+  commandShortcut: "CmdOrCtrl+Shift+Alt+Space",
   bubbleScale: 1.0,
   bubbleOpacity: 1.0,
   audioStoragePolicy: "delete24h",
   audioRetentionHours: 24,
+  transcriptionBackend: "groq",
+  polishBackend: "groq",
+  localWhisperModel: "",
+  localLlmModel: "",
 };
 
 // ---------------------------------------------------------------------------
@@ -98,8 +111,73 @@ export interface Snippet {
   updatedAt: number;
 }
 
+// ---------------------------------------------------------------------------
+// Flow Styles (Phase 6) — mirrors src-tauri/src/db/flow_styles.rs
+// ---------------------------------------------------------------------------
+
+/** Focused-app categories (mirror context::active_window::AppCategory). */
+export type AppCategory = "email" | "workmsg" | "personalmsg" | "code" | "other";
+
+/** Built-in voices a Flow Style can apply. */
+export type FlowTone = "casual" | "formal" | "excited" | "very_casual";
+
+export interface FlowStyle {
+  id: number;
+  name: string;
+  appCategory: AppCategory;
+  tone: FlowTone;
+  systemPrompt: string;
+  writingSample: string;
+  isActive: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// Transforms (Phase 7) — mirrors src-tauri/src/db/transforms.rs
+// ---------------------------------------------------------------------------
+
+export interface Transform {
+  id: number;
+  name: string;
+  systemPrompt: string;
+  shortcut: string; // optional global accelerator ("" = none)
+  autoApply: boolean; // run after every dictation
+  appCategory: string; // scope auto-apply to a category ("" = all apps)
+  isActive: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
 /** Convert a stored audio file path into an asset:// URL the `<audio>` tag can load. */
 export const audioSrc = (path: string): string => convertFileSrc(path);
+
+// ---------------------------------------------------------------------------
+// Local models — mirrors src-tauri/src/models.rs
+// ---------------------------------------------------------------------------
+
+export type ModelKind = "whisper" | "llm";
+
+export interface ModelStatus {
+  id: string;
+  kind: ModelKind;
+  name: string;
+  sizeBytes: number;
+  installed: boolean;
+  downloading: boolean;
+  active: boolean; // selected in Settings for its kind
+}
+
+export interface ModelProgressPayload {
+  id: string;
+  downloaded: number;
+  total: number;
+}
+
+export interface ModelStatusPayload {
+  id: string;
+  message: string | null; // present only on model://error
+}
 
 // ---------------------------------------------------------------------------
 // Pipeline events (emitted by Rust to the Flow Bar window)
@@ -115,6 +193,10 @@ export const EVT = {
   transcriptRaw: "session://transcript-raw",
   transcriptPolished: "session://transcript-polished",
   copied: "session://copied",
+  // Local-model download lifecycle (emitted to the Hub window).
+  modelProgress: "model://progress",
+  modelDone: "model://done",
+  modelError: "model://error",
 } as const;
 
 export interface DonePayload {
@@ -129,6 +211,7 @@ export interface TranscriptPayload {
 export interface StartPayload {
   bubbleScale: number;
   bubbleOpacity: number;
+  mode: "dictation" | "command"; // Phase 7: Command Mode tints the Flow Bar
 }
 
 export function on<T>(event: string, cb: EventCallback<T>): Promise<UnlistenFn> {
@@ -170,4 +253,46 @@ export const api = {
   deleteSnippet: (id: number) => invoke<void>("delete_snippet", { id }),
   importSnippetsJson: (json: string) => invoke<number>("import_snippets_json", { json }),
   exportSnippetsJson: () => invoke<string>("export_snippets_json"),
+  // Flow Styles (Phase 6)
+  getFlowStyles: () => invoke<FlowStyle[]>("get_flow_styles"),
+  upsertFlowStyle: (
+    appCategory: AppCategory,
+    tone: FlowTone,
+    systemPrompt: string,
+    writingSample: string,
+    isActive: boolean,
+    name = "",
+  ) =>
+    invoke<number>("upsert_flow_style", {
+      name,
+      appCategory,
+      tone,
+      systemPrompt,
+      writingSample,
+      isActive,
+    }),
+  deleteFlowStyle: (id: number) => invoke<void>("delete_flow_style", { id }),
+  // Command Mode + Transforms (Phase 7)
+  setCommandShortcut: (shortcut: string) =>
+    invoke<void>("set_command_shortcut", { shortcut }),
+  commandModeRewrite: (instruction: string, selectedText: string | null) =>
+    invoke<string>("command_mode_rewrite", { selectedText, instruction }),
+  getTransforms: () => invoke<Transform[]>("get_transforms"),
+  upsertTransform: (t: {
+    id: number | null;
+    name: string;
+    systemPrompt: string;
+    shortcut: string;
+    autoApply: boolean;
+    appCategory: string;
+    isActive: boolean;
+  }) => invoke<number>("upsert_transform", t),
+  deleteTransform: (id: number) => invoke<void>("delete_transform", { id }),
+  applyTransform: (id: number, text: string) =>
+    invoke<string>("apply_transform", { id, text }),
+  // Local models
+  listModels: () => invoke<ModelStatus[]>("list_models"),
+  downloadModel: (id: string) => invoke<void>("download_model", { id }),
+  cancelModelDownload: (id: string) => invoke<void>("cancel_model_download", { id }),
+  deleteModel: (id: string) => invoke<void>("delete_model", { id }),
 };

@@ -10,6 +10,16 @@ edition = "2021"
 name = "eve_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# On-device transcription/polish. OFF by default so `cargo check`/`cargo build`
+# work without a native toolchain (the local backends then report "not built in"
+# and the app falls back to Groq). Enable for real on-device inference with
+# `cargo build --features local-models` / `tauri build -- --features local-models`
+# — this requires CMake + a C/C++ compiler (LLVM/clang or MSVC) to build
+# whisper.cpp / llama.cpp, and noticeably increases build time and binary size.
+default = []
+local-models = ["dep:whisper-rs", "dep:llama-cpp-2"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -28,8 +38,17 @@ hound = "3"
 # Text injection
 enigo = "0.3"
 
-# Groq HTTP API (multipart upload + JSON)
-reqwest = { version = "0.12", features = ["multipart", "json"] }
+# Groq HTTP API (multipart upload + JSON) + streaming model downloads.
+reqwest = { version = "0.12", features = ["multipart", "json", "stream"] }
+
+# Local-model download manager: streamed download + checksum verification.
+sha2 = "0.10"
+futures-util = "0.3"
+
+# On-device inference (behind the `local-models` feature — see [features]).
+# These compile whisper.cpp / llama.cpp via CMake + a C/C++ toolchain.
+whisper-rs = { version = "0.14", optional = true }
+llama-cpp-2 = { version = "0.1", optional = true }
 
 # Secure API-key storage in the OS credential store (Windows Credential Manager).
 # For macOS/Linux later, add the matching backend feature under a target table.
@@ -50,4 +69,6 @@ windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Threading",
+    "Win32_System_ProcessStatus",
 ] }
