@@ -15,6 +15,8 @@ import {
   AudioLines,
   Cpu,
   Wand2,
+  BarChart3,
+  Code2,
 } from "lucide-react";
 import { api, DEFAULT_SETTINGS, type Settings, type CleanupLevel, type Stats } from "./lib/api";
 import { HistoryPage } from "./pages/HistoryPage";
@@ -23,6 +25,7 @@ import { SnippetsPage } from "./pages/SnippetsPage";
 import { StylesPage } from "./pages/StylesPage";
 import { TransformsPage } from "./pages/TransformsPage";
 import { LocalModelsPage } from "./pages/LocalModelsPage";
+import { InsightsPage } from "./pages/InsightsPage";
 
 const SHORTCUT_CHOICES = ["F8", "F9", "F10", "CmdOrCtrl+Shift+Space", "Alt+Q"];
 
@@ -62,6 +65,7 @@ const COMMAND_SHORTCUT_CHOICES = [
 
 type Nav =
   | "dashboard"
+  | "insights"
   | "settings"
   | "dictionary"
   | "snippets"
@@ -103,6 +107,7 @@ export function Hub() {
         </div>
 
         <NavItem icon={<LayoutDashboard size={18} />} label="Home" active={nav === "dashboard"} onClick={() => setNav("dashboard")} />
+        <NavItem icon={<BarChart3 size={18} />} label="Insights" active={nav === "insights"} onClick={() => setNav("insights")} />
         <NavItem icon={<BookMarked size={18} />} label="Dictionary" active={nav === "dictionary"} onClick={() => setNav("dictionary")} />
         <NavItem icon={<Zap size={18} />} label="Snippets" active={nav === "snippets"} onClick={() => setNav("snippets")} />
         <NavItem icon={<Sparkles size={18} />} label="Styles" active={nav === "styles"} onClick={() => setNav("styles")} />
@@ -126,6 +131,8 @@ export function Hub() {
         <div className="mx-auto max-w-2xl px-10 py-10">
           {nav === "dashboard" ? (
             <Dashboard settings={settings} hasKey={hasKey} onConfigure={() => setNav("settings")} />
+          ) : nav === "insights" ? (
+            <InsightsPage />
           ) : nav === "dictionary" ? (
             <DictionaryPage />
           ) : nav === "snippets" ? (
@@ -417,6 +424,25 @@ function SettingsPanel({
           Hold this and speak an instruction. With text selected, Eve rewrites it; with
           nothing selected, it generates text at your cursor. Uses Groq Llama (needs your
           API key).
+        </p>
+      </Section>
+
+      <Section title="Vibe-coding" icon={<Code2 size={16} />}>
+        <label className="flex cursor-pointer items-center justify-between gap-3">
+          <span className="text-sm text-ink-soft">
+            In code editors, wrap spoken{" "}
+            <span className="font-medium text-ink">“backtick X backtick”</span> in literal
+            backticks before injecting.
+          </span>
+          <input
+            type="checkbox"
+            checked={settings.vibeCoding}
+            onChange={(e) => persist({ ...settings, vibeCoding: e.target.checked })}
+            className="size-4 shrink-0 accent-accent"
+          />
+        </label>
+        <p className="mt-2 text-xs text-ink-faint">
+          Only applies when the focused app is detected as a code editor (VS Code, Cursor…).
         </p>
       </Section>
 

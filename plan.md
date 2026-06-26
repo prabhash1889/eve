@@ -27,7 +27,7 @@ Local on-device Whisper is deferred behind a trait (not built in v1).
 | 6 | Flow Styles + context awareness | ✅ Done (build-verified) |
 | L | Local models (on-device transcription + polish) | ✅ Done (default build; `local-models` feature untested) |
 | 7 | Command Mode + Transforms | ✅ Done (build-verified) |
-| 8 | Insights + vibe-coding | ⬜ |
+| 8 | Insights + vibe-coding | ✅ Done (build-verified) |
 | 9 | Scratchpad | ⬜ |
 | 10 | Onboarding + languages + auto-pause | ⬜ |
 | 11 | Packaging + signing + auto-update | ⬜ |
@@ -428,9 +428,34 @@ section. Gates green: `cargo check` (0 warnings), `cargo test` (22/22),
 **Verify:** select text in VS Code → Command-Mode shortcut → say "make this more
 concise" → selection is replaced.
 
-## ⬜ Phase 8 — Insights + vibe-coding
+## ✅ Phase 8 — Insights + vibe-coding — DONE (build-verified)
 
 **Goal:** usage analytics dashboard + developer-specific niceties.
+
+**Status:** built. `pipeline::process` now measures a per-session correction
+count (`text_processing::count_edits` — word-level Levenshtein between the raw
+transcript and the final injected text, a proxy for filler/punctuation/
+dictionary/polish edits) and folds each finished dictation into the previously
+unused `daily_stats` rollup via new `queries::record_daily` (counters via an
+`ON CONFLICT(date)` upsert keyed on the session's *local* calendar day, plus a
+read-modify-write of the `app_usage` JSON map). `queries::get_stats` was widened
+to also return `corrections` (summed from `daily_stats`), an `app_usage`
+breakdown and a per-day `daily` series (both grouped straight from
+`transcripts` so history counts too). Vibe-coding: a new `Settings.vibe_coding`
+toggle (default on) makes `text_processing::apply_vibe_coding` wrap spoken
+"backtick X backtick" spans in literal backticks — applied in `pipeline` only
+when the focused-app category is `code` (Phase 6 context), per line so
+finalize's newlines survive. New `pages/InsightsPage.tsx` (range selector; WPM
+radial gauge + "Top X%" badge vs. the 50 WPM typing benchmark; cleanup-per-100-
+words card; app-usage horizontal bars; a 13-week streak heatmap with current-
+streak count; and a "Your Voice" profile that unlocks at 2000 all-time words) +
+Hub nav item and a Vibe-coding settings section. All charts are hand-rolled
+SVG/CSS — **no `recharts`/`d3`/`date-fns`** were added (the rest of the UI is
+Tailwind-only; pulling in charting libs for a gauge + a heatmap wasn't worth the
+weight). Gates green: `cargo test` (26/26 incl. 4 new vibe/edit-count tests),
+`cargo clippy` (no new warnings), `npm run build` clean. **Untested:** live
+multi-session accumulation (needs a mic + Groq key over several dictations) and
+vibe-coding backtick wrapping inside a real editor.
 
 **Deliverables:**
 1. **Aggregation** — track a per-session correction count in `pipeline.rs`

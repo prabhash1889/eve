@@ -71,6 +71,15 @@ pub struct Settings {
     /// Catalog id of the local polish LLM to use (e.g. "qwen2.5-1.5b-instruct").
     #[serde(default)]
     pub local_llm_model: String,
+    /// Phase 8 vibe-coding: when the focused app is a code editor (Phase 6
+    /// `Code` category), wrap spoken "backtick X backtick" spans in literal
+    /// backticks before injection. Defaults on.
+    #[serde(default = "default_vibe_coding")]
+    pub vibe_coding: bool,
+}
+
+fn default_vibe_coding() -> bool {
+    true
 }
 
 fn default_copy_shortcut() -> String {
@@ -112,6 +121,7 @@ impl Default for Settings {
             polish_backend: default_backend(),
             local_whisper_model: String::new(),
             local_llm_model: String::new(),
+            vibe_coding: default_vibe_coding(),
         }
     }
 }

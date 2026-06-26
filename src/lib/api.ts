@@ -27,6 +27,7 @@ export interface Settings {
   polishBackend: ModelBackend; // local models: polish backend
   localWhisperModel: string; // catalog id of the selected local Whisper model
   localLlmModel: string; // catalog id of the selected local polish LLM
+  vibeCoding: boolean; // Phase 8: wrap spoken "backtick X backtick" in code editors
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -44,6 +45,7 @@ export const DEFAULT_SETTINGS: Settings = {
   polishBackend: "groq",
   localWhisperModel: "",
   localLlmModel: "",
+  vibeCoding: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -74,10 +76,25 @@ export interface HistoryPage {
   perPage: number;
 }
 
+export interface AppUsage {
+  category: string;
+  sessions: number;
+  words: number;
+}
+
+export interface DailyPoint {
+  date: string; // YYYY-MM-DD (local)
+  words: number;
+  sessions: number;
+}
+
 export interface Stats {
   totalWords: number;
   totalSessions: number;
   totalMs: number;
+  corrections: number; // Phase 8: summed per-session cleanup edits
+  appUsage: AppUsage[];
+  daily: DailyPoint[];
   since: number;
 }
 

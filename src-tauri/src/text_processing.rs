@@ -277,6 +277,75 @@ fn levenshtein(a: &str, b: &str) -> usize {
 }
 
 // ---------------------------------------------------------------------------
+// Vibe-coding (post-finalize, code editors only — Phase 8)
+// ---------------------------------------------------------------------------
+
+/// Wrap spoken "backtick X backtick" spans in literal backticks for code
+/// editors: "set backtick is active backtick to true" → "set `is active` to
+/// true". An unterminated `backtick` (no closing marker) is left as the plain
+/// word so dictation isn't swallowed. Applied per line so finalize's newlines
+/// (lists, paragraphs) survive.
+pub fn apply_vibe_coding(text: &str) -> String {
+    text.split('\n')
+        .map(wrap_backticks_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn wrap_backticks_line(line: &str) -> String {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    let mut i = 0;
+    while i < words.len() {
+        if strip_word(words[i]) == "backtick" {
+            // Find the matching closing "backtick".
+            if let Some(close) = (i + 1..words.len()).find(|&j| strip_word(words[j]) == "backtick")
+            {
+                let inner = words[i + 1..close].join(" ");
+                // Skip empty pairs ("backtick backtick") entirely.
+                if !inner.is_empty() {
+                    out.push(format!("`{inner}`"));
+                }
+                i = close + 1;
+                continue;
+            }
+        }
+        out.push(words[i].to_string());
+        i += 1;
+    }
+    out.join(" ")
+}
+
+// ---------------------------------------------------------------------------
+// Edit counting (Insights — Phase 8)
+// ---------------------------------------------------------------------------
+
+/// Approximate the number of word-level edits (insertions, deletions,
+/// substitutions) between the raw transcript and the final injected text. Used
+/// as the Insights "corrections" metric — a cheap proxy for how much cleanup a
+/// dictation needed. Comparison is case-insensitive over whitespace tokens.
+pub fn count_edits(before: &str, after: &str) -> usize {
+    let a: Vec<String> = before.split_whitespace().map(|w| w.to_lowercase()).collect();
+    let b: Vec<String> = after.split_whitespace().map(|w| w.to_lowercase()).collect();
+    word_levenshtein(&a, &b)
+}
+
+/// Levenshtein edit distance over a sequence of words (token-level).
+fn word_levenshtein(a: &[String], b: &[String]) -> usize {
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0; b.len() + 1];
+    for (i, wa) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, wb) in b.iter().enumerate() {
+            let cost = if wa == wb { 0 } else { 1 };
+            cur[j + 1] = (prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+// ---------------------------------------------------------------------------
 // Spoken punctuation (post-LLM)
 // ---------------------------------------------------------------------------
 
@@ -663,6 +732,35 @@ mod tests {
         let snips = vec![("sig".to_string(), "Best, Bob".to_string())];
         let s = "nothing to expand here";
         assert_eq!(expand_snippets(s, &snips), s);
+    }
+
+    #[test]
+    fn vibe_wraps_backtick_spans() {
+        assert_eq!(
+            apply_vibe_coding("set backtick is active backtick to true"),
+            "set `is active` to true"
+        );
+    }
+
+    #[test]
+    fn vibe_leaves_unterminated_backtick() {
+        // A lone "backtick" with no closing marker is left as a plain word.
+        assert_eq!(apply_vibe_coding("the backtick key"), "the backtick key");
+    }
+
+    #[test]
+    fn vibe_preserves_newlines() {
+        assert_eq!(
+            apply_vibe_coding("call backtick foo backtick\nthen backtick bar backtick"),
+            "call `foo`\nthen `bar`"
+        );
+    }
+
+    #[test]
+    fn count_edits_measures_word_changes() {
+        // One filler removed + one word substituted = 2 edits.
+        assert_eq!(count_edits("um send it now", "send it later"), 2);
+        assert_eq!(count_edits("same text here", "same text here"), 0);
     }
 
     #[test]

@@ -69,7 +69,7 @@ pub async fn process(app: AppHandle) {
         }
     };
 
-    let (language, lang_label, level, strategy, store_audio) = {
+    let (language, lang_label, level, strategy, store_audio, vibe_coding) = {
         let s = settings.lock();
         let lang = if s.language == "auto" {
             None
@@ -82,6 +82,7 @@ pub async fn process(app: AppHandle) {
             s.cleanup_level,
             s.inject_strategy.clone(),
             s.audio_storage_policy != "never",
+            s.vibe_coding,
         )
     };
 
@@ -164,6 +165,13 @@ pub async fn process(app: AppHandle) {
         return;
     }
 
+    // Phase 8: vibe-coding — in code editors, wrap spoken "backtick X backtick"
+    // spans in literal backticks. Gated on the setting + the focused-app being
+    // the Code category (Phase 6 context).
+    if vibe_coding && context.category.as_str() == "code" {
+        text = text_processing::apply_vibe_coding(&text);
+    }
+
     // Phase 7: auto-apply transforms for the focused app's category (after
     // polish, just before injection). Each runs its saved prompt over the text
     // via the LLM; on error or empty output we keep the prior text so a
@@ -197,6 +205,10 @@ pub async fn process(app: AppHandle) {
 
     *last_transcript.lock() = Some(text.clone());
 
+    // Phase 8: how much cleanup this dictation needed (raw → final word edits),
+    // folded into the daily rollup for the Insights page.
+    let corrections = text_processing::count_edits(&raw, &text) as i64;
+
     // Phase 3: persist this dictation to history (after all awaits, so we never
     // hold the DB guard across one). Best-effort — a failed insert must not
     // break the user-visible flow.
@@ -208,6 +220,7 @@ pub async fn process(app: AppHandle) {
         level,
         &lang_label,
         duration_ms,
+        corrections,
         audio_bytes,
         &context,
     );
@@ -227,6 +240,7 @@ fn persist(
     level: CleanupLevel,
     language: &str,
     duration_ms: i64,
+    corrections: i64,
     wav: Option<Vec<u8>>,
     context: &AppContext,
 ) {
@@ -256,7 +270,17 @@ fn persist(
         duration_ms,
         was_polished,
     };
-    let _ = queries::insert_transcript(&db.lock(), &row);
+    let conn = db.lock();
+    let _ = queries::insert_transcript(&conn, &row);
+    // Phase 8: fold this session into the daily rollup for the Insights page.
+    let _ = queries::record_daily(
+        &conn,
+        created_at,
+        word_count,
+        duration_ms,
+        corrections,
+        context.category.as_str(),
+    );
 }
 
 fn friendly_error(err: &str) -> String {

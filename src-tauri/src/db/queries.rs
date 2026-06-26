@@ -50,6 +50,25 @@ pub struct HistoryPage {
     pub per_page: i64,
 }
 
+/// Per-app-category usage breakdown (Phase 8 Insights).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppUsage {
+    pub category: String,
+    pub sessions: i64,
+    pub words: i64,
+}
+
+/// One day's totals, for the Insights streak heatmap (Phase 8).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyPoint {
+    /// Local calendar day, `YYYY-MM-DD`.
+    pub date: String,
+    pub words: i64,
+    pub sessions: i64,
+}
+
 /// Aggregate usage over a time window.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +76,13 @@ pub struct Stats {
     pub total_words: i64,
     pub total_sessions: i64,
     pub total_ms: i64,
+    /// Sum of per-session correction counts (filler/punctuation/dictionary/polish
+    /// edits) recorded in `daily_stats` within the window (Phase 8).
+    pub corrections: i64,
+    /// Sessions + words grouped by focused-app category (Phase 8).
+    pub app_usage: Vec<AppUsage>,
+    /// Per-day word/session totals for the streak heatmap (Phase 8).
+    pub daily: Vec<DailyPoint>,
     /// The epoch-ms lower bound used for this window (0 = all time).
     pub since: i64,
 }
@@ -204,20 +230,127 @@ pub fn clear_history(conn: &Connection, now: i64) -> rusqlite::Result<()> {
 }
 
 pub fn get_stats(conn: &Connection, since: i64) -> rusqlite::Result<Stats> {
-    conn.query_row(
+    let (total_words, total_sessions, total_ms) = conn.query_row(
         "SELECT COALESCE(SUM(word_count), 0), COUNT(*), COALESCE(SUM(duration_ms), 0)
            FROM transcripts
           WHERE deleted_at IS NULL AND created_at >= ?1",
         params![since],
-        |r| {
-            Ok(Stats {
-                total_words: r.get(0)?,
-                total_sessions: r.get(1)?,
-                total_ms: r.get(2)?,
-                since,
-            })
-        },
-    )
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+    )?;
+
+    // Corrections come from the forward-only `daily_stats` rollup. Compare the
+    // text `date` column against `since` converted to a local calendar day.
+    let corrections: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(correction_count), 0) FROM daily_stats
+              WHERE date >= date(?1 / 1000, 'unixepoch', 'localtime')",
+            params![since],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    // App-usage breakdown (empty category normalized to "other").
+    let app_usage = {
+        let mut stmt = conn.prepare(
+            "SELECT CASE WHEN app_category = '' THEN 'other' ELSE app_category END AS cat,
+                    COUNT(*), COALESCE(SUM(word_count), 0)
+               FROM transcripts
+              WHERE deleted_at IS NULL AND created_at >= ?1
+              GROUP BY cat
+              ORDER BY COUNT(*) DESC",
+        )?;
+        let rows = stmt
+            .query_map(params![since], |r| {
+                Ok(AppUsage {
+                    category: r.get(0)?,
+                    sessions: r.get(1)?,
+                    words: r.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+
+    // Per-day series (local calendar day) for the streak heatmap.
+    let daily = {
+        let mut stmt = conn.prepare(
+            "SELECT date(created_at / 1000, 'unixepoch', 'localtime') AS d,
+                    COALESCE(SUM(word_count), 0), COUNT(*)
+               FROM transcripts
+              WHERE deleted_at IS NULL AND created_at >= ?1
+              GROUP BY d
+              ORDER BY d ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![since], |r| {
+                Ok(DailyPoint {
+                    date: r.get(0)?,
+                    words: r.get(1)?,
+                    sessions: r.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+
+    Ok(Stats {
+        total_words,
+        total_sessions,
+        total_ms,
+        corrections,
+        app_usage,
+        daily,
+        since,
+    })
+}
+
+/// Phase 8: fold one finished dictation into the `daily_stats` rollup, keyed by
+/// the session's local calendar day (derived from `created_at` so reads and
+/// writes use the same day boundary). Increments the counters and bumps the
+/// session's app-category tally inside the `app_usage` JSON map.
+pub fn record_daily(
+    conn: &Connection,
+    created_at: i64,
+    words: i64,
+    duration_ms: i64,
+    corrections: i64,
+    category: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO daily_stats
+            (date, word_count, session_count, total_ms, correction_count, app_usage)
+         VALUES (date(?1 / 1000, 'unixepoch', 'localtime'), ?2, 1, ?3, ?4, '{}')
+         ON CONFLICT(date) DO UPDATE SET
+            word_count       = word_count + ?2,
+            session_count    = session_count + 1,
+            total_ms         = total_ms + ?3,
+            correction_count = correction_count + ?4",
+        params![created_at, words, duration_ms, corrections],
+    )?;
+
+    // Read-modify-write the JSON usage map for this day (SQLite has no native
+    // JSON object merge with arithmetic we can lean on portably).
+    let date: String = conn.query_row(
+        "SELECT date(?1 / 1000, 'unixepoch', 'localtime')",
+        params![created_at],
+        |r| r.get(0),
+    )?;
+    let usage_json: String = conn.query_row(
+        "SELECT app_usage FROM daily_stats WHERE date = ?1",
+        params![date],
+        |r| r.get(0),
+    )?;
+    let mut map: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&usage_json).unwrap_or_default();
+    let cat = if category.is_empty() { "other" } else { category };
+    let n = map.get(cat).and_then(|v| v.as_i64()).unwrap_or(0) + 1;
+    map.insert(cat.to_string(), serde_json::json!(n));
+    let updated = serde_json::to_string(&map).unwrap_or_else(|_| "{}".into());
+    conn.execute(
+        "UPDATE daily_stats SET app_usage = ?2 WHERE date = ?1",
+        params![date, updated],
+    )?;
+    Ok(())
 }
 
 /// Find saved audio recorded before `cutoff`, clear their `audio_path`, and
