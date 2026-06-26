@@ -149,6 +149,134 @@ fn is_word_boundary(s: &str, start: usize, end: usize) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Snippet expansion (post-finalize, pre-injection)
+// ---------------------------------------------------------------------------
+
+/// Trigger phrases at or below this length (in chars, normalized) are matched
+/// with a 1-edit fuzzy tolerance to absorb minor mistranscriptions. Anything
+/// shorter than 3 chars is never fuzzy-matched (it would match almost anything).
+const FUZZY_TRIGGER_RANGE: std::ops::RangeInclusive<usize> = 3..=6;
+
+/// Expand spoken snippet triggers into their long-form text.
+///
+/// `snippets` is a list of `(trigger, expansion)` pairs (e.g.
+/// `("my email", "bob@example.com")`). Matching is whole-phrase and
+/// case-insensitive; short triggers also match within 1 edit (Levenshtein) so a
+/// slightly-misheard trigger still fires. Callers should pass the longest
+/// trigger first so multi-word phrases win over their substrings.
+///
+/// Surrounding punctuation and whitespace are preserved — only the matched word
+/// span is replaced, so "send my email." becomes "send bob@example.com.".
+pub fn expand_snippets(text: &str, snippets: &[(String, String)]) -> String {
+    let mut result = text.to_string();
+    for (trigger, expansion) in snippets {
+        if trigger.trim().is_empty() {
+            continue;
+        }
+        result = replace_phrase_ci(&result, trigger, expansion);
+    }
+    result
+}
+
+/// A whitespace token reduced to its alphanumeric core, with the byte span of
+/// that core within the source string.
+struct Token {
+    start: usize,
+    end: usize,
+    lower: String,
+}
+
+/// Split `text` into word tokens, recording each token's lowercased
+/// alphanumeric core and its byte span (surrounding punctuation excluded).
+/// Pure-punctuation tokens are dropped so they sit in the gaps between matches.
+fn tokenize(text: &str) -> Vec<Token> {
+    let mut tokens = Vec::new();
+    let mut start: Option<usize> = None;
+    let push = |s: usize, e: usize, tokens: &mut Vec<Token>| {
+        let raw = &text[s..e];
+        let front = raw.trim_start_matches(|c: char| !c.is_alphanumeric());
+        let core = front.trim_end_matches(|c: char| !c.is_alphanumeric());
+        if core.is_empty() {
+            return;
+        }
+        let core_start = s + (raw.len() - front.len());
+        tokens.push(Token {
+            start: core_start,
+            end: core_start + core.len(),
+            lower: core.to_lowercase(),
+        });
+    };
+    for (idx, ch) in text.char_indices() {
+        if ch.is_whitespace() {
+            if let Some(s) = start.take() {
+                push(s, idx, &mut tokens);
+            }
+        } else if start.is_none() {
+            start = Some(idx);
+        }
+    }
+    if let Some(s) = start {
+        push(s, text.len(), &mut tokens);
+    }
+    tokens
+}
+
+/// Replace every non-overlapping whole-phrase occurrence of `trigger` in `text`
+/// with `expansion`, case-insensitively (plus 1-edit fuzz for short triggers).
+fn replace_phrase_ci(text: &str, trigger: &str, expansion: &str) -> String {
+    let trigger_words: Vec<String> = trigger.split_whitespace().map(str::to_lowercase).collect();
+    if trigger_words.is_empty() {
+        return text.to_string();
+    }
+    let trigger_norm = trigger_words.join(" ");
+    let fuzzy = FUZZY_TRIGGER_RANGE.contains(&trigger_norm.chars().count());
+    let k = trigger_words.len();
+
+    let tokens = tokenize(text);
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0; // bytes of `text` already emitted
+    let mut i = 0;
+    while i < tokens.len() {
+        if i + k <= tokens.len() {
+            let candidate = tokens[i..i + k]
+                .iter()
+                .map(|t| t.lower.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let is_match = candidate == trigger_norm
+                || (fuzzy && levenshtein(&candidate, &trigger_norm) <= 1);
+            if is_match {
+                out.push_str(&text[cursor..tokens[i].start]);
+                out.push_str(expansion);
+                cursor = tokens[i + k - 1].end;
+                i += k;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&text[cursor..]);
+    out
+}
+
+/// Levenshtein edit distance between two strings (over Unicode scalar values).
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            cur[j + 1] = (prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+// ---------------------------------------------------------------------------
 // Spoken punctuation (post-LLM)
 // ---------------------------------------------------------------------------
 
@@ -490,6 +618,51 @@ mod tests {
         let dict = vec![("foo".to_string(), "bar".to_string())];
         let s = "nothing to change here";
         assert_eq!(apply_corrections(s, &dict), s);
+    }
+
+    #[test]
+    fn snippets_expand_multiword_trigger() {
+        let snips = vec![("my email".to_string(), "bob@example.com".to_string())];
+        assert_eq!(
+            expand_snippets("please send it to my email today", &snips),
+            "please send it to bob@example.com today"
+        );
+    }
+
+    #[test]
+    fn snippets_preserve_trailing_punctuation() {
+        let snips = vec![("my email".to_string(), "bob@example.com".to_string())];
+        assert_eq!(
+            expand_snippets("reach me at my email.", &snips),
+            "reach me at bob@example.com."
+        );
+    }
+
+    #[test]
+    fn snippets_fuzzy_match_short_trigger() {
+        // "addr" (4 chars) tolerates a 1-edit mishearing → "adr".
+        let snips = vec![("addr".to_string(), "1 Infinite Loop".to_string())];
+        assert_eq!(
+            expand_snippets("ship to adr please", &snips),
+            "ship to 1 Infinite Loop please"
+        );
+    }
+
+    #[test]
+    fn snippets_respect_word_boundaries() {
+        // A long trigger never matches inside a larger word.
+        let snips = vec![("cat".to_string(), "dog".to_string())];
+        assert_eq!(
+            expand_snippets("the category is fixed", &snips),
+            "the category is fixed"
+        );
+    }
+
+    #[test]
+    fn snippets_noop_when_absent() {
+        let snips = vec![("sig".to_string(), "Best, Bob".to_string())];
+        let s = "nothing to expand here";
+        assert_eq!(expand_snippets(s, &snips), s);
     }
 
     #[test]

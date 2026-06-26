@@ -85,6 +85,19 @@ export interface DictionaryEntry {
   updatedAt: number;
 }
 
+// ---------------------------------------------------------------------------
+// Snippets (Phase 5) — mirrors src-tauri/src/db/snippets.rs
+// ---------------------------------------------------------------------------
+
+export interface Snippet {
+  id: number;
+  triggerPhrase: string;
+  expansion: string;
+  isActive: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
 /** Convert a stored audio file path into an asset:// URL the `<audio>` tag can load. */
 export const audioSrc = (path: string): string => convertFileSrc(path);
 
@@ -149,4 +162,12 @@ export const api = {
   deleteDictionaryEntry: (id: number) => invoke<void>("delete_dictionary_entry", { id }),
   importDictionaryCsv: (csv: string) => invoke<number>("import_dictionary_csv", { csv }),
   exportDictionaryCsv: () => invoke<string>("export_dictionary_csv"),
+  // Snippets (Phase 5)
+  getSnippets: (query?: string) =>
+    invoke<Snippet[]>("get_snippets", { query: query ?? null }),
+  upsertSnippet: (triggerPhrase: string, expansion: string, isActive: boolean) =>
+    invoke<number>("upsert_snippet", { triggerPhrase, expansion, isActive }),
+  deleteSnippet: (id: number) => invoke<void>("delete_snippet", { id }),
+  importSnippetsJson: (json: string) => invoke<number>("import_snippets_json", { json }),
+  exportSnippetsJson: () => invoke<string>("export_snippets_json"),
 };

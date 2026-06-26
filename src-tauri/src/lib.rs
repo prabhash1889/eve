@@ -110,6 +110,11 @@ pub fn run() {
             commands::delete_dictionary_entry,
             commands::import_dictionary_csv,
             commands::export_dictionary_csv,
+            commands::get_snippets,
+            commands::upsert_snippet,
+            commands::delete_snippet,
+            commands::import_snippets_json,
+            commands::export_snippets_json,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

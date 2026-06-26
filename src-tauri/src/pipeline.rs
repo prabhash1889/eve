@@ -7,7 +7,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::config::CleanupLevel;
-use crate::db::{dictionary, queries, Db};
+use crate::db::{dictionary, queries, snippets, Db};
 use crate::state::AppState;
 use crate::{audio, events, injection, text_processing, window_mgmt};
 
@@ -127,7 +127,15 @@ pub async fn process(app: AppHandle) {
 
     // Deterministic spoken-punctuation + list formatting runs AFTER the LLM so
     // it can't reflow the structure we just inserted.
-    let text = text_processing::finalize(&polished);
+    let finalized = text_processing::finalize(&polished);
+
+    // Phase 5: expand snippet triggers ("my email" → the full address) last,
+    // just before injection, so the expansion text is injected verbatim.
+    let expansions = {
+        let conn = db.lock();
+        snippets::active_expansions(&conn).unwrap_or_default()
+    };
+    let text = text_processing::expand_snippets(&finalized, &expansions);
     if text.is_empty() {
         window_mgmt::fail(&app, "No speech detected");
         return;

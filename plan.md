@@ -268,7 +268,7 @@ new `DictionaryPage.tsx`, `lib/api.ts`.
 **Verify:** add "Tailwind" → dictating "tail wind" yields "Tailwind"; a
 misspelling→correct mapping is applied in the injected text.
 
-## ⬜ Phase 5 — Snippets
+## ✅ Phase 5 — Snippets — DONE (build-verified)
 
 **Goal:** spoken trigger phrases expand to long-form text.
 

@@ -10,6 +10,7 @@ use rusqlite::Connection;
 
 pub mod dictionary;
 pub mod queries;
+pub mod snippets;
 
 /// Shared, lockable connection. rusqlite's `Connection` is `Send` but `!Sync`,
 /// so the `Mutex` makes it safe to share across the Tauri app state.
@@ -17,6 +18,7 @@ pub type Db = Arc<Mutex<Connection>>;
 
 const MIGRATION_001: &str = include_str!("migrations/001_initial.sql");
 const MIGRATION_002: &str = include_str!("migrations/002_dictionary.sql");
+const MIGRATION_003: &str = include_str!("migrations/003_snippets.sql");
 
 /// Open (or create) the database at `path` and apply any pending migrations.
 pub fn open(path: &Path) -> anyhow::Result<Db> {
@@ -38,6 +40,10 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
     if version < 2 {
         conn.execute_batch(MIGRATION_002)?;
         conn.pragma_update(None, "user_version", 2i64)?;
+    }
+    if version < 3 {
+        conn.execute_batch(MIGRATION_003)?;
+        conn.pragma_update(None, "user_version", 3i64)?;
     }
     Ok(())
 }

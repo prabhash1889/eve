@@ -1,10 +1,10 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
-  Mic,
   Settings as SettingsIcon,
   LayoutDashboard,
   History,
   BookMarked,
+  Zap,
   Sparkles,
   KeyRound,
   Check,
@@ -14,6 +14,7 @@ import {
 import { api, DEFAULT_SETTINGS, type Settings, type CleanupLevel } from "./lib/api";
 import { HistoryPage } from "./pages/HistoryPage";
 import { DictionaryPage } from "./pages/DictionaryPage";
+import { SnippetsPage } from "./pages/SnippetsPage";
 
 const SHORTCUT_CHOICES = ["F8", "F9", "F10", "CmdOrCtrl+Shift+Space", "Alt+Q"];
 
@@ -44,7 +45,7 @@ const COPY_SHORTCUT_CHOICES = [
   "Alt+C",
 ];
 
-type Nav = "dashboard" | "settings" | "history" | "dictionary";
+type Nav = "dashboard" | "settings" | "history" | "dictionary" | "snippets";
 
 export function Hub() {
   const [nav, setNav] = useState<Nav>("dashboard");
@@ -68,9 +69,11 @@ export function Hub() {
       {/* Sidebar */}
       <aside className="flex w-60 shrink-0 flex-col gap-1 border-r border-border bg-surface/60 p-4">
         <div className="mb-6 flex items-center gap-2 px-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-accent text-surface">
-            <Mic size={18} />
-          </div>
+          <img
+            src="/image-src/logo/logo.png"
+            alt="Eve logo"
+            className="h-9 w-9 rounded-2xl object-cover"
+          />
           <div>
             <div className="font-serif text-lg leading-none">Eve</div>
             <div className="text-xs text-ink-faint">voice dictation</div>
@@ -80,6 +83,7 @@ export function Hub() {
         <NavItem icon={<LayoutDashboard size={18} />} label="Dashboard" active={nav === "dashboard"} onClick={() => setNav("dashboard")} />
         <NavItem icon={<History size={18} />} label="History" active={nav === "history"} onClick={() => setNav("history")} />
         <NavItem icon={<BookMarked size={18} />} label="Dictionary" active={nav === "dictionary"} onClick={() => setNav("dictionary")} />
+        <NavItem icon={<Zap size={18} />} label="Snippets" active={nav === "snippets"} onClick={() => setNav("snippets")} />
         <NavItem icon={<SettingsIcon size={18} />} label="Settings" active={nav === "settings"} onClick={() => setNav("settings")} />
 
         <div className="mt-4 mb-1 px-3 text-[11px] font-semibold uppercase tracking-wide text-ink-faint">Coming soon</div>
@@ -105,6 +109,8 @@ export function Hub() {
             <HistoryPage />
           ) : nav === "dictionary" ? (
             <DictionaryPage />
+          ) : nav === "snippets" ? (
+            <SnippetsPage />
           ) : (
             <SettingsPanel
               settings={settings}
