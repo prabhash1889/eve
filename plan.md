@@ -29,8 +29,8 @@ Local on-device Whisper is deferred behind a trait (not built in v1).
 | 7 | Command Mode + Transforms | ✅ Done (build-verified) |
 | 8 | Insights + vibe-coding | ✅ Done (build-verified) |
 | 9 | Scratchpad | ✅ Done (build-verified) |
-| 10 | Onboarding + languages + auto-pause | ⬜ |
-| 11 | Packaging + signing + auto-update | ⬜ |
+| 10 | Onboarding + languages + auto-pause | ✅ Done (build-verified) |
+| 11 | Packaging + signing + auto-update | ✅ Done (build-verified) |
 
 **Verification done:** `cargo check` + `cargo build` (debug `eve.exe`, 19.3 MB) →
 0 errors / 0 warnings. `npm run build` (tsc + vite multi-page) → clean.
@@ -523,46 +523,79 @@ New npm deps: `@tiptap/react`, `@tiptap/starter-kit`, `@tiptap/extension-image`,
 **Verify:** open Scratchpad, create 3 tabs, dictate into each, paste an image,
 content survives a restart.
 
-## ⬜ Phase 10 — Onboarding + languages + auto-pause
+## ✅ Phase 10 — Onboarding + languages + auto-pause — DONE (build-verified)
 
 **Goal:** first-run experience, multi-language selection, privacy guards.
 
-**Deliverables:**
-1. **Onboarding** — shown when `onboardingComplete` is false: mic permission +
-   live mic test (amplitude meter), language multi-select, shortcut capture,
-   2–3 practice dictations, style personalization. New
-   `src/components/onboarding/*`; set the flag on completion.
-2. **Languages** — multi-select UI + auto-detect; language already flows to
-   Whisper via settings.
-3. **Auto-pause** — `pausedApps` setting (default-seeded with common banking
-   process names). In `hotkey::on_press`, if the foreground app (Phase 6) is in
-   the list, suppress recording and emit a "paused" hint to the Flow Bar.
-4. **Privacy** — surface retention (Phase 3) + a context-awareness toggle.
+**Status:** built. New first-run flow `src/components/onboarding/Onboarding.tsx`
+gates the Hub while `settings.onboardingComplete` is false (a `#[serde(default)]`
+bool added in `config.rs`): six steps — welcome, Groq key (reuses
+`store_api_key`), hotkey pick, language multi-select, a **live mic test**
+(browser `getUserMedia` → `AnalyserNode` amplitude meter, with a graceful
+"denied" fallback since native dictation records via cpal anyway), and cleanup
+level — then persists everything via `update_settings` + `set_shortcut` and
+flips the flag. Shared option lists moved to `src/lib/options.ts`
+(`LANGUAGES`/`CLEANUP`/`SHORTCUT_CHOICES`) so the Hub and onboarding share them.
 
-**Files:** onboarding components, `config.rs` (`onboarding_complete`,
-`paused_apps`), `hotkey.rs`, `commands.rs`, `lib/api.ts`.
-**Verify:** fresh install runs onboarding; a banking app blocks recording;
-Japanese dictation transcribes correctly.
+**Languages:** new `languages: Vec<String>` setting drives a chip multi-select
+(also surfaced in Settings). The frontend derives the single Whisper `language`
+hint from it via `effectiveLanguage()` (one specific language → pinned; "auto"
+or several → auto-detect), so the pipeline still just reads `language` — no
+backend pipeline change.
 
-## ⬜ Phase 11 — Packaging + signing + auto-update
+**Auto-pause:** new `paused_apps: Vec<String>` (default-seeded with sensitive
+desktop apps — password managers; process names only). `hotkey::on_press`
+lowercases the resolved foreground process and, on a match, suppresses recording
+(`is_recording` reset), emits a new `session://paused` event, and flashes a
+"Paused here" pill on the Flow Bar (new `paused` state in `flow-bar.tsx`).
+Editable chip list in Settings → Privacy.
+
+**Privacy:** new `context_awareness: bool` (default on); when off, `on_press`
+stores `AppContext::unknown()` instead of the resolved title/category (Flow
+Styles stop adapting; History rows lose app info) — but auto-pause still reads
+the bare process name. Settings → Privacy hosts the toggle, the paused-apps
+editor, and the existing audio-retention controls.
+
+**Files:** new `components/onboarding/Onboarding.tsx`, `lib/options.ts`;
+`config.rs`, `events.rs`, `hotkey.rs`, `flow-bar.tsx`, `Hub.tsx`, `lib/api.ts`.
+**Verify (build):** `cargo check`/`cargo test` (26/26) clean, `npm run build`
+clean. **Untested:** the live onboarding flow + mic meter in a real WebView2,
+and a paused app actually blocking a dictation.
+
+## ✅ Phase 11 — Packaging + signing + auto-update — DONE (build-verified)
 
 **Goal:** a distributable, self-updating Windows app.
 
-**Deliverables:**
-1. **CI build** — `.github/workflows/release.yml` using `tauri-action` to build
-   the NSIS installer + MSI.
-2. **Code signing** — Azure Trusted Signing (recommended) or an EV cert, wired
-   via CI secrets (`TAURI_SIGNING_*`).
-3. **Auto-update** — `tauri-plugin-updater` against a GitHub Releases feed +
-   an update prompt in the tray; `tauri-plugin-autostart` with a
-   "Launch at startup" toggle in Settings.
-4. **Crash reporting (optional)** — opt-in only, behind a privacy setting.
+**Status:** built. Added `tauri-plugin-updater` + `tauri-plugin-autostart`
+(Cargo.toml), initialized both in `lib.rs`; `tauri.conf.json` gains
+`plugins.updater` (GitHub Releases `latest.json` endpoint + a **placeholder
+`pubkey`** that must be replaced with the real signing public key) and
+`bundle.createUpdaterArtifacts: true`, and `capabilities/default.json` grants
+`updater:default` + `autostart:default`.
 
-**Files:** `.github/workflows/release.yml`, `tauri.conf.json` (updater + bundle),
-`Cargo.toml` (`tauri-plugin-updater`, `tauri-plugin-autostart`), `lib.rs`
-(plugin init), `commands.rs` (autostart toggle), Settings UI.
-**Verify:** install the signed NSIS build on a clean Windows VM; it launches on
-startup; a simulated release feed shows an update prompt.
+**Auto-update:** commands `check_for_update` (returns the new version or `None`)
+and `install_update` (download + install + relaunch) via `UpdaterExt`; the tray
+gains a "Check for updates…" item that shows the Hub and emits a new
+`app://check-update` event the Hub listens for — it jumps to Settings and runs
+the check. Settings → "Startup & updates" has an `UpdateChecker` (Check now →
+Install & restart) and a **Launch at startup** toggle wired to `set_autostart`
+(reconciled with the saved `launch_at_startup` setting on launch via
+`ManagerExt`).
+
+**CI build + signing:** `.github/workflows/release.yml` builds NSIS + MSI +
+updater artifacts on a `v*` tag via `tauri-action`, with env wiring for updater
+signing (`TAURI_SIGNING_PRIVATE_KEY[_PASSWORD]`) and commented placeholders for
+Azure Trusted Signing of the installer. Crash reporting (optional) was skipped.
+
+**Files:** `Cargo.toml`, `lib.rs`, `commands.rs`, `tray.rs`, `events.rs`,
+`tauri.conf.json`, `capabilities/default.json`, `config.rs`
+(`launch_at_startup`), `Hub.tsx`, `lib/api.ts`, new
+`.github/workflows/release.yml`.
+**Verify (build):** `cargo check` (0 warnings, both new plugins compile),
+`cargo test` (26/26), `npm run build` clean. **Untested (needs CI + a signing
+key + a real release):** installer signing, the live updater feed/prompt, and
+launch-at-startup registration. Replace the `pubkey` placeholder and set the CI
+secrets before the first signed release.
 
 ## Known risks / things to watch (from the plan)
 - Injection reliability per app (terminals need Shift+Insert; UAC-elevated targets

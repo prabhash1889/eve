@@ -28,6 +28,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        // Phase 11: self-update + launch-at-startup. Autostart registers Eve with
+        // no extra CLI args; the updater reads its endpoint/pubkey from
+        // `tauri.conf.json` (`plugins.updater`).
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -112,6 +120,15 @@ pub fn run() {
                 command_mode::register_transform_shortcuts(app.handle(), &state);
             }
 
+            // Phase 11: reconcile the OS autostart registration with the saved
+            // setting (best-effort — a failure here shouldn't block launch).
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                let want = app.state::<AppState>().settings.lock().launch_at_startup;
+                let mgr = app.autolaunch();
+                let _ = if want { mgr.enable() } else { mgr.disable() };
+            }
+
             tray::setup(app.handle())?;
             window_mgmt::position_flowbar(app.handle());
             Ok(())
@@ -169,6 +186,9 @@ pub fn run() {
             commands::download_model,
             commands::cancel_model_download,
             commands::delete_model,
+            commands::set_autostart,
+            commands::check_for_update,
+            commands::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

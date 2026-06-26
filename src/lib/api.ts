@@ -29,6 +29,11 @@ export interface Settings {
   localWhisperModel: string; // catalog id of the selected local Whisper model
   localLlmModel: string; // catalog id of the selected local polish LLM
   vibeCoding: boolean; // Phase 8: wrap spoken "backtick X backtick" in code editors
+  languages: string[]; // Phase 10: enabled languages (["auto"] = auto-detect)
+  pausedApps: string[]; // Phase 10: process names where dictation is suppressed
+  contextAwareness: boolean; // Phase 10: resolve/store focused-app context
+  onboardingComplete: boolean; // Phase 10: first-run flow finished
+  launchAtStartup: boolean; // Phase 11: start Eve at OS login
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -48,6 +53,11 @@ export const DEFAULT_SETTINGS: Settings = {
   localWhisperModel: "",
   localLlmModel: "",
   vibeCoding: true,
+  languages: ["auto"],
+  pausedApps: ["1password.exe", "keepass.exe", "keepassxc.exe", "bitwarden.exe"],
+  contextAwareness: true,
+  onboardingComplete: false,
+  launchAtStartup: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -225,6 +235,10 @@ export const EVT = {
   transcriptRaw: "session://transcript-raw",
   transcriptPolished: "session://transcript-polished",
   copied: "session://copied",
+  // Phase 10: auto-pause suppressed recording in a sensitive app.
+  paused: "session://paused",
+  // Phase 11: tray "Check for updates" → Hub runs the check.
+  checkUpdate: "app://check-update",
   // Phase 9: dictated text routed into the focused Scratchpad editor.
   scratchpadInsert: "scratchpad://insert",
   // Local-model download lifecycle (emitted to the Hub window).
@@ -250,6 +264,16 @@ export interface StartPayload {
 
 export function on<T>(event: string, cb: EventCallback<T>): Promise<UnlistenFn> {
   return listen<T>(event, cb);
+}
+
+/**
+ * Phase 10: derive the single Whisper `language` hint from the enabled list.
+ * Exactly one specific language pins Whisper to it; anything else (including
+ * "auto" or multiple languages) means auto-detect.
+ */
+export function effectiveLanguage(languages: string[]): string {
+  const specific = languages.filter((l) => l !== "auto");
+  return specific.length === 1 ? specific[0] : "auto";
 }
 
 // ---------------------------------------------------------------------------
@@ -339,4 +363,8 @@ export const api = {
   downloadModel: (id: string) => invoke<void>("download_model", { id }),
   cancelModelDownload: (id: string) => invoke<void>("cancel_model_download", { id }),
   deleteModel: (id: string) => invoke<void>("delete_model", { id }),
+  // Startup & auto-update (Phase 11)
+  setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
+  checkForUpdate: () => invoke<string | null>("check_for_update"),
+  installUpdate: () => invoke<boolean>("install_update"),
 };

@@ -18,8 +18,16 @@ import {
   BarChart3,
   Code2,
   NotebookPen,
+  ShieldCheck,
+  Languages,
+  Plus,
+  X,
+  RefreshCw,
+  Power,
 } from "lucide-react";
-import { api, DEFAULT_SETTINGS, type Settings, type CleanupLevel, type Stats } from "./lib/api";
+import { api, DEFAULT_SETTINGS, effectiveLanguage, on, EVT, type Settings, type CleanupLevel, type Stats } from "./lib/api";
+import { CLEANUP, SHORTCUT_CHOICES } from "./lib/options";
+import { Onboarding, LanguageMultiSelect } from "./components/onboarding/Onboarding";
 import { HistoryPage } from "./pages/HistoryPage";
 import { DictionaryPage } from "./pages/DictionaryPage";
 import { SnippetsPage } from "./pages/SnippetsPage";
@@ -27,28 +35,6 @@ import { StylesPage } from "./pages/StylesPage";
 import { TransformsPage } from "./pages/TransformsPage";
 import { LocalModelsPage } from "./pages/LocalModelsPage";
 import { InsightsPage } from "./pages/InsightsPage";
-
-const SHORTCUT_CHOICES = ["F8", "F9", "F10", "CmdOrCtrl+Shift+Space", "Alt+Q"];
-
-const LANGUAGES: { code: string; label: string }[] = [
-  { code: "auto", label: "Auto-detect" },
-  { code: "en", label: "English" },
-  { code: "hi", label: "Hindi" },
-  { code: "es", label: "Spanish" },
-  { code: "fr", label: "French" },
-  { code: "de", label: "German" },
-  { code: "it", label: "Italian" },
-  { code: "pt", label: "Portuguese" },
-  { code: "ja", label: "Japanese" },
-  { code: "zh", label: "Chinese" },
-];
-
-const CLEANUP: { value: CleanupLevel; label: string; hint: string }[] = [
-  { value: "none", label: "None", hint: "Raw transcript, no AI edits" },
-  { value: "light", label: "Light", hint: "Fix capitalization/punctuation, drop stray fillers" },
-  { value: "medium", label: "Medium", hint: "Remove fillers, fix grammar, resolve self-corrections" },
-  { value: "high", label: "High", hint: "Rewrite into clean prose; format spoken lists" },
-];
 
 const COPY_SHORTCUT_CHOICES = [
   "CmdOrCtrl+Shift+C",
@@ -85,11 +71,30 @@ export function Hub() {
   const [nav, setNav] = useState<Nav>("dashboard");
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [hasKey, setHasKey] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  // Bumped when the tray "Check for updates" item fires, so the Settings panel
+  // can auto-run the check.
+  const [updateNonce, setUpdateNonce] = useState(0);
   const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
 
   useEffect(() => {
-    api.getSettings().then(setSettings).catch(() => {});
+    api
+      .getSettings()
+      .then(setSettings)
+      .catch(() => {})
+      .finally(() => setLoaded(true));
     api.hasApiKey().then(setHasKey).catch(() => {});
+  }, []);
+
+  // Phase 11: the tray "Check for updates" item routes here.
+  useEffect(() => {
+    const unlisten = on(EVT.checkUpdate, () => {
+      setNav("settings");
+      setUpdateNonce((n) => n + 1);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, []);
 
   const toggleTheme = () => {
@@ -97,6 +102,21 @@ export function Hub() {
     setDark(next);
     document.documentElement.classList.toggle("dark", next);
   };
+
+  // Phase 10: gate the app behind first-run onboarding.
+  if (loaded && !settings.onboardingComplete) {
+    return (
+      <div className="h-full bg-canvas text-ink">
+        <Onboarding
+          settings={settings}
+          onComplete={(next) => {
+            setSettings(next);
+            api.hasApiKey().then(setHasKey).catch(() => {});
+          }}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full bg-canvas text-ink">
@@ -158,6 +178,7 @@ export function Hub() {
               setSettings={setSettings}
               hasKey={hasKey}
               setHasKey={setHasKey}
+              updateNonce={updateNonce}
             />
           )}
         </div>
@@ -312,11 +333,13 @@ function SettingsPanel({
   setSettings,
   hasKey,
   setHasKey,
+  updateNonce,
 }: {
   settings: Settings;
   setSettings: (s: Settings) => void;
   hasKey: boolean;
   setHasKey: (b: boolean) => void;
+  updateNonce: number;
 }) {
   const [apiKey, setApiKey] = useState("");
   const [savedFlash, setSavedFlash] = useState(false);
@@ -384,12 +407,17 @@ function SettingsPanel({
         <p className="mt-2 text-xs text-ink-faint">Hold this key to record; release to transcribe.</p>
       </Section>
 
-      <Section title="Language">
-        <Select
-          value={settings.language}
-          onChange={(v) => persist({ ...settings, language: v })}
-          options={LANGUAGES.map((l) => ({ value: l.code, label: l.label }))}
+      <Section title="Languages" icon={<Languages size={16} />}>
+        <LanguageMultiSelect
+          value={settings.languages}
+          onChange={(languages) =>
+            persist({ ...settings, languages, language: effectiveLanguage(languages) })
+          }
         />
+        <p className="mt-3 text-xs text-ink-faint">
+          Pick one language to lock transcription to it, or several (or Auto-detect) to let
+          Eve detect per dictation.
+        </p>
       </Section>
 
       <Section title="Cleanup level">
@@ -533,6 +561,195 @@ function SettingsPanel({
           auto-delete is on. Transcript text is always kept.
         </p>
       </Section>
+
+      <Section title="Privacy" icon={<ShieldCheck size={16} />}>
+        <label className="flex cursor-pointer items-center justify-between gap-3">
+          <span className="text-sm text-ink-soft">
+            <span className="font-medium text-ink">Context awareness</span> — detect the
+            focused app to adapt tone (Styles) and label History.
+          </span>
+          <input
+            type="checkbox"
+            checked={settings.contextAwareness}
+            onChange={(e) => persist({ ...settings, contextAwareness: e.target.checked })}
+            className="size-4 shrink-0 accent-accent"
+          />
+        </label>
+        <p className="mt-2 text-xs text-ink-faint">
+          When off, Eve won't read window titles or app names. Flow Styles stop adapting and
+          History rows are saved without app info.
+        </p>
+
+        <div className="mt-5 border-t border-border pt-4">
+          <div className="text-sm font-medium text-ink">Auto-pause apps</div>
+          <p className="mb-3 mt-1 text-xs text-ink-faint">
+            Dictation is suppressed when one of these apps is focused. Use the executable name
+            (e.g. <span className="font-mono">1password.exe</span>).
+          </p>
+          <PausedAppsEditor
+            apps={settings.pausedApps}
+            onChange={(pausedApps) => persist({ ...settings, pausedApps })}
+          />
+        </div>
+      </Section>
+
+      <Section title="Startup & updates" icon={<Power size={16} />}>
+        <label className="flex cursor-pointer items-center justify-between gap-3">
+          <span className="text-sm text-ink-soft">
+            <span className="font-medium text-ink">Launch at startup</span> — start Eve
+            automatically when you sign in to Windows.
+          </span>
+          <input
+            type="checkbox"
+            checked={settings.launchAtStartup}
+            onChange={async (e) => {
+              const enabled = e.target.checked;
+              setSettings({ ...settings, launchAtStartup: enabled });
+              await api.setAutostart(enabled).catch(() => {});
+            }}
+            className="size-4 shrink-0 accent-accent"
+          />
+        </label>
+
+        <div className="mt-5 border-t border-border pt-4">
+          <UpdateChecker nonce={updateNonce} />
+        </div>
+      </Section>
+    </div>
+  );
+}
+
+/** Editable list of process names that suppress dictation (Phase 10). */
+function PausedAppsEditor({
+  apps,
+  onChange,
+}: {
+  apps: string[];
+  onChange: (apps: string[]) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const add = () => {
+    const name = draft.trim().toLowerCase();
+    if (!name || apps.some((a) => a.toLowerCase() === name)) {
+      setDraft("");
+      return;
+    }
+    onChange([...apps, name]);
+    setDraft("");
+  };
+  return (
+    <div>
+      <div className="flex flex-wrap gap-2">
+        {apps.length === 0 && (
+          <span className="text-xs text-ink-faint">No apps paused.</span>
+        )}
+        {apps.map((a) => (
+          <span
+            key={a}
+            className="flex items-center gap-1.5 rounded-full border border-border bg-surface-2 px-3 py-1 text-sm"
+          >
+            <span className="font-mono text-xs">{a}</span>
+            <button
+              onClick={() => onChange(apps.filter((x) => x !== a))}
+              className="text-ink-faint hover:text-danger"
+              title="Remove"
+            >
+              <X size={13} />
+            </button>
+          </span>
+        ))}
+      </div>
+      <div className="mt-3 flex gap-2">
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && add()}
+          placeholder="app.exe"
+          className="flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
+        />
+        <button
+          onClick={add}
+          disabled={!draft.trim()}
+          className="flex items-center gap-1 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-40"
+        >
+          <Plus size={14} /> Add
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Check the GitHub Releases feed and offer to install (Phase 11). */
+function UpdateChecker({ nonce }: { nonce: number }) {
+  type UState =
+    | { kind: "idle" }
+    | { kind: "checking" }
+    | { kind: "available"; version: string }
+    | { kind: "current" }
+    | { kind: "installing" }
+    | { kind: "error"; message: string };
+  const [state, setState] = useState<UState>({ kind: "idle" });
+
+  const check = async () => {
+    setState({ kind: "checking" });
+    try {
+      const version = await api.checkForUpdate();
+      setState(version ? { kind: "available", version } : { kind: "current" });
+    } catch (e) {
+      setState({ kind: "error", message: String(e) });
+    }
+  };
+
+  // Re-run when the tray item fires (nonce changes); skip the initial mount.
+  useEffect(() => {
+    if (nonce > 0) check();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nonce]);
+
+  const install = async () => {
+    setState({ kind: "installing" });
+    try {
+      const ok = await api.installUpdate();
+      if (!ok) setState({ kind: "current" });
+      // On success the app relaunches, so no further state update runs.
+    } catch (e) {
+      setState({ kind: "error", message: String(e) });
+    }
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-sm text-ink-soft">
+          {state.kind === "checking" && "Checking for updates…"}
+          {state.kind === "current" && "You're on the latest version."}
+          {state.kind === "available" && (
+            <span className="text-ink">Version {state.version} is available.</span>
+          )}
+          {state.kind === "installing" && "Downloading & installing…"}
+          {state.kind === "error" && (
+            <span className="text-danger">Couldn't check — {state.message}</span>
+          )}
+          {state.kind === "idle" && "Check for a new version of Eve."}
+        </div>
+        {state.kind === "available" ? (
+          <button
+            onClick={install}
+            className="shrink-0 rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+          >
+            Install & restart
+          </button>
+        ) : (
+          <button
+            onClick={check}
+            disabled={state.kind === "checking" || state.kind === "installing"}
+            className="flex shrink-0 items-center gap-1.5 rounded-xl border border-border px-4 py-2 text-sm text-ink-soft hover:bg-surface-2 disabled:opacity-50"
+          >
+            <RefreshCw size={14} className={state.kind === "checking" ? "animate-spin" : ""} />
+            Check now
+          </button>
+        )}
+      </div>
     </div>
   );
 }

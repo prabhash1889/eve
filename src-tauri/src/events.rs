@@ -15,6 +15,9 @@ pub const TRANSCRIPT_RAW: &str = "session://transcript-raw";
 pub const TRANSCRIPT_POLISHED: &str = "session://transcript-polished";
 /// Phase 2: copy-last-transcript shortcut fired and copied to the clipboard.
 pub const COPIED: &str = "session://copied";
+/// Phase 10 auto-pause: the focused app is on the paused list, so recording was
+/// suppressed. The bar flashes a hint and dismisses.
+pub const PAUSED: &str = "session://paused";
 
 /// Local-models: streamed during a model download (emitted to the Hub window).
 pub const MODEL_PROGRESS: &str = "model://progress";
@@ -22,6 +25,10 @@ pub const MODEL_PROGRESS: &str = "model://progress";
 pub const MODEL_DONE: &str = "model://done";
 /// Local-models: a model download failed or was cancelled.
 pub const MODEL_ERROR: &str = "model://error";
+
+/// Phase 11: tray "Check for updates" was clicked — the Hub runs the check and
+/// shows the result in Settings.
+pub const CHECK_UPDATE: &str = "app://check-update";
 
 pub const FLOWBAR: &str = "flowbar";
 /// The Hub window — model-download progress events are emitted here.

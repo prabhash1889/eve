@@ -80,10 +80,49 @@ pub struct Settings {
     /// backticks before injection. Defaults on.
     #[serde(default = "default_vibe_coding")]
     pub vibe_coding: bool,
+    /// Phase 10: languages enabled in the UI. `["auto"]` (or any list with more
+    /// than one specific language) means auto-detect; a single specific language
+    /// pins Whisper to it. The frontend derives the single `language` field above
+    /// from this list, so the pipeline keeps reading `language`.
+    #[serde(default = "default_languages")]
+    pub languages: Vec<String>,
+    /// Phase 10 auto-pause: process names (e.g. "1password.exe", lowercased)
+    /// where recording is suppressed for privacy. Matched against the focused
+    /// app's process at record start.
+    #[serde(default = "default_paused_apps")]
+    pub paused_apps: Vec<String>,
+    /// Phase 10 privacy: when false, Eve does not resolve or store the focused
+    /// app's title/category (disables Flow Styles + per-app history attribution).
+    /// Auto-pause still resolves the bare process name to honor the pause list.
+    #[serde(default = "default_context_awareness")]
+    pub context_awareness: bool,
+    /// Phase 10: set true once the first-run onboarding flow has been completed.
+    #[serde(default)]
+    pub onboarding_complete: bool,
+    /// Phase 11: launch Eve automatically at OS login (via the autostart plugin).
+    #[serde(default)]
+    pub launch_at_startup: bool,
 }
 
 fn default_vibe_coding() -> bool {
     true
+}
+fn default_languages() -> Vec<String> {
+    vec!["auto".into()]
+}
+fn default_context_awareness() -> bool {
+    true
+}
+/// Sensitive desktop apps where dictation is suppressed by default. Process
+/// names only (browsers can't be matched this way); users edit the list in
+/// Settings → Privacy.
+fn default_paused_apps() -> Vec<String> {
+    vec![
+        "1password.exe".into(),
+        "keepass.exe".into(),
+        "keepassxc.exe".into(),
+        "bitwarden.exe".into(),
+    ]
 }
 
 fn default_copy_shortcut() -> String {
@@ -130,6 +169,11 @@ impl Default for Settings {
             local_whisper_model: String::new(),
             local_llm_model: String::new(),
             vibe_coding: default_vibe_coding(),
+            languages: default_languages(),
+            paused_apps: default_paused_apps(),
+            context_awareness: default_context_awareness(),
+            onboarding_complete: false,
+            launch_at_startup: false,
         }
     }
 }

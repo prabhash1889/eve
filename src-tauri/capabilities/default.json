@@ -3,5 +3,11 @@
   "identifier": "default",
   "description": "Core permissions for the Hub and Flow Bar windows",
   "windows": ["main", "flowbar", "scratchpad"],
-  "permissions": ["core:default", "core:event:default", "opener:default"]
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "opener:default",
+    "updater:default",
+    "autostart:default"
+  ]
 }

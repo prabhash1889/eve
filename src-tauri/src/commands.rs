@@ -534,6 +534,58 @@ pub fn delete_model(app: AppHandle, id: String) -> Result<(), String> {
     models::delete(&app, &id)
 }
 
+// --- Phase 11: startup & auto-update -----------------------------------------
+
+/// Toggle launch-at-startup (registers/unregisters Eve with the OS) and persist
+/// the choice.
+#[tauri::command]
+pub fn set_autostart(
+    app: AppHandle,
+    state: State<AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let mgr = app.autolaunch();
+    if enabled {
+        mgr.enable().map_err(|e| e.to_string())?;
+    } else {
+        mgr.disable().map_err(|e| e.to_string())?;
+    }
+    let mut s = state.settings.lock();
+    s.launch_at_startup = enabled;
+    let _ = config::save(&state.settings_path, &s);
+    Ok(())
+}
+
+/// Check the configured GitHub Releases feed for a newer version. Returns the
+/// new version string if an update is available, else `None`.
+#[tauri::command]
+pub async fn check_for_update(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await {
+        Ok(Some(update)) => Ok(Some(update.version)),
+        Ok(None) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Download and install the available update, then relaunch the app. No-op (and
+/// returns `false`) when there's nothing to install.
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> Result<bool, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
+        return Ok(false);
+    };
+    update
+        .download_and_install(|_chunk, _total| {}, || {})
+        .await
+        .map_err(|e| e.to_string())?;
+    app.restart();
+}
+
 /// Minimal RFC-4180-ish CSV line parser: handles `"`-quoted fields with escaped
 /// `""` and embedded commas. Sufficient for our 3-column dictionary export.
 fn parse_csv_line(line: &str) -> Vec<String> {

@@ -29,7 +29,35 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
         let hwnd = GetForegroundWindow();
         let fg = hwnd.0 as isize;
         st.foreground_hwnd.store(fg, Ordering::SeqCst);
-        *st.current_context.lock() = Some(crate::context::active_window::resolve(hwnd));
+        let ctx = crate::context::active_window::resolve(hwnd);
+
+        // Phase 10 auto-pause: if the focused app is on the privacy pause list,
+        // suppress recording entirely and flash a hint on the Flow Bar.
+        let (paused_apps, context_awareness) = {
+            let s = st.settings.lock();
+            (s.paused_apps.clone(), s.context_awareness)
+        };
+        let proc = ctx.process.to_ascii_lowercase();
+        if !proc.is_empty()
+            && paused_apps
+                .iter()
+                .any(|p| p.trim().to_ascii_lowercase() == proc)
+        {
+            st.is_recording.store(false, Ordering::SeqCst);
+            window_mgmt::show_flowbar(app);
+            let _ = app.emit_to(events::FLOWBAR, events::PAUSED, ());
+            window_mgmt::hide_flowbar_after(app.clone(), 1400);
+            return;
+        }
+
+        // Phase 10 privacy: only store the resolved title/category when context
+        // awareness is on; otherwise fall back to an unknown context so history
+        // and Flow Styles see nothing app-specific.
+        *st.current_context.lock() = Some(if context_awareness {
+            ctx
+        } else {
+            crate::context::active_window::AppContext::unknown()
+        });
         if fg != 0 && window_mgmt::scratchpad_hwnd(app) == Some(fg) {
             st.to_scratchpad.store(true, Ordering::SeqCst);
         }

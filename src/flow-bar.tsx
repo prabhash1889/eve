@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
-import { Check, Sparkles, Copy } from "lucide-react";
+import { Check, Sparkles, Copy, ShieldOff } from "lucide-react";
 import "@fontsource/figtree/400.css";
 import "@fontsource/figtree/500.css";
 import "./styles/globals.css";
@@ -17,7 +17,15 @@ if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
   document.documentElement.classList.add("dark");
 }
 
-type State = "idle" | "listening" | "processing" | "preview" | "done" | "error" | "copied";
+type State =
+  | "idle"
+  | "listening"
+  | "processing"
+  | "preview"
+  | "done"
+  | "error"
+  | "copied"
+  | "paused";
 
 const BARS = 28;
 
@@ -68,6 +76,7 @@ function FlowBar() {
       }),
       on(EVT.cancel, () => setState("idle")),
       on(EVT.copied, () => setState("copied")),
+      on(EVT.paused, () => setState("paused")),
     ];
     return () => {
       unlisteners.forEach((u) => u.then((fn) => fn()));
@@ -116,6 +125,11 @@ function FlowBar() {
         )}
         {state === "error" && (
           <span className="max-w-[200px] truncate text-sm text-danger">{errMsg}</span>
+        )}
+        {state === "paused" && (
+          <span className="flex items-center gap-1.5 text-sm text-ink-soft">
+            <ShieldOff size={14} className="text-ink-faint" /> Paused here
+          </span>
         )}
         {state === "idle" && <span className="text-sm text-ink-faint">Ready</span>}
       </div>
