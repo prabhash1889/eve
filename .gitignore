@@ -27,3 +27,8 @@ dist-ssr
 .claude/
 .saple/
 graphify-out/
+
+# Release output (copied installers) + signing keys — never commit
+build/
+*.key
+*.key.pub
