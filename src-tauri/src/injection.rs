@@ -68,9 +68,17 @@ fn inject_paste(app: &AppHandle, text: &str, hwnd: isize) -> anyhow::Result<()> 
     clip.write_text(text.to_string())
         .map_err(|e| anyhow::anyhow!("clipboard write failed: {e}"))?;
 
-    thread::sleep(Duration::from_millis(40));
+    // Phase 5: fixed injection delays, reviewed to trim latency while preserving
+    // reliability. PRE lets the focus switch + clipboard write settle before we
+    // send Ctrl+V; PASTE_SETTLE lets the target app actually read the clipboard
+    // before the guard restores the prior contents. Cutting PASTE_SETTLE too far
+    // risks the app pasting the *restored* clipboard, so it stays comfortably
+    // above typical clipboard-read latency (trimmed 150 → 120 ms).
+    const PRE: Duration = Duration::from_millis(40);
+    const PASTE_SETTLE: Duration = Duration::from_millis(120);
+    thread::sleep(PRE);
     send_ctrl_v();
-    thread::sleep(Duration::from_millis(150));
+    thread::sleep(PASTE_SETTLE);
 
     // `_restore` drops here, putting the user's prior clipboard back.
     Ok(())

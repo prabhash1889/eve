@@ -132,10 +132,14 @@ pub fn run() {
 
             // Phase 2: if local STT is the active backend, prewarm the selected
             // model in the background so the first dictation isn't slowed by a
-            // cold load. Best-effort and off the UI thread.
+            // cold load. Best-effort and off the UI thread. Phase 5: honor the
+            // prewarm-enabled toggle so a user who opted out keeps a cold start.
             {
                 let st = app.state::<AppState>();
-                let want_prewarm = st.settings.lock().transcription_backend == "local";
+                let want_prewarm = {
+                    let s = st.settings.lock();
+                    s.transcription_backend == "local" && s.local_prewarm_enabled
+                };
                 if want_prewarm {
                     let transcriber = st.transcriber.clone();
                     tauri::async_runtime::spawn(async move {

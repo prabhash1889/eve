@@ -22,6 +22,9 @@ pub struct Timings {
     backend: String,
     /// Local model id when the local backend ran, else empty.
     model: String,
+    /// Local transcription profile in effect ("fast"/"balanced"/"accurate").
+    /// Shown only in the Phase 5 debug breakdown; not persisted to the CSV.
+    profile: String,
 }
 
 impl Timings {
@@ -33,6 +36,7 @@ impl Timings {
             stages: Vec::new(),
             backend: String::new(),
             model: String::new(),
+            profile: String::new(),
         }
     }
 
@@ -44,10 +48,12 @@ impl Timings {
         self.last = now;
     }
 
-    /// Note the backend/model that handled this session (for the persisted row).
-    pub fn set_context(&mut self, backend: &str, model: &str) {
+    /// Note the backend/model/profile that handled this session (backend +
+    /// model go to the persisted row; profile is for the debug breakdown only).
+    pub fn set_context(&mut self, backend: &str, model: &str, profile: &str) {
         self.backend = backend.to_string();
         self.model = model.to_string();
+        self.profile = profile.to_string();
     }
 
     /// Total elapsed since `new` (release-to-now), in milliseconds.
@@ -66,15 +72,38 @@ impl Timings {
     }
 
     /// Log the breakdown and append a CSV row. Best-effort; called once per
-    /// session from `pipeline::process` after injection.
-    pub fn finish(&self, app: &AppHandle) {
+    /// session from `pipeline::process` after injection. When `debug` is set
+    /// (Phase 5 debug-timing mode), also print a detailed per-stage breakdown
+    /// with each stage's share of the total release-to-done latency.
+    pub fn finish(&self, app: &AppHandle, debug: bool) {
         eprintln!(
             "[timing] backend={} model={} {}",
             if self.backend.is_empty() { "?" } else { &self.backend },
             if self.model.is_empty() { "-" } else { &self.model },
             self.breakdown()
         );
+        if debug {
+            self.print_debug_breakdown();
+        }
         self.persist(app);
+    }
+
+    /// Phase 5: multi-line per-stage breakdown for one session, gated on the
+    /// `debug_timing` setting. Shows each stage's milliseconds and its share of
+    /// the total, so a slow stage (transcribe vs. polish vs. inject) is obvious.
+    fn print_debug_breakdown(&self) {
+        let total = self.total_ms().max(1);
+        eprintln!(
+            "[timing:debug] session backend={} model={} profile={} total={}ms",
+            if self.backend.is_empty() { "?" } else { &self.backend },
+            if self.model.is_empty() { "-" } else { &self.model },
+            if self.profile.is_empty() { "-" } else { &self.profile },
+            total,
+        );
+        for (name, ms) in &self.stages {
+            let pct = (ms * 100) / total;
+            eprintln!("[timing:debug]   {name:<16} {ms:>6}ms  {pct:>3}%");
+        }
     }
 
     /// Append a single CSV line: `timestamp,backend,model,<stage>=ms…,total`.

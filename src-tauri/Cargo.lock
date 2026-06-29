@@ -1242,6 +1242,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-opener",
  "tauri-plugin-updater",
+ "tokio",
  "whisper-rs",
  "windows 0.58.0",
 ]

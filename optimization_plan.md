@@ -19,7 +19,13 @@ a larger backend replacement.
 - Phase 4 — **Done** (fast/balanced/accurate profiles, profile-driven model
   recommendations, thread override, VAD/prewarm toggles, status panel with last
   local timing).
-- Phases 5–6 — Not started.
+- Phase 5 — **Done** (background prewarm honors the toggle, raw transcript emitted
+  before polish, polish skipped on `None` / bounded by a timeout with raw fallback,
+  injection sleeps reviewed and trimmed, `debugTiming` per-stage breakdown).
+- Phase 6 — **Done (evaluation)**. Evaluated a `faster-whisper`/CTranslate2 sidecar;
+  decision is to keep native whisper.cpp as the default local backend and defer the
+  sidecar until its full lifecycle (install, downloads, fallback, updates) is
+  specified. See the Phase 6 section for the decision and adoption gate.
 
 ## Phase 1: Baseline and Timing Visibility
 
@@ -91,28 +97,84 @@ alongside the profile selector and VAD/prewarm toggles.
 - Add a small status panel showing backend, selected model, model readiness, and
   last local transcription timing.
 
-## Phase 5: Pipeline Responsiveness
+## Phase 5: Pipeline Responsiveness — Done
 
-- Start local model prewarm in the background without blocking the Hub UI.
-- Emit raw transcript as soon as STT completes, before polish or transforms.
-- Keep polish optional and non-blocking where possible:
-  - If cleanup level is `None`, skip polish entirely.
-  - If polish fails or times out, inject the best available transcript.
-- Review injection sleeps and clipboard timing to reduce fixed delays while
-  preserving reliability.
-- Add a debug mode that prints the full timing breakdown for one dictation session.
+Implemented across `pipeline.rs`, `injection.rs`, `lib.rs`, `timing.rs`,
+`config.rs`, and the frontend (`lib/api.ts`, `Hub.tsx`).
 
-## Phase 6: High-Ceiling Backend Option
+- Background prewarm at startup (`lib.rs`) is spawned off the UI thread and now
+  honors `local_prewarm_enabled`, so a user who opted out keeps a cold start
+  instead of paying an unexpected load. The Local Models page already prewarms on
+  backend switch / model select, also gated on the toggle.
+- The raw transcript is emitted (`TRANSCRIPT_RAW`) the instant STT completes,
+  before dictionary corrections, course-correction, polish, or transforms run, so
+  the Flow Bar previews words as early as possible.
+- Polish is optional and never blocks injection:
+  - `CleanupLevel::None` skips the LLM call entirely (no round-trip).
+  - Otherwise the polish call is bounded by a 20 s timeout; on timeout *or* error
+    the pipeline injects the best available transcript (the course-corrected text)
+    rather than making the user wait on a slow/hung model.
+- Injection sleeps were reviewed and trimmed (`injection.rs`): the pre-paste
+  settle stays at 40 ms; the post-paste settle dropped 150 → 120 ms, kept
+  comfortably above typical clipboard-read latency so the target app reads our
+  payload before the clipboard guard restores the prior contents. Both are named
+  constants now (`PRE` / `PASTE_SETTLE`) with the reliability rationale documented.
+- A `debugTiming` setting (off by default, mirrored Rust/TS, toggled in
+  Settings → Startup & updates) makes `timing.rs` print a detailed per-stage
+  breakdown — each stage's milliseconds and its share of total release-to-done
+  latency, plus backend/model/profile — on top of the always-on one-line log and
+  CSV row.
 
-- After native improvements are measured, evaluate adding an optional faster ASR
-  backend behind the existing `Transcriber` trait.
-- Preferred candidate: `faster-whisper` / CTranslate2 as a sidecar runtime, only if
-  packaging and startup cost are acceptable.
-- Keep the native whisper.cpp backend as the default local backend unless the
-  sidecar is proven faster and reliable on the target Windows machines.
-- Compare backends using the same benchmark clips and metrics from Phase 1.
-- Do not replace the existing local backend until fallback, installation, model
-  downloads, and updates are fully specified.
+## Phase 6: High-Ceiling Backend Option — Done (evaluation)
+
+This phase is an evaluation/decision gate, not an implementation: the plan
+explicitly says **do not replace the existing local backend until fallback,
+installation, model downloads, and updates are fully specified**. After the
+Phase 1–5 native improvements, this is the outcome of that evaluation.
+
+**Candidate evaluated:** `faster-whisper` (CTranslate2) running as a sidecar
+process, exposed behind the existing `Transcriber` trait as a third backend
+alongside `GroqTranscriber` and `LocalTranscriber`.
+
+**Why it is attractive**
+
+- CTranslate2 with INT8 quantization is typically 2–4× faster than whisper.cpp on
+  CPU at comparable accuracy, and scales better on multi-core machines.
+- It keeps the `Transcriber` seam intact — the pipeline already passes 16 kHz
+  `Vec<f32>` samples + WAV, so a sidecar backend slots in without touching the
+  cloud-upload path.
+
+**Why it is deferred (cost on a Windows-first app)**
+
+- *Packaging:* `faster-whisper` is Python + native CTranslate2 libs. Shipping it
+  means either bundling a Python runtime / PyInstaller binary (tens to hundreds of
+  MB) or a standalone CTranslate2 build — a large jump from the single self-
+  contained whisper.cpp static link we have today.
+- *Startup cost:* a sidecar adds process spawn + model load + an IPC handshake on
+  the first dictation, which works against the very responsiveness Phase 5 just
+  improved. Prewarm helps but adds lifecycle complexity (health checks, restart on
+  crash, port/stdio management).
+- *Lifecycle not yet specified:* separate model files (CTranslate2 format, not the
+  GGML files the current downloader fetches), their download/verify/update flow,
+  and crash-recovery / fallback semantics are all unspecified. The plan forbids
+  adoption until they are.
+
+**Decision:** keep native whisper.cpp as the default and only local backend. The
+`Transcriber` trait already provides the seam, so a sidecar can be added later as
+an additive backend without disrupting Groq or whisper.cpp.
+
+**Adoption gate (must all be specified + benchmarked before building the sidecar):**
+
+1. Benchmark the sidecar against whisper.cpp on the Phase 1 clips and the Phase 1
+   metrics (cold/warm latency, STT-only latency, total release-to-injection). It
+   must win decisively on the target Windows machines to justify the packaging cost.
+2. Specify packaging: runtime bundling, binary size budget, code-signing, and the
+   installer impact.
+3. Specify the model lifecycle: CTranslate2 model catalog, download + checksum +
+   update flow, and disk layout (the current downloader is GGML-only).
+4. Specify reliability: sidecar spawn/health-check/restart, IPC protocol, and
+   fallback to whisper.cpp (then Groq) on sidecar failure — fallback must never
+   regress from today's behavior.
 
 ## Public Interfaces and Types
 
@@ -121,6 +183,7 @@ alongside the profile selector and VAD/prewarm toggles.
   - `localWhisperThreads: number | null`
   - `localVadEnabled: boolean`
   - `localPrewarmEnabled: boolean`
+  - `debugTiming: boolean` (Phase 5: per-stage latency breakdown to the console)
 - Add internal timing payloads for dev/debug use:
   - stage name
   - duration in milliseconds

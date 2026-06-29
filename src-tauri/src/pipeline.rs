@@ -116,6 +116,7 @@ pub async fn process(app: AppHandle) {
         transcriber_model,
         vad_enabled,
         profile,
+        debug_timing,
     ) = {
         let s = settings.lock();
         let lang = if s.language == "auto" {
@@ -140,6 +141,7 @@ pub async fn process(app: AppHandle) {
             model,
             s.local_vad_enabled,
             s.local_transcription_profile.clone(),
+            s.debug_timing,
         )
     };
 
@@ -164,7 +166,7 @@ pub async fn process(app: AppHandle) {
         dictionary::hints(&conn, 100).unwrap_or_default()
     };
 
-    timings.set_context(&transcription_backend, &transcriber_model);
+    timings.set_context(&transcription_backend, &transcriber_model, &profile);
 
     // Phase 3 (optimization): local-only silence trimming + normalization. The
     // full WAV (built above) is what Groq uploads and what history replays; only
@@ -245,14 +247,31 @@ pub async fn process(app: AppHandle) {
         writing_sample: s.writing_sample,
     });
 
-    // LLM polish (no-op for CleanupLevel::None; fall back to raw text on error).
-    if !matches!(level, CleanupLevel::None) {
+    // Phase 5: polish is optional and never allowed to stall the pipeline.
+    //  - CleanupLevel::None skips the LLM entirely (no round-trip at all).
+    //  - Otherwise the call is bounded by POLISH_TIMEOUT; on timeout *or* error
+    //    we inject the best available transcript (the course-corrected text)
+    //    rather than making the user wait on a slow/hung model.
+    const POLISH_TIMEOUT: Duration = Duration::from_secs(20);
+    let polished = if matches!(level, CleanupLevel::None) {
+        corrected
+    } else {
         stage(&app, "Polishing");
-    }
-    let polished = polisher
-        .polish(corrected.clone(), level, style_hint)
+        let fallback = corrected.clone();
+        match tokio::time::timeout(
+            POLISH_TIMEOUT,
+            polisher.polish(corrected, level, style_hint),
+        )
         .await
-        .unwrap_or(corrected);
+        {
+            Ok(Ok(p)) => p,
+            Ok(Err(_)) => fallback,
+            Err(_) => {
+                eprintln!("[polish] timed out after {POLISH_TIMEOUT:?}; injecting raw transcript");
+                fallback
+            }
+        }
+    };
     timings.mark("polish");
 
     // Deterministic spoken-punctuation + list formatting runs AFTER the LLM so
@@ -359,8 +378,9 @@ pub async fn process(app: AppHandle) {
     );
 
     timings.mark("inject");
-    // Phase 1: log + persist the full stage breakdown for this session.
-    timings.finish(&app);
+    // Phase 1: log + persist the full stage breakdown for this session. Phase 5:
+    // when debug-timing is on, also print the detailed per-stage breakdown.
+    timings.finish(&app, debug_timing);
 
     let _ = app.emit_to(events::FLOWBAR, events::DONE, events::DonePayload { text });
     window_mgmt::hide_flowbar_after(app, 900);

@@ -80,6 +80,10 @@ chrono = { version = "0.4", features = ["clock"] }
 anyhow = "1"
 parking_lot = "0.12"
 async-trait = "0.1"
+# Phase 5 (optimization): `tokio::time::timeout` bounds the polish step so a slow
+# LLM never stalls injection. Tauri already pulls tokio in; the `time` feature is
+# the only piece we use directly.
+tokio = { version = "1", features = ["time"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

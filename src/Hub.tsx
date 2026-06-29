@@ -658,6 +658,19 @@ function SettingsPanel({
           />
         </label>
 
+        <label className="mt-4 flex cursor-pointer items-center justify-between gap-3">
+          <span className="text-sm text-ink-soft">
+            <span className="font-medium text-ink">Debug timing</span> — print a
+            detailed per-stage latency breakdown to the console for each dictation.
+          </span>
+          <input
+            type="checkbox"
+            checked={settings.debugTiming}
+            onChange={(e) => persist({ ...settings, debugTiming: e.target.checked })}
+            className="size-4 shrink-0 accent-accent"
+          />
+        </label>
+
         <div className="mt-5 border-t border-border pt-4">
           <UpdateChecker nonce={updateNonce} />
         </div>

@@ -98,6 +98,11 @@ pub struct Settings {
     /// backend is switched to local or a new model is picked. On by default.
     #[serde(default = "default_true")]
     pub local_prewarm_enabled: bool,
+    /// Phase 5 (optimization): debug timing mode. When on, each dictation prints
+    /// a detailed per-stage latency breakdown (each stage's share of total) to
+    /// the console, on top of the always-on one-line log + CSV row. Off by default.
+    #[serde(default)]
+    pub debug_timing: bool,
     /// Phase 8 vibe-coding: when the focused app is a code editor (Phase 6
     /// `Code` category), wrap spoken "backtick X backtick" spans in literal
     /// backticks before injection. Defaults on.
@@ -202,6 +207,7 @@ impl Default for Settings {
             local_whisper_threads: None,
             local_vad_enabled: true,
             local_prewarm_enabled: true,
+            debug_timing: false,
             vibe_coding: default_vibe_coding(),
             languages: default_languages(),
             paused_apps: default_paused_apps(),

@@ -36,6 +36,7 @@ export interface Settings {
   localWhisperThreads: number | null; // optimization: explicit whisper.cpp threads (null = auto)
   localVadEnabled: boolean; // optimization: trim silence before local inference
   localPrewarmEnabled: boolean; // optimization: prewarm local model on switch/select
+  debugTiming: boolean; // Phase 5: print a detailed per-stage latency breakdown per session
   vibeCoding: boolean; // Phase 8: wrap spoken "backtick X backtick" in code editors
   languages: string[]; // Phase 10: enabled languages (["auto"] = auto-detect)
   pausedApps: string[]; // Phase 10: process names where dictation is suppressed
@@ -65,6 +66,7 @@ export const DEFAULT_SETTINGS: Settings = {
   localWhisperThreads: null,
   localVadEnabled: true,
   localPrewarmEnabled: true,
+  debugTiming: false,
   vibeCoding: true,
   languages: ["auto"],
   pausedApps: ["1password.exe", "keepass.exe", "keepassxc.exe", "bitwarden.exe"],
