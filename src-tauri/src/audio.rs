@@ -16,6 +16,12 @@ use tauri::{AppHandle, Emitter};
 use crate::events;
 use crate::window_mgmt;
 
+/// Hard ceiling on buffered capture samples (~15 min at 48 kHz) so a stuck key
+/// can't grow the buffer without bound. Once reached we keep emitting amplitude
+/// (so the waveform stays live) but stop appending; the pipeline then encodes
+/// what we have and surfaces an over-length error for the cloud transcriber.
+const MAX_CAPTURE_SAMPLES: usize = 48_000 * 60 * 15;
+
 /// Names of available capture devices, for the Settings picker. The empty-string
 /// choice ("system default") is added by the UI, not here. Best-effort: returns
 /// an empty list if the host can't enumerate.
@@ -130,16 +136,21 @@ pub fn start_capture(
 
 fn ingest_f32(data: &[f32], channels: usize, buffer: &Mutex<Vec<f32>>, amp: &Mutex<f32>) {
     let mut buf = buffer.lock();
+    let full = buf.len() >= MAX_CAPTURE_SAMPLES;
     let mut peak = 0.0f32;
     if channels <= 1 {
-        buf.extend_from_slice(data);
+        if !full {
+            buf.extend_from_slice(data);
+        }
         for &s in data {
             peak = peak.max(s.abs());
         }
     } else {
         for frame in data.chunks(channels) {
             let m = frame.iter().copied().sum::<f32>() / channels as f32;
-            buf.push(m);
+            if !full {
+                buf.push(m);
+            }
             peak = peak.max(m.abs());
         }
     }
@@ -148,11 +159,14 @@ fn ingest_f32(data: &[f32], channels: usize, buffer: &Mutex<Vec<f32>>, amp: &Mut
 
 fn ingest_i16(data: &[i16], channels: usize, buffer: &Mutex<Vec<f32>>, amp: &Mutex<f32>) {
     let mut buf = buffer.lock();
+    let full = buf.len() >= MAX_CAPTURE_SAMPLES;
     let mut peak = 0.0f32;
     for frame in data.chunks(channels.max(1)) {
         let sum: f32 = frame.iter().map(|&s| s as f32 / 32768.0).sum();
         let m = sum / channels.max(1) as f32;
-        buf.push(m);
+        if !full {
+            buf.push(m);
+        }
         peak = peak.max(m.abs());
     }
     *amp.lock() = peak;

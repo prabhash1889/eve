@@ -107,15 +107,15 @@ pub fn run() {
             // accelerator shouldn't stop the app from launching.
             {
                 let state = app.state::<AppState>();
-                let main = state.main_shortcut.lock().clone();
+                let main = *state.main_shortcut.lock();
                 app.global_shortcut().register(main)?;
-                let copy = state.copy_shortcut.lock().clone();
+                let copy = *state.copy_shortcut.lock();
                 let _ = app.global_shortcut().register(copy);
                 // Phase 7: Command Mode + any transform accelerators (best-effort).
-                let command = state.command_shortcut.lock().clone();
+                let command = *state.command_shortcut.lock();
                 let _ = app.global_shortcut().register(command);
                 // Phase 9: Scratchpad open shortcut (best-effort).
-                let scratchpad = state.scratchpad_shortcut.lock().clone();
+                let scratchpad = *state.scratchpad_shortcut.lock();
                 let _ = app.global_shortcut().register(scratchpad);
                 command_mode::register_transform_shortcuts(app.handle(), &state);
             }

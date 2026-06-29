@@ -264,16 +264,16 @@ pub fn register_transform_shortcuts(app: &AppHandle, st: &AppState) {
     {
         let mut current = st.transform_shortcuts.lock();
         for (sc, _) in current.iter() {
-            let _ = gs.unregister(sc.clone());
+            let _ = gs.unregister(*sc);
         }
         current.clear();
     }
 
     let reserved = [
-        st.main_shortcut.lock().clone(),
-        st.copy_shortcut.lock().clone(),
-        st.command_shortcut.lock().clone(),
-        st.escape_shortcut.clone(),
+        *st.main_shortcut.lock(),
+        *st.copy_shortcut.lock(),
+        *st.command_shortcut.lock(),
+        st.escape_shortcut,
     ];
 
     let rows = {
@@ -289,7 +289,7 @@ pub fn register_transform_shortcuts(app: &AppHandle, st: &AppState) {
         if reserved.contains(&sc) || current.iter().any(|(existing, _)| *existing == sc) {
             continue;
         }
-        if gs.register(sc.clone()).is_ok() {
+        if gs.register(sc).is_ok() {
             current.push((sc, id));
         }
     }

@@ -194,6 +194,9 @@ pub fn load(path: &Path) -> Settings {
 
 /// Persist settings to disk (best-effort).
 pub fn save(path: &Path, settings: &Settings) -> std::io::Result<()> {
-    let json = serde_json::to_string_pretty(settings).unwrap_or_default();
+    // On a serialize error, return the error and leave the existing file intact
+    // rather than truncating it to an empty string (which would wipe settings).
+    let json = serde_json::to_string_pretty(settings)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(path, json)
 }

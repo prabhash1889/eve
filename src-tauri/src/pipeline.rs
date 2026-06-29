@@ -83,7 +83,7 @@ pub async fn process(app: AppHandle) {
         }
     };
 
-    let (language, lang_label, level, strategy, store_audio, vibe_coding) = {
+    let (language, lang_label, level, strategy, store_audio, vibe_coding, transcription_backend) = {
         let s = settings.lock();
         let lang = if s.language == "auto" {
             None
@@ -97,8 +97,21 @@ pub async fn process(app: AppHandle) {
             s.inject_strategy.clone(),
             s.audio_storage_policy != "never",
             s.vibe_coding,
+            s.transcription_backend.clone(),
         )
     };
+
+    // Groq rejects uploads over 25 MB (≈13 min of 16 kHz mono WAV). Detect that
+    // here and surface a clear "too long" message rather than letting the request
+    // fail with a generic "check your connection".
+    const GROQ_MAX_WAV_BYTES: usize = 25 * 1024 * 1024;
+    if transcription_backend == "groq" && wav.len() > GROQ_MAX_WAV_BYTES {
+        window_mgmt::fail(
+            &app,
+            "Recording too long — keep dictations under about 13 minutes",
+        );
+        return;
+    }
 
     // Keep a copy of the WAV for storage/replay unless the user opted out.
     let audio_bytes = if store_audio { Some(wav.clone()) } else { None };
@@ -337,6 +350,8 @@ fn friendly_error(err: &str) -> String {
         "Invalid Groq API key".into()
     } else if err.contains("429") {
         "Rate limited — try again in a moment".into()
+    } else if err.contains("413") || err.contains("too large") || err.contains("too long") {
+        "Recording too long — keep dictations under about 13 minutes".into()
     } else {
         "Transcription failed — check your connection".into()
     }

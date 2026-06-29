@@ -74,7 +74,9 @@ impl AppState {
         let copy = parse_shortcut(&settings.copy_shortcut);
         let command = parse_shortcut(&settings.command_shortcut);
         let scratchpad = parse_shortcut(&settings.scratchpad_shortcut);
-        let escape = Shortcut::from_str("Escape").expect("valid escape shortcut");
+        // "Escape" always parses, but fall back gracefully instead of panicking
+        // at startup if a future toolkit change ever rejects it.
+        let escape = parse_shortcut("Escape");
         // Build the shared settings Arc first so the routers can read live
         // backend selections from the same source the commands write to.
         let settings = Arc::new(Mutex::new(settings));

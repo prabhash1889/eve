@@ -39,7 +39,13 @@ export function HistoryPage() {
   }, [query]);
 
   const onDelete = async (t: Transcript) => {
-    await api.deleteTranscript(t.id).catch(() => {});
+    // Only drop the row from the UI if the backend delete actually succeeded —
+    // otherwise it would vanish from the list while still living in the DB.
+    try {
+      await api.deleteTranscript(t.id);
+    } catch {
+      return;
+    }
     setItems((xs) => xs.filter((x) => x.id !== t.id));
     setTotal((n) => Math.max(0, n - 1));
     setRecoverable((xs) => [t, ...xs]);

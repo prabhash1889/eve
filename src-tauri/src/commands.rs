@@ -34,11 +34,11 @@ pub fn set_shortcut(
     shortcut: String,
 ) -> Result<(), String> {
     let new_shortcut = state::parse_shortcut(&shortcut);
-    let old_shortcut = state.main_shortcut.lock().clone();
+    let old_shortcut = *state.main_shortcut.lock();
 
     let gs = app.global_shortcut();
     let _ = gs.unregister(old_shortcut);
-    gs.register(new_shortcut.clone()).map_err(|e| e.to_string())?;
+    gs.register(new_shortcut).map_err(|e| e.to_string())?;
 
     *state.main_shortcut.lock() = new_shortcut;
 
@@ -55,11 +55,11 @@ pub fn set_copy_shortcut(
     shortcut: String,
 ) -> Result<(), String> {
     let new_shortcut = state::parse_shortcut(&shortcut);
-    let old_shortcut = state.copy_shortcut.lock().clone();
+    let old_shortcut = *state.copy_shortcut.lock();
 
     let gs = app.global_shortcut();
     let _ = gs.unregister(old_shortcut);
-    gs.register(new_shortcut.clone()).map_err(|e| e.to_string())?;
+    gs.register(new_shortcut).map_err(|e| e.to_string())?;
 
     *state.copy_shortcut.lock() = new_shortcut;
 
@@ -355,11 +355,11 @@ pub fn set_command_shortcut(
     shortcut: String,
 ) -> Result<(), String> {
     let new_shortcut = state::parse_shortcut(&shortcut);
-    let old_shortcut = state.command_shortcut.lock().clone();
+    let old_shortcut = *state.command_shortcut.lock();
 
     let gs = app.global_shortcut();
     let _ = gs.unregister(old_shortcut);
-    gs.register(new_shortcut.clone()).map_err(|e| e.to_string())?;
+    gs.register(new_shortcut).map_err(|e| e.to_string())?;
 
     *state.command_shortcut.lock() = new_shortcut;
 
@@ -457,11 +457,11 @@ pub fn set_scratchpad_shortcut(
     shortcut: String,
 ) -> Result<(), String> {
     let new_shortcut = state::parse_shortcut(&shortcut);
-    let old_shortcut = state.scratchpad_shortcut.lock().clone();
+    let old_shortcut = *state.scratchpad_shortcut.lock();
 
     let gs = app.global_shortcut();
     let _ = gs.unregister(old_shortcut);
-    gs.register(new_shortcut.clone()).map_err(|e| e.to_string())?;
+    gs.register(new_shortcut).map_err(|e| e.to_string())?;
 
     *state.scratchpad_shortcut.lock() = new_shortcut;
 

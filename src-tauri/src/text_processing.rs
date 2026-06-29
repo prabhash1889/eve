@@ -143,8 +143,8 @@ fn is_word_boundary(s: &str, start: usize, end: usize) -> bool {
     let before_ok = s[..start]
         .chars()
         .next_back()
-        .map_or(true, |c| !c.is_alphanumeric());
-    let after_ok = s[end..].chars().next().map_or(true, |c| !c.is_alphanumeric());
+        .is_none_or(|c| !c.is_alphanumeric());
+    let after_ok = s[end..].chars().next().is_none_or(|c| !c.is_alphanumeric());
     before_ok && after_ok
 }
 

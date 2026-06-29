@@ -73,7 +73,7 @@ export function LocalModelsPage({
       }),
     ];
     return () => {
-      subs.forEach((s) => s.then((un) => un()));
+      subs.forEach((s) => s.then((un) => un()).catch(() => {}));
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load]);

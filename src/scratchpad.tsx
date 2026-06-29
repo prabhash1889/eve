@@ -40,6 +40,9 @@ function Scratchpad() {
   // before switching/closing tabs (otherwise the debounce can drop the last
   // edits or fire against a deleted tab).
   const pending = useRef<{ id: number; title: string; content: string } | null>(null);
+  // Dictation text that arrived before the editor finished mounting, flushed in
+  // order once `editorRef.current` is set (otherwise the insert was dropped).
+  const pendingInserts = useRef<string[]>([]);
   activeIdRef.current = activeId;
   tabsRef.current = tabs;
 
@@ -76,6 +79,14 @@ function Scratchpad() {
 
   useEffect(() => {
     editorRef.current = editor;
+    // Flush any dictation that arrived before the editor was ready.
+    if (editor && pendingInserts.current.length > 0) {
+      const queued = pendingInserts.current;
+      pendingInserts.current = [];
+      for (const text of queued) {
+        editor.chain().focus().insertContent(textToHtml(text)).run();
+      }
+    }
   }, [editor]);
 
   // Debounced autosave of the active tab's title + content.
@@ -147,7 +158,12 @@ function Scratchpad() {
   useEffect(() => {
     const un = on<TranscriptPayload>(EVT.scratchpadInsert, (e) => {
       const ed = editorRef.current;
-      if (!ed) return;
+      // Editor not mounted yet — queue the text and flush it once it is, rather
+      // than silently dropping the dictation.
+      if (!ed) {
+        pendingInserts.current.push(e.payload.text);
+        return;
+      }
       ed.chain().focus().insertContent(textToHtml(e.payload.text)).run();
     });
     return () => {

@@ -30,7 +30,9 @@ type State =
 const BARS = 28;
 
 function FlowBar() {
-  const [state, setState] = useState<State>("listening");
+  // Start idle (renders nothing) until a session actually begins, so a freshly
+  // shown bar never flashes a stale "listening" waveform.
+  const [state, setState] = useState<State>("idle");
   const [errMsg, setErrMsg] = useState("");
   const [levels, setLevels] = useState<number[]>(() => new Array(BARS).fill(0.05));
   const [transcript, setTranscript] = useState("");
@@ -79,9 +81,18 @@ function FlowBar() {
       on(EVT.paused, () => setState("paused")),
     ];
     return () => {
-      unlisteners.forEach((u) => u.then((fn) => fn()));
+      unlisteners.forEach((u) => u.then((fn) => fn()).catch(() => {}));
     };
   }, []);
+
+  // Watchdog: if the backend dies mid-pipeline, "processing" would otherwise hang
+  // forever. Auto-dismiss to idle after a generous timeout so the bar can't get
+  // permanently stuck.
+  useEffect(() => {
+    if (state !== "processing") return;
+    const t = window.setTimeout(() => setState("idle"), 30000);
+    return () => window.clearTimeout(t);
+  }, [state]);
 
   // Collapse newlines so the preview stays a single, readable line in the pill.
   const preview = transcript.replace(/\s*\n+\s*/g, " ").trim();
@@ -131,7 +142,7 @@ function FlowBar() {
             <ShieldOff size={14} className="text-ink-faint" /> Paused here
           </span>
         )}
-        {state === "idle" && <span className="text-sm text-ink-faint">Ready</span>}
+        {/* idle renders nothing — the bar is hidden by Rust until a session starts */}
       </div>
     </div>
   );

@@ -15,10 +15,29 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 use windows::Win32::Foundation::HWND;
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    keybd_event, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_C, VK_CONTROL, VK_V,
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+    VIRTUAL_KEY, VK_C, VK_CONTROL, VK_V,
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{IsWindow, SetForegroundWindow};
+
+/// Restores a previously-saved clipboard value when dropped, so the user's prior
+/// clipboard comes back even if we bail (or panic) between writing our payload
+/// and the normal restore point.
+#[cfg(windows)]
+struct ClipboardGuard<'a> {
+    app: &'a AppHandle,
+    previous: Option<String>,
+}
+
+#[cfg(windows)]
+impl Drop for ClipboardGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(prev) = self.previous.take() {
+            let _ = self.app.clipboard().write_text(prev);
+        }
+    }
+}
 
 pub fn inject(app: &AppHandle, text: &str, hwnd: isize, strategy: &str) -> anyhow::Result<()> {
     if text.is_empty() {
@@ -39,7 +58,12 @@ fn inject_paste(app: &AppHandle, text: &str, hwnd: isize) -> anyhow::Result<()> 
     }
 
     let clip = app.clipboard();
-    let previous = clip.read_text().ok();
+    // Capture the prior clipboard and arm a drop guard so it is restored on every
+    // exit path — including an early `?` return or a panic during the paste.
+    let _restore = ClipboardGuard {
+        app,
+        previous: clip.read_text().ok(),
+    };
 
     clip.write_text(text.to_string())
         .map_err(|e| anyhow::anyhow!("clipboard write failed: {e}"))?;
@@ -48,10 +72,7 @@ fn inject_paste(app: &AppHandle, text: &str, hwnd: isize) -> anyhow::Result<()> 
     send_ctrl_v();
     thread::sleep(Duration::from_millis(150));
 
-    // Restore the user's prior clipboard (skip silently if it was empty).
-    if let Some(prev) = previous {
-        let _ = clip.write_text(prev);
-    }
+    // `_restore` drops here, putting the user's prior clipboard back.
     Ok(())
 }
 
@@ -75,7 +96,11 @@ pub fn capture_selection(app: &AppHandle, hwnd: isize) -> Option<String> {
     }
 
     let clip = app.clipboard();
-    let previous = clip.read_text().ok();
+    // Restore the prior clipboard on every exit path (guard drops at return).
+    let _restore = ClipboardGuard {
+        app,
+        previous: clip.read_text().ok(),
+    };
 
     // Clear so a Ctrl+C with no selection leaves the clipboard empty (rather
     // than echoing whatever was there before).
@@ -83,13 +108,17 @@ pub fn capture_selection(app: &AppHandle, hwnd: isize) -> Option<String> {
 
     thread::sleep(Duration::from_millis(40));
     send_ctrl_c();
-    thread::sleep(Duration::from_millis(120));
 
-    let selected = clip.read_text().ok().filter(|s| !s.is_empty());
-
-    // Restore the user's prior clipboard.
-    if let Some(prev) = previous {
-        let _ = clip.write_text(prev);
+    // Poll for the copied selection to land instead of a single fixed wait —
+    // heavy apps can take longer than a flat 120 ms, after which they'd silently
+    // fall back to "nothing selected". Re-read until non-empty or ~600 ms.
+    let mut selected = None;
+    for _ in 0..30 {
+        thread::sleep(Duration::from_millis(20));
+        if let Some(s) = clip.read_text().ok().filter(|s| !s.is_empty()) {
+            selected = Some(s);
+            break;
+        }
     }
     selected
 }
@@ -126,22 +155,46 @@ fn restore_focus(hwnd: isize) -> bool {
     }
 }
 
+/// Build a single keyboard `INPUT` event for `SendInput`.
 #[cfg(windows)]
-fn send_ctrl_v() {
+fn key_event(vk: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: vk,
+                wScan: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
+}
+
+/// Press `modifier`+`key` then release both via a single `SendInput` batch.
+/// `SendInput` is the modern, non-deprecated path (`keybd_event` is deprecated)
+/// and injects the four events atomically, which some security software trusts
+/// where individual `keybd_event` calls are dropped.
+#[cfg(windows)]
+fn send_combo(modifier: VIRTUAL_KEY, key: VIRTUAL_KEY) {
+    let inputs = [
+        key_event(modifier, KEYBD_EVENT_FLAGS(0)),
+        key_event(key, KEYBD_EVENT_FLAGS(0)),
+        key_event(key, KEYEVENTF_KEYUP),
+        key_event(modifier, KEYEVENTF_KEYUP),
+    ];
     unsafe {
-        keybd_event(VK_CONTROL.0 as u8, 0, KEYBD_EVENT_FLAGS(0), 0);
-        keybd_event(VK_V.0 as u8, 0, KEYBD_EVENT_FLAGS(0), 0);
-        keybd_event(VK_V.0 as u8, 0, KEYEVENTF_KEYUP, 0);
-        keybd_event(VK_CONTROL.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
     }
 }
 
 #[cfg(windows)]
+fn send_ctrl_v() {
+    send_combo(VK_CONTROL, VK_V);
+}
+
+#[cfg(windows)]
 fn send_ctrl_c() {
-    unsafe {
-        keybd_event(VK_CONTROL.0 as u8, 0, KEYBD_EVENT_FLAGS(0), 0);
-        keybd_event(VK_C.0 as u8, 0, KEYBD_EVENT_FLAGS(0), 0);
-        keybd_event(VK_C.0 as u8, 0, KEYEVENTF_KEYUP, 0);
-        keybd_event(VK_CONTROL.0 as u8, 0, KEYEVENTF_KEYUP, 0);
-    }
+    send_combo(VK_CONTROL, VK_C);
 }

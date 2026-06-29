@@ -150,7 +150,7 @@ pub fn on_copy(app: &AppHandle, st: &AppState) {
 
 pub(crate) fn register_escape(app: &AppHandle, st: &AppState) {
     let handle = app.clone();
-    let esc = st.escape_shortcut.clone();
+    let esc = st.escape_shortcut;
     tauri::async_runtime::spawn(async move {
         let _ = handle.global_shortcut().register(esc);
     });
@@ -158,7 +158,7 @@ pub(crate) fn register_escape(app: &AppHandle, st: &AppState) {
 
 pub(crate) fn unregister_escape(app: &AppHandle, st: &AppState) {
     let handle = app.clone();
-    let esc = st.escape_shortcut.clone();
+    let esc = st.escape_shortcut;
     tauri::async_runtime::spawn(async move {
         let _ = handle.global_shortcut().unregister(esc);
     });

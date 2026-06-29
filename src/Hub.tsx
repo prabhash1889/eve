@@ -645,8 +645,14 @@ function SettingsPanel({
             checked={settings.launchAtStartup}
             onChange={async (e) => {
               const enabled = e.target.checked;
+              const prev = settings.launchAtStartup;
               setSettings({ ...settings, launchAtStartup: enabled });
-              await api.setAutostart(enabled).catch(() => {});
+              try {
+                await api.setAutostart(enabled);
+              } catch {
+                // Revert the toggle if the OS autostart change didn't take.
+                setSettings({ ...settings, launchAtStartup: prev });
+              }
             }}
             className="size-4 shrink-0 accent-accent"
           />
