@@ -14,6 +14,13 @@ use crate::{audio, events, pipeline, window_mgmt};
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 pub fn on_press(app: &AppHandle, st: &AppState) {
+    // Refuse to start a new capture while the previous dictation is still being
+    // processed (transcribe → polish → inject). Without this, a rapid
+    // press-release-press could spawn two overlapping pipelines that inject out
+    // of order or into the wrong window.
+    if st.is_processing.load(Ordering::SeqCst) {
+        return;
+    }
     // Ignore the key-repeat that Windows fires while the key is held.
     if st.is_recording.swap(true, Ordering::SeqCst) {
         return;
@@ -98,6 +105,9 @@ pub fn on_release(app: &AppHandle, st: &AppState) {
     if !st.is_recording.swap(false, Ordering::SeqCst) {
         return;
     }
+    // Mark the pipeline in-flight; `process` clears it via a drop guard on every
+    // exit path (success, error, or early return).
+    st.is_processing.store(true, Ordering::SeqCst);
     unregister_escape(app, st);
     let _ = app.emit_to(events::FLOWBAR, events::PROCESSING, ());
 

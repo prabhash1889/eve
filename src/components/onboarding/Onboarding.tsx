@@ -35,9 +35,16 @@ export function Onboarding({
   const [draft, setDraft] = useState<Settings>(settings);
   const [apiKey, setApiKey] = useState("");
   const [hasKey, setHasKey] = useState(false);
+  const [finishError, setFinishError] = useState<string | null>(null);
 
   useEffect(() => {
     api.hasApiKey().then(setHasKey).catch(() => {});
+    // Mark onboarding as seen the moment it first appears, so first-run is
+    // truly once-only: even if the user closes the window before reaching the
+    // final step, it won't reappear on the next launch. `finish()` re-saves the
+    // full draft when they complete the flow normally.
+    api.updateSettings({ ...settings, onboardingComplete: true }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const steps = ["Welcome", "API key", "Hotkey", "Languages", "Mic check", "Cleanup"];
@@ -57,7 +64,13 @@ export function Onboarding({
     } catch {
       /* keep going even if the accelerator is taken */
     }
-    await api.updateSettings(final).catch(() => {});
+    try {
+      await api.updateSettings(final);
+    } catch {
+      // Don't claim onboarding finished if we couldn't persist the choices.
+      setFinishError("Couldn't save your settings. Please try again.");
+      return;
+    }
     onComplete(final);
   };
 
@@ -110,6 +123,9 @@ export function Onboarding({
         </div>
 
         {/* Footer nav */}
+        {finishError && (
+          <p className="border-t border-border px-8 pt-3 text-xs text-danger">{finishError}</p>
+        )}
         <div className="flex items-center justify-between border-t border-border px-8 py-4">
           <button
             onClick={back}
@@ -208,11 +224,20 @@ function ApiKeyStep({
   onSaved: () => void;
 }) {
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const save = async () => {
     if (!apiKey.trim()) return;
-    await api.storeApiKey(apiKey.trim()).catch(() => {});
+    try {
+      await api.storeApiKey(apiKey.trim());
+    } catch {
+      // Surface the failure instead of claiming success — otherwise the user
+      // thinks the key saved and dictation silently fails later.
+      setError("Couldn't save the key. Check it and try again.");
+      return;
+    }
     setApiKey("");
     setSaved(true);
+    setError(null);
     onSaved();
   };
   return (
@@ -242,6 +267,9 @@ function ApiKeyStep({
             {saved ? "Saved ✓" : "Save"}
           </button>
         </div>
+      )}
+      {error && (
+        <p className="mt-3 text-xs text-danger">{error}</p>
       )}
       <p className="mt-3 text-xs text-ink-faint">
         Get a free key at console.groq.com. You can also add it later in Settings — Eve just

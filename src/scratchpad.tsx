@@ -36,6 +36,10 @@ function Scratchpad() {
   const activeIdRef = useRef<number | null>(null);
   const tabsRef = useRef<ScratchpadTab[]>([]);
   const saveTimer = useRef<number | null>(null);
+  // The save currently waiting on `saveTimer`, so we can flush or cancel it
+  // before switching/closing tabs (otherwise the debounce can drop the last
+  // edits or fire against a deleted tab).
+  const pending = useRef<{ id: number; title: string; content: string } | null>(null);
   activeIdRef.current = activeId;
   tabsRef.current = tabs;
 
@@ -77,9 +81,34 @@ function Scratchpad() {
   // Debounced autosave of the active tab's title + content.
   const persist = useCallback((id: number, title: string, content: string) => {
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    pending.current = { id, title, content };
     saveTimer.current = window.setTimeout(() => {
       api.saveScratchpadTab(id, title, content).catch(() => {});
+      pending.current = null;
+      saveTimer.current = null;
     }, 500);
+  }, []);
+
+  // Immediately write any pending debounced save and clear the timer.
+  const flushPending = useCallback(() => {
+    if (saveTimer.current) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    const p = pending.current;
+    if (p) {
+      api.saveScratchpadTab(p.id, p.title, p.content).catch(() => {});
+      pending.current = null;
+    }
+  }, []);
+
+  // Drop a pending save without writing it (used when its tab is being deleted).
+  const cancelPending = useCallback(() => {
+    if (saveTimer.current) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    pending.current = null;
   }, []);
 
   const onEditorChange = useCallback(
@@ -128,7 +157,9 @@ function Scratchpad() {
 
   const switchTo = (id: number) => {
     if (id === activeId) return;
-    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    // Flush the outgoing tab's pending edits before the editor reloads with the
+    // new tab's content, so a switch within the debounce window doesn't lose them.
+    flushPending();
     setActiveId(id);
   };
 
@@ -140,6 +171,14 @@ function Scratchpad() {
   };
 
   const closeTab = async (id: number) => {
+    // If the pending save targets the tab being closed, drop it so it can't
+    // fire against a deleted row; otherwise flush it so a different tab's edits
+    // aren't lost.
+    if (pending.current?.id === id) {
+      cancelPending();
+    } else {
+      flushPending();
+    }
     await api.deleteScratchpadTab(id).catch(() => {});
     const remaining = tabs.filter((t) => t.id !== id);
     if (remaining.length === 0) {

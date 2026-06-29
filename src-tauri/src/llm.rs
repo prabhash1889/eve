@@ -3,10 +3,28 @@
 //! request/response: callers own any prompt building and output post-processing
 //! (e.g. `polish::strip_wrapping`).
 
+use std::sync::OnceLock;
+use std::time::Duration;
+
 use crate::secrets;
 
 /// Default chat model — Groq Llama, matching the polisher.
 pub const DEFAULT_MODEL: &str = "llama-3.1-8b-instant";
+
+/// Shared HTTP client for Groq API calls. Built once with finite timeouts
+/// (10s to connect, 60s overall) so a dead connection can never hang the
+/// pipeline forever, and reused across calls so we don't churn the connection
+/// pool / leak TIME_WAIT sockets.
+pub fn groq_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
 
 /// One-shot system+user chat completion at the default model/temperature.
 pub async fn chat(system: &str, user: &str) -> anyhow::Result<String> {
@@ -33,7 +51,7 @@ pub async fn chat_with(
         ],
     });
 
-    let resp = reqwest::Client::new()
+    let resp = groq_client()
         .post("https://api.groq.com/openai/v1/chat/completions")
         .bearer_auth(key)
         .json(&body)

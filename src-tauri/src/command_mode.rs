@@ -131,8 +131,8 @@ async fn process_command(app: AppHandle) {
     })
     .await
     {
-        Ok(w) => w,
-        Err(_) => {
+        Ok(Ok(w)) => w,
+        Ok(Err(_)) | Err(_) => {
             window_mgmt::fail(&app, "Audio processing failed");
             return;
         }

@@ -18,7 +18,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     keybd_event, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_C, VK_CONTROL, VK_V,
 };
 #[cfg(windows)]
-use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+use windows::Win32::UI::WindowsAndMessaging::{IsWindow, SetForegroundWindow};
 
 pub fn inject(app: &AppHandle, text: &str, hwnd: isize, strategy: &str) -> anyhow::Result<()> {
     if text.is_empty() {
@@ -32,13 +32,18 @@ pub fn inject(app: &AppHandle, text: &str, hwnd: isize, strategy: &str) -> anyho
 
 #[cfg(windows)]
 fn inject_paste(app: &AppHandle, text: &str, hwnd: isize) -> anyhow::Result<()> {
+    // Abort before touching the clipboard if we can't restore focus to the
+    // original target — otherwise Ctrl+V would fire into whatever now has focus.
+    if !restore_focus(hwnd) {
+        anyhow::bail!("Target window is no longer available — nothing was pasted");
+    }
+
     let clip = app.clipboard();
     let previous = clip.read_text().ok();
 
     clip.write_text(text.to_string())
         .map_err(|e| anyhow::anyhow!("clipboard write failed: {e}"))?;
 
-    restore_focus(hwnd);
     thread::sleep(Duration::from_millis(40));
     send_ctrl_v();
     thread::sleep(Duration::from_millis(150));
@@ -63,6 +68,12 @@ fn inject_paste(_app: &AppHandle, text: &str, _hwnd: isize) -> anyhow::Result<()
 /// restore it before returning).
 #[cfg(windows)]
 pub fn capture_selection(app: &AppHandle, hwnd: isize) -> Option<String> {
+    // Bail if the target window is gone — copying from the wrong window would
+    // return a bogus selection.
+    if !restore_focus(hwnd) {
+        return None;
+    }
+
     let clip = app.clipboard();
     let previous = clip.read_text().ok();
 
@@ -70,7 +81,6 @@ pub fn capture_selection(app: &AppHandle, hwnd: isize) -> Option<String> {
     // than echoing whatever was there before).
     let _ = clip.write_text(String::new());
 
-    restore_focus(hwnd);
     thread::sleep(Duration::from_millis(40));
     send_ctrl_c();
     thread::sleep(Duration::from_millis(120));
@@ -99,13 +109,20 @@ fn inject_type(text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Bring the captured target window to the foreground. Returns `false` if the
+/// HWND is null, no longer a valid window, or the OS refuses the foreground
+/// switch — callers must not paste/copy in that case.
 #[cfg(windows)]
-fn restore_focus(hwnd: isize) {
+fn restore_focus(hwnd: isize) -> bool {
     if hwnd == 0 {
-        return;
+        return false;
     }
     unsafe {
-        let _ = SetForegroundWindow(HWND(hwnd as *mut core::ffi::c_void));
+        let target = HWND(hwnd as *mut core::ffi::c_void);
+        if !IsWindow(target).as_bool() {
+            return false;
+        }
+        SetForegroundWindow(target).as_bool()
     }
 }
 

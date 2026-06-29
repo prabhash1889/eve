@@ -1,7 +1,8 @@
 //! The dictation pipeline that runs after the key is released:
 //! drain audio → resample/encode → transcribe (Groq) → polish → inject.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -13,7 +14,19 @@ use crate::polish::StyleHint;
 use crate::state::AppState;
 use crate::{audio, events, injection, text_processing, window_mgmt};
 
+/// Clears `is_processing` on drop, so the concurrency guard is released on every
+/// exit path of `process` — including the many early returns and any panic.
+struct ProcessingGuard(Arc<AtomicBool>);
+impl Drop for ProcessingGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 pub async fn process(app: AppHandle) {
+    // Release the concurrency flag whenever this function returns.
+    let _processing = ProcessingGuard(app.state::<AppState>().is_processing.clone());
+
     // Snapshot the Arc-backed state up front so we never hold the guard across an await.
     let (buffer, sample_rate, settings, transcriber, polisher, last_transcript, db, hwnd, context, to_scratchpad) = {
         let st = app.state::<AppState>();
@@ -63,8 +76,8 @@ pub async fn process(app: AppHandle) {
     })
     .await
     {
-        Ok(w) => w,
-        Err(_) => {
+        Ok(Ok(w)) => w,
+        Ok(Err(_)) | Err(_) => {
             window_mgmt::fail(&app, "Audio processing failed");
             return;
         }
@@ -196,6 +209,10 @@ pub async fn process(app: AppHandle) {
         events::TranscriptPayload { text: text.clone() },
     );
 
+    // Record the transcript before injecting so the copy-last shortcut can still
+    // retrieve it even if the paste below fails (e.g. the target window closed).
+    *last_transcript.lock() = Some(text.clone());
+
     // Phase 9: if the Scratchpad window had focus at record start, route the
     // text into its editor (the window listens for `scratchpad://insert`)
     // instead of OS-pasting into a foreign app.
@@ -209,13 +226,24 @@ pub async fn process(app: AppHandle) {
         // Inject into the focused app (blocking: clipboard + key simulation).
         let app_for_inject = app.clone();
         let inject_text = text.clone();
-        let _ = tauri::async_runtime::spawn_blocking(move || {
+        let inject_result = tauri::async_runtime::spawn_blocking(move || {
             injection::inject(&app_for_inject, &inject_text, hwnd, &strategy)
         })
         .await;
+        match inject_result {
+            Ok(Ok(())) => {}
+            // Surface a real failure (e.g. the target window was closed before
+            // release) instead of silently dropping the text into nowhere.
+            Ok(Err(e)) => {
+                window_mgmt::fail(&app, &e.to_string());
+                return;
+            }
+            Err(_) => {
+                window_mgmt::fail(&app, "Couldn't paste the transcribed text");
+                return;
+            }
+        }
     }
-
-    *last_transcript.lock() = Some(text.clone());
 
     // Phase 8: how much cleanup this dictation needed (raw → final word edits),
     // folded into the daily rollup for the Insights page.

@@ -177,8 +177,9 @@ pub fn resample_to_16k(samples: &[f32], src_rate: u32) -> Vec<f32> {
     out
 }
 
-/// Encode mono f32 samples as 16-bit PCM WAV at 16 kHz.
-pub fn encode_wav(samples: &[f32]) -> Vec<u8> {
+/// Encode mono f32 samples as 16-bit PCM WAV at 16 kHz. Returns an error
+/// instead of panicking so a writer failure surfaces as a normal pipeline error.
+pub fn encode_wav(samples: &[f32]) -> anyhow::Result<Vec<u8>> {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: 16_000,
@@ -187,12 +188,17 @@ pub fn encode_wav(samples: &[f32]) -> Vec<u8> {
     };
     let mut cursor = std::io::Cursor::new(Vec::<u8>::new());
     {
-        let mut writer = hound::WavWriter::new(&mut cursor, spec).expect("create wav writer");
+        let mut writer = hound::WavWriter::new(&mut cursor, spec)
+            .map_err(|e| anyhow::anyhow!("create wav writer: {e}"))?;
         for &s in samples {
             let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
-            let _ = writer.write_sample(v);
+            writer
+                .write_sample(v)
+                .map_err(|e| anyhow::anyhow!("write wav sample: {e}"))?;
         }
-        let _ = writer.finalize();
+        writer
+            .finalize()
+            .map_err(|e| anyhow::anyhow!("finalize wav: {e}"))?;
     }
-    cursor.into_inner()
+    Ok(cursor.into_inner())
 }

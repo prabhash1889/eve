@@ -261,12 +261,32 @@ impl Polisher for LocalPolisher {
         }
 
         let (id, path) = self.resolve()?;
-        let model = {
+        // Fast path: reuse the cached model. Hold the lock only briefly — never
+        // across the heavy load below.
+        let cached = {
+            let cache = self.cache.lock();
+            match cache.as_ref() {
+                Some((cached_id, m)) if *cached_id == id => Some(m.clone()),
+                _ => None,
+            }
+        };
+        let model = if let Some(m) = cached {
+            m
+        } else {
+            // Cold load: `LlamaModel::load_from_file` maps a multi-hundred-MB
+            // GGUF and is blocking — run it off the async runtime with no lock
+            // held.
+            let load_path = path.clone();
+            let loaded = tauri::async_runtime::spawn_blocking(move || load_llm(&load_path))
+                .await
+                .map_err(|e| anyhow::anyhow!("Model load task failed: {e}"))??;
+            let m = Arc::new(loaded);
+            // Re-check after loading: another call may have populated the cache
+            // concurrently. Prefer the existing entry to avoid a duplicate.
             let mut cache = self.cache.lock();
             match cache.as_ref() {
-                Some((cached_id, m)) if *cached_id == id => m.clone(),
+                Some((cached_id, existing)) if *cached_id == id => existing.clone(),
                 _ => {
-                    let m = Arc::new(load_llm(&path)?);
                     *cache = Some((id.clone(), m.clone()));
                     m
                 }
@@ -393,16 +413,21 @@ fn generate(
     }
     ctx.decode(&mut batch).map_err(|e| anyhow::anyhow!("decode: {e}"))?;
 
-    // Cap output relative to input so polish can't run away.
-    let max_new = (tokens.len() + 256).min(2000);
+    // Cap the number of *new* tokens relative to where the prompt ends, not as
+    // an absolute position. The old `min(prompt + 256, 2000)` meant a prompt
+    // longer than 2000 tokens produced zero output (the loop's `n_cur < max_new`
+    // was already false), silently falling back to raw. Bounding the *count* and
+    // clamping to the context window fixes long transcripts.
+    const MAX_NEW_TOKENS: i32 = 512;
     let mut sampler = LlamaSampler::greedy();
     let mut n_cur = batch.n_tokens();
+    let max_new = (n_cur + MAX_NEW_TOKENS).min(4096);
     let mut out = String::new();
     // One decoder reused across tokens so multi-byte UTF-8 split across pieces
     // decodes correctly.
     let mut decoder = encoding_rs::UTF_8.new_decoder();
 
-    while (n_cur as usize) < max_new {
+    while n_cur < max_new {
         let token = sampler.sample(&ctx, batch.n_tokens() - 1);
         sampler.accept(token);
         if model.is_eog_token(token) {

@@ -344,6 +344,7 @@ function SettingsPanel({
 }) {
   const [apiKey, setApiKey] = useState("");
   const [savedFlash, setSavedFlash] = useState(false);
+  const [keyError, setKeyError] = useState<string | null>(null);
   const [inputDevices, setInputDevices] = useState<string[]>([]);
 
   // Enumerate capture devices for the microphone picker (best-effort).
@@ -358,9 +359,16 @@ function SettingsPanel({
 
   const saveKey = async () => {
     if (!apiKey.trim()) return;
-    await api.storeApiKey(apiKey.trim());
+    try {
+      await api.storeApiKey(apiKey.trim());
+    } catch {
+      // Surface the failure rather than flashing "Saved ✓" on a rejected store.
+      setKeyError("Couldn't save the key. Please try again.");
+      return;
+    }
     setApiKey("");
     setHasKey(true);
+    setKeyError(null);
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 1500);
   };
@@ -388,11 +396,17 @@ function SettingsPanel({
             {savedFlash ? "Saved ✓" : "Save"}
           </button>
         </div>
+        {keyError && <p className="mt-2 text-xs text-danger">{keyError}</p>}
         {hasKey && (
           <button
             onClick={async () => {
-              await api.clearApiKey();
-              setHasKey(false);
+              try {
+                await api.clearApiKey();
+                setHasKey(false);
+                setKeyError(null);
+              } catch {
+                setKeyError("Couldn't remove the key. Please try again.");
+              }
             }}
             className="mt-2 text-xs text-ink-faint underline hover:text-danger"
           >

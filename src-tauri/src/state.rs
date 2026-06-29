@@ -19,6 +19,11 @@ use crate::transcription::{RoutingTranscriber, Transcriber};
 
 pub struct AppState {
     pub is_recording: Arc<AtomicBool>,
+    /// Set true from key-up until `pipeline::process` finishes (success, error,
+    /// or cancel). `hotkey::on_press` refuses to start a new capture while it is
+    /// set, so a rapid press while the previous dictation is still transcribing
+    /// can't spawn a second, overlapping pipeline.
+    pub is_processing: Arc<AtomicBool>,
     pub audio_buffer: Arc<Mutex<Vec<f32>>>,
     pub sample_rate: Arc<AtomicU32>,
     pub current_amplitude: Arc<Mutex<f32>>,
@@ -75,6 +80,7 @@ impl AppState {
         let settings = Arc::new(Mutex::new(settings));
         Self {
             is_recording: Arc::new(AtomicBool::new(false)),
+            is_processing: Arc::new(AtomicBool::new(false)),
             audio_buffer: Arc::new(Mutex::new(Vec::new())),
             sample_rate: Arc::new(AtomicU32::new(16_000)),
             current_amplitude: Arc::new(Mutex::new(0.0)),

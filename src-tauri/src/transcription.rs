@@ -31,8 +31,16 @@ pub struct GroqTranscriber {
 
 impl GroqTranscriber {
     pub fn new() -> Self {
+        // Finite timeouts so a stalled upload/connection can't hang the pipeline
+        // forever. Transcription of a long clip can take a while, so the overall
+        // timeout is more generous than the chat client's.
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
-            client: reqwest::Client::new(),
+            client,
             model: "whisper-large-v3-turbo".into(),
         }
     }
@@ -156,19 +164,36 @@ impl Transcriber for LocalTranscriber {
 
         let (id, path) = self.resolve()?;
 
-        // Load (or reuse the cached) context for the selected model.
-        let ctx = {
+        // Fast path: reuse the cached context if it matches the selection. Take
+        // the lock only briefly — never across the heavy load below.
+        let cached = {
+            let cache = self.cache.lock();
+            match cache.as_ref() {
+                Some((cached_id, ctx)) if *cached_id == id => Some(ctx.clone()),
+                _ => None,
+            }
+        };
+        let ctx = if let Some(ctx) = cached {
+            ctx
+        } else {
+            // Cold load: `WhisperContext::new_with_params` reads a large model
+            // file and is CPU-heavy + blocking — run it off the async runtime
+            // and hold no lock while it runs.
+            let path_str = path.to_string_lossy().to_string();
+            let loaded = tauri::async_runtime::spawn_blocking(move || {
+                WhisperContext::new_with_params(&path_str, WhisperContextParameters::default())
+                    .map_err(|e| anyhow::anyhow!("Failed to load Whisper model: {e}"))
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Model load task failed: {e}"))??;
+            let ctx = Arc::new(loaded);
+            // Re-check the cache: a concurrent call may have loaded the same
+            // model while we were loading. Prefer the existing entry to avoid a
+            // duplicate; otherwise install ours.
             let mut cache = self.cache.lock();
             match cache.as_ref() {
-                Some((cached_id, ctx)) if *cached_id == id => ctx.clone(),
+                Some((cached_id, existing)) if *cached_id == id => existing.clone(),
                 _ => {
-                    let path_str = path.to_string_lossy().to_string();
-                    let loaded = WhisperContext::new_with_params(
-                        &path_str,
-                        WhisperContextParameters::default(),
-                    )
-                    .map_err(|e| anyhow::anyhow!("Failed to load Whisper model: {e}"))?;
-                    let ctx = Arc::new(loaded);
                     *cache = Some((id.clone(), ctx.clone()));
                     ctx
                 }

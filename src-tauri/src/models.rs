@@ -255,7 +255,16 @@ async fn download_to_file(
     }
     .ok_or("Download was cancelled")?;
 
-    let resp = reqwest::Client::new()
+    // A finite connect timeout so a dead host fails fast, plus a per-read
+    // timeout so a stalled (but not closed) connection can't hang the download
+    // forever. We deliberately omit an overall `.timeout` because a multi-GB
+    // download legitimately runs for minutes.
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))?;
+    let resp = client
         .get(info.url)
         .send()
         .await
@@ -277,6 +286,8 @@ async fn download_to_file(
         if cancel_flag.load(Ordering::SeqCst) {
             return Err("Download cancelled".into());
         }
+        // A read that stalls past the client's `read_timeout` surfaces here as an
+        // error rather than hanging forever.
         let chunk = chunk.map_err(|e| format!("Download interrupted: {e}"))?;
         file.write_all(&chunk).map_err(|e| e.to_string())?;
         if info.sha256.is_some() {
