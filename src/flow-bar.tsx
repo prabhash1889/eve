@@ -9,6 +9,7 @@ import {
   on,
   type ErrorPayload,
   type TranscriptPayload,
+  type StagePayload,
   type StartPayload,
 } from "./lib/api";
 
@@ -42,6 +43,8 @@ function FlowBar() {
   // Flow Bar appearance, pushed from Rust on `start`.
   const [scale, setScale] = useState(1);
   const [opacity, setOpacity] = useState(1);
+  // Phase 1: coarse processing stage ("Transcribing"/"Polishing"/"Inserting").
+  const [stageLabel, setStageLabel] = useState("Transcribing");
 
   useEffect(() => {
     const unlisteners: Array<Promise<() => void>> = [
@@ -54,6 +57,7 @@ function FlowBar() {
         setState("listening");
         setTranscript("");
         setPolished(false);
+        setStageLabel("Transcribing");
         setLevels(new Array(BARS).fill(0.05));
       }),
       on<number>(EVT.amplitude, (e) => {
@@ -61,6 +65,9 @@ function FlowBar() {
         setLevels((prev) => [...prev.slice(1), v]);
       }),
       on(EVT.processing, () => setState("processing")),
+      on<StagePayload>(EVT.stage, (e) => {
+        if (e.payload?.label) setStageLabel(e.payload.label);
+      }),
       on<TranscriptPayload>(EVT.transcriptRaw, (e) => {
         setTranscript(e.payload?.text ?? "");
         setPolished(false);
@@ -111,7 +118,7 @@ function FlowBar() {
           <span className="text-xs font-medium text-violet-500">Command</span>
         )}
         {state === "listening" && <Waveform levels={levels} />}
-        {state === "processing" && <Dots />}
+        {state === "processing" && <Dots label={stageLabel} />}
         {state === "preview" && (
           <span className="flex items-center gap-1.5">
             {polished && <Sparkles size={13} className="shrink-0 text-accent" />}
@@ -183,7 +190,7 @@ function Waveform({ levels }: { levels: number[] }) {
   );
 }
 
-function Dots() {
+function Dots({ label }: { label: string }) {
   return (
     <div className="flex items-center gap-1.5">
       {[0, 1, 2].map((i) => (
@@ -193,7 +200,7 @@ function Dots() {
           style={{ animationDelay: `${i * 120}ms` }}
         />
       ))}
-      <span className="ml-1 text-sm text-ink-soft">Transcribing</span>
+      <span className="ml-1 text-sm text-ink-soft">{label}</span>
     </div>
   );
 }

@@ -223,6 +223,14 @@ export interface ModelStatusPayload {
   message: string | null; // present only on model://error
 }
 
+/** Phase 2: readiness of the selected local Whisper model (mirrors WhisperStatus). */
+export interface WhisperStatus {
+  model: string; // selected catalog id ("" = none)
+  loading: boolean; // a cold load is in flight
+  ready: boolean; // loaded + cached, ready for instant inference
+  lastLoadMs: number | null; // wall-clock cost of the last cold load
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline events (emitted by Rust to the Flow Bar window)
 // ---------------------------------------------------------------------------
@@ -237,6 +245,8 @@ export const EVT = {
   transcriptRaw: "session://transcript-raw",
   transcriptPolished: "session://transcript-polished",
   copied: "session://copied",
+  // Phase 1 (optimization): coarse processing-stage label for the Flow Bar.
+  stage: "session://stage",
   // Phase 10: auto-pause suppressed recording in a sensitive app.
   paused: "session://paused",
   // Phase 11: tray "Check for updates" → Hub runs the check.
@@ -257,6 +267,9 @@ export interface ErrorPayload {
 }
 export interface TranscriptPayload {
   text: string;
+}
+export interface StagePayload {
+  label: string; // "Transcribing" | "Polishing" | "Inserting"
 }
 export interface StartPayload {
   bubbleScale: number;
@@ -366,6 +379,9 @@ export const api = {
   downloadModel: (id: string) => invoke<void>("download_model", { id }),
   cancelModelDownload: (id: string) => invoke<void>("cancel_model_download", { id }),
   deleteModel: (id: string) => invoke<void>("delete_model", { id }),
+  // Phase 2: prewarm + readiness of the selected local Whisper model.
+  prewarmLocalModel: () => invoke<void>("prewarm_local_model"),
+  getLocalWhisperStatus: () => invoke<WhisperStatus | null>("get_local_whisper_status"),
   // Startup & auto-update (Phase 11)
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   checkForUpdate: () => invoke<string | null>("check_for_update"),

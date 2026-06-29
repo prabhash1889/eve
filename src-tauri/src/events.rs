@@ -15,6 +15,10 @@ pub const TRANSCRIPT_RAW: &str = "session://transcript-raw";
 pub const TRANSCRIPT_POLISHED: &str = "session://transcript-polished";
 /// Phase 2: copy-last-transcript shortcut fired and copied to the clipboard.
 pub const COPIED: &str = "session://copied";
+/// Phase 1 (optimization): a coarse processing stage label ("Transcribing",
+/// "Polishing", "Inserting") so the Flow Bar can show *what* it's waiting on
+/// instead of an undifferentiated spinner.
+pub const STAGE: &str = "session://stage";
 /// Phase 10 auto-pause: the focused app is on the paused list, so recording was
 /// suppressed. The bar flashes a hint and dismisses.
 pub const PAUSED: &str = "session://paused";
@@ -53,6 +57,12 @@ pub struct ErrorPayload {
 #[derive(Clone, Serialize)]
 pub struct TranscriptPayload {
     pub text: String,
+}
+
+/// Phase 1 (optimization): the current processing stage shown on the Flow Bar.
+#[derive(Clone, Serialize)]
+pub struct StagePayload {
+    pub label: String,
 }
 
 /// Local-models download progress for one model id.

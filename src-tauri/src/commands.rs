@@ -14,6 +14,7 @@ use crate::db::transforms::{self, Transform};
 use crate::models::{self, ModelStatus};
 use crate::secrets;
 use crate::state::{self, AppState};
+use crate::transcription::WhisperStatus;
 use crate::window_mgmt;
 
 #[tauri::command]
@@ -539,6 +540,25 @@ pub fn cancel_model_download(state: State<AppState>, id: String) -> Result<(), S
 #[tauri::command]
 pub fn delete_model(app: AppHandle, id: String) -> Result<(), String> {
     models::delete(&app, &id)
+}
+
+/// Phase 2: preload the selected local Whisper model so the next dictation skips
+/// the cold load. Called from the Local Models page after selecting a model or
+/// switching the speech backend to local. Best-effort — a missing model or a
+/// build without the feature is not a user-facing error here.
+#[tauri::command]
+pub async fn prewarm_local_model(state: State<'_, AppState>) -> Result<(), String> {
+    let transcriber = state.transcriber.clone();
+    let _ = transcriber.prewarm().await;
+    Ok(())
+}
+
+/// Phase 2: readiness of the selected local Whisper model (loaded / loading /
+/// last load time), for the Local Models status panel. `None` when the build has
+/// no local backend.
+#[tauri::command]
+pub fn get_local_whisper_status(state: State<AppState>) -> Option<WhisperStatus> {
+    state.transcriber.whisper_status()
 }
 
 // --- Phase 11: startup & auto-update -----------------------------------------

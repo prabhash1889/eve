@@ -14,6 +14,7 @@ mod polish;
 mod secrets;
 mod state;
 mod text_processing;
+mod timing;
 mod transcription;
 mod tray;
 mod window_mgmt;
@@ -129,6 +130,20 @@ pub fn run() {
                 let _ = if want { mgr.enable() } else { mgr.disable() };
             }
 
+            // Phase 2: if local STT is the active backend, prewarm the selected
+            // model in the background so the first dictation isn't slowed by a
+            // cold load. Best-effort and off the UI thread.
+            {
+                let st = app.state::<AppState>();
+                let want_prewarm = st.settings.lock().transcription_backend == "local";
+                if want_prewarm {
+                    let transcriber = st.transcriber.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = transcriber.prewarm().await;
+                    });
+                }
+            }
+
             tray::setup(app.handle())?;
             window_mgmt::position_flowbar(app.handle());
             Ok(())
@@ -187,6 +202,8 @@ pub fn run() {
             commands::download_model,
             commands::cancel_model_download,
             commands::delete_model,
+            commands::prewarm_local_model,
+            commands::get_local_whisper_status,
             commands::set_autostart,
             commands::check_for_update,
             commands::install_update,

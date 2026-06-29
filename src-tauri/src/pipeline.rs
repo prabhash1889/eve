@@ -12,7 +12,20 @@ use crate::context::AppContext;
 use crate::db::{dictionary, flow_styles, queries, snippets, transforms, Db};
 use crate::polish::StyleHint;
 use crate::state::AppState;
+use crate::timing::Timings;
+use crate::transcription::Audio;
 use crate::{audio, events, injection, text_processing, window_mgmt};
+
+/// Emit a coarse processing-stage label to the Flow Bar (Phase 1 visibility).
+fn stage(app: &AppHandle, label: &str) {
+    let _ = app.emit_to(
+        events::FLOWBAR,
+        events::STAGE,
+        events::StagePayload {
+            label: label.to_string(),
+        },
+    );
+}
 
 /// Clears `is_processing` on drop, so the concurrency guard is released on every
 /// exit path of `process` — including the many early returns and any panic.
@@ -48,6 +61,10 @@ pub async fn process(app: AppHandle) {
     };
     let context = context.unwrap_or_else(AppContext::unknown);
 
+    // Phase 1: structured stage timing for the whole release-to-done flow. The
+    // breakdown is logged + persisted on completion (see `timings.finish`).
+    let mut timings = Timings::new();
+
     // Give the capture thread a moment to stop and flush its last samples.
     let _ = tauri::async_runtime::spawn_blocking(|| {
         std::thread::sleep(Duration::from_millis(60))
@@ -59,6 +76,7 @@ pub async fn process(app: AppHandle) {
         std::mem::take(&mut *b)
     };
     let rate = sample_rate.load(Ordering::SeqCst);
+    timings.mark("drain");
 
     // Reject clips that are too short to be real speech (~125 ms).
     if samples.len() < (rate as usize / 8).max(800) {
@@ -69,26 +87,46 @@ pub async fn process(app: AppHandle) {
     // Capture length BEFORE `samples` is moved into the encode closure.
     let duration_ms = (samples.len() as i64 * 1000) / (rate.max(1) as i64);
 
-    // Resample to 16 kHz + WAV-encode (CPU-bound → off the async runtime).
-    let wav = match tauri::async_runtime::spawn_blocking(move || {
+    // Resample to 16 kHz + WAV-encode (CPU-bound → off the async runtime). We
+    // keep BOTH the f32 samples (fed straight to the local backend, no WAV
+    // round-trip) and the encoded WAV (cloud upload + history replay).
+    let (samples16k, wav) = match tauri::async_runtime::spawn_blocking(move || {
         let resampled = audio::resample_to_16k(&samples, rate);
-        audio::encode_wav(&resampled)
+        let wav = audio::encode_wav(&resampled)?;
+        anyhow::Ok((resampled, wav))
     })
     .await
     {
-        Ok(Ok(w)) => w,
+        Ok(Ok(v)) => v,
         Ok(Err(_)) | Err(_) => {
             window_mgmt::fail(&app, "Audio processing failed");
             return;
         }
     };
+    let samples16k = Arc::new(samples16k);
+    timings.mark("resample_encode");
 
-    let (language, lang_label, level, strategy, store_audio, vibe_coding, transcription_backend) = {
+    let (
+        language,
+        lang_label,
+        level,
+        strategy,
+        store_audio,
+        vibe_coding,
+        transcription_backend,
+        transcriber_model,
+    ) = {
         let s = settings.lock();
         let lang = if s.language == "auto" {
             None
         } else {
             Some(s.language.clone())
+        };
+        // Record the local model only when local STT is actually in effect.
+        let model = if s.transcription_backend == "local" {
+            s.local_whisper_model.clone()
+        } else {
+            String::new()
         };
         (
             lang,
@@ -98,6 +136,7 @@ pub async fn process(app: AppHandle) {
             s.audio_storage_policy != "never",
             s.vibe_coding,
             s.transcription_backend.clone(),
+            model,
         )
     };
 
@@ -122,14 +161,23 @@ pub async fn process(app: AppHandle) {
         dictionary::hints(&conn, 100).unwrap_or_default()
     };
 
-    // Transcribe.
-    let raw = match transcriber.transcribe(wav, language, hints).await {
+    timings.set_context(&transcription_backend, &transcriber_model);
+
+    // Transcribe. Pass the f32 samples + WAV together so the local backend skips
+    // the WAV decode while Groq still gets the bytes it uploads.
+    stage(&app, "Transcribing");
+    let audio_input = Audio {
+        samples: samples16k,
+        wav,
+    };
+    let raw = match transcriber.transcribe_audio(audio_input, language, hints).await {
         Ok(t) => t,
         Err(e) => {
             window_mgmt::fail(&app, &friendly_error(&e.to_string()));
             return;
         }
     };
+    timings.mark("transcribe");
     if raw.trim().is_empty() {
         window_mgmt::fail(&app, "No speech detected");
         return;
@@ -171,10 +219,14 @@ pub async fn process(app: AppHandle) {
     });
 
     // LLM polish (no-op for CleanupLevel::None; fall back to raw text on error).
+    if !matches!(level, CleanupLevel::None) {
+        stage(&app, "Polishing");
+    }
     let polished = polisher
         .polish(corrected.clone(), level, style_hint)
         .await
         .unwrap_or(corrected);
+    timings.mark("polish");
 
     // Deterministic spoken-punctuation + list formatting runs AFTER the LLM so
     // it can't reflow the structure we just inserted.
@@ -229,6 +281,7 @@ pub async fn process(app: AppHandle) {
     // Phase 9: if the Scratchpad window had focus at record start, route the
     // text into its editor (the window listens for `scratchpad://insert`)
     // instead of OS-pasting into a foreign app.
+    stage(&app, "Inserting");
     if to_scratchpad {
         let _ = app.emit_to(
             events::SCRATCHPAD,
@@ -277,6 +330,10 @@ pub async fn process(app: AppHandle) {
         audio_bytes,
         &context,
     );
+
+    timings.mark("inject");
+    // Phase 1: log + persist the full stage breakdown for this session.
+    timings.finish(&app);
 
     let _ = app.emit_to(events::FLOWBAR, events::DONE, events::DonePayload { text });
     window_mgmt::hide_flowbar_after(app, 900);

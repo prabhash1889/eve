@@ -8,9 +8,37 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
+use serde::Serialize;
 
 use crate::config::Settings;
 use crate::secrets;
+
+/// Resampled 16 kHz mono audio in both forms the backends need: raw f32 samples
+/// (the local path feeds these straight into whisper.cpp, avoiding a WAV
+/// encode→decode round-trip) and the pre-encoded WAV (cloud upload + history).
+/// The pipeline builds this once after resampling; `samples` is `Arc`-shared so
+/// routing can hand the local backend a cheap clone while keeping the WAV for a
+/// Groq fallback.
+pub struct Audio {
+    pub samples: Arc<Vec<f32>>,
+    pub wav: Vec<u8>,
+}
+
+/// Phase 2: readiness of the selected local Whisper model, surfaced to the UI so
+/// it can show whether the model is loaded (and how long the last load took).
+/// Always defined — the fields are only ever populated under `local-whisper`.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhisperStatus {
+    /// Catalog id selected in Settings ("" when none).
+    pub model: String,
+    /// A cold model load is currently in flight.
+    pub loading: bool,
+    /// The selected model is loaded and cached, ready for instant inference.
+    pub ready: bool,
+    /// Wall-clock cost of the last cold load, for the status panel.
+    pub last_load_ms: Option<u64>,
+}
 
 /// A speech-to-text backend. Takes 16 kHz mono WAV bytes, returns raw text.
 #[async_trait]
@@ -21,6 +49,31 @@ pub trait Transcriber: Send + Sync {
         language: Option<String>,
         hints: Vec<String>,
     ) -> anyhow::Result<String>;
+
+    /// Phase 2: sample-based path. Transcribe already-resampled 16 kHz mono f32
+    /// samples without a WAV round-trip. The default encodes nothing extra — it
+    /// reuses the pre-encoded WAV and defers to `transcribe`, so cloud backends
+    /// are unaffected; the local backend overrides this to feed whisper.cpp the
+    /// samples directly.
+    async fn transcribe_audio(
+        &self,
+        audio: Audio,
+        language: Option<String>,
+        hints: Vec<String>,
+    ) -> anyhow::Result<String> {
+        self.transcribe(audio.wav, language, hints).await
+    }
+
+    /// Phase 2: preload the selected local model so the first dictation after a
+    /// launch / model switch isn't slowed by a cold load. No-op for cloud.
+    async fn prewarm(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Phase 2: local Whisper readiness for the UI. `None` for cloud-only backends.
+    fn whisper_status(&self) -> Option<WhisperStatus> {
+        None
+    }
 }
 
 /// Groq Whisper (`whisper-large-v3-turbo`) over the OpenAI-compatible API.
@@ -109,6 +162,16 @@ pub struct LocalTranscriber {
     settings: Arc<Mutex<Settings>>,
     #[cfg(feature = "local-whisper")]
     cache: Mutex<Option<(String, Arc<whisper_rs::WhisperContext>)>>,
+    /// Phase 2: cold-load state for `whisper_status` (loading flag + last load ms).
+    #[cfg(feature = "local-whisper")]
+    load_state: Mutex<LoadState>,
+}
+
+#[cfg(feature = "local-whisper")]
+#[derive(Default, Clone)]
+struct LoadState {
+    loading: bool,
+    last_load_ms: Option<u64>,
 }
 
 impl LocalTranscriber {
@@ -118,6 +181,8 @@ impl LocalTranscriber {
             settings,
             #[cfg(feature = "local-whisper")]
             cache: Mutex::new(None),
+            #[cfg(feature = "local-whisper")]
+            load_state: Mutex::new(LoadState::default()),
         }
     }
 
@@ -137,6 +202,135 @@ impl LocalTranscriber {
         }
         Ok((id, path))
     }
+
+    /// Return the cached context for the selected model, cold-loading it off the
+    /// async runtime if needed. Shared by `transcribe`, `transcribe_audio`, and
+    /// `prewarm`. Holds no lock across the heavy load and records load timing.
+    #[cfg(feature = "local-whisper")]
+    async fn ensure_context(&self) -> anyhow::Result<Arc<whisper_rs::WhisperContext>> {
+        use whisper_rs::{WhisperContext, WhisperContextParameters};
+
+        let (id, path) = self.resolve()?;
+
+        // Fast path: reuse the cached context if it matches the selection.
+        let cached = {
+            let cache = self.cache.lock();
+            match cache.as_ref() {
+                Some((cached_id, ctx)) if *cached_id == id => Some(ctx.clone()),
+                _ => None,
+            }
+        };
+        if let Some(ctx) = cached {
+            return Ok(ctx);
+        }
+
+        // Cold load: `WhisperContext::new_with_params` reads a large model file
+        // and is CPU-heavy + blocking — run it off the async runtime and hold no
+        // lock while it runs.
+        self.load_state.lock().loading = true;
+        let path_str = path.to_string_lossy().to_string();
+        let t0 = std::time::Instant::now();
+        let loaded = tauri::async_runtime::spawn_blocking(move || {
+            WhisperContext::new_with_params(&path_str, WhisperContextParameters::default())
+                .map_err(|e| anyhow::anyhow!("Failed to load Whisper model: {e}"))
+        })
+        .await;
+        let load_ms = t0.elapsed().as_millis() as u64;
+
+        let loaded = match loaded {
+            Ok(Ok(ctx)) => ctx,
+            Ok(Err(e)) => {
+                self.load_state.lock().loading = false;
+                return Err(e);
+            }
+            Err(e) => {
+                self.load_state.lock().loading = false;
+                return Err(anyhow::anyhow!("Model load task failed: {e}"));
+            }
+        };
+        let ctx = Arc::new(loaded);
+
+        // Re-check the cache: a concurrent call may have loaded the same model
+        // while we were loading. Prefer the existing entry to avoid a duplicate.
+        let chosen = {
+            let mut cache = self.cache.lock();
+            match cache.as_ref() {
+                Some((cached_id, existing)) if *cached_id == id => existing.clone(),
+                _ => {
+                    *cache = Some((id.clone(), ctx.clone()));
+                    ctx
+                }
+            }
+        };
+        {
+            let mut st = self.load_state.lock();
+            st.loading = false;
+            st.last_load_ms = Some(load_ms);
+        }
+        Ok(chosen)
+    }
+}
+
+/// whisper.cpp inference for one clip. Sync + CPU-heavy → always called inside
+/// `spawn_blocking`. Configured for the fast path: greedy decoding, a
+/// conservative thread count, and all the print/timestamp flags off.
+#[cfg(feature = "local-whisper")]
+fn run_inference(
+    ctx: Arc<whisper_rs::WhisperContext>,
+    samples: Arc<Vec<f32>>,
+    language: Option<String>,
+    hints: Vec<String>,
+) -> anyhow::Result<String> {
+    use whisper_rs::{FullParams, SamplingStrategy};
+
+    let prompt = if hints.is_empty() {
+        None
+    } else {
+        Some(hints.join(", "))
+    };
+
+    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    params.set_n_threads(whisper_threads());
+    params.set_print_special(false);
+    params.set_print_progress(false);
+    params.set_print_realtime(false);
+    params.set_print_timestamps(false);
+    // Pin the language when the user selected exactly one (passed through as
+    // `Some`); `None` lets whisper auto-detect.
+    if let Some(lang) = language.as_deref() {
+        params.set_language(Some(lang));
+    }
+    if let Some(p) = prompt.as_deref() {
+        params.set_initial_prompt(p);
+    }
+
+    let mut state = ctx
+        .create_state()
+        .map_err(|e| anyhow::anyhow!("Whisper state error: {e}"))?;
+    state
+        .full(params, samples.as_slice())
+        .map_err(|e| anyhow::anyhow!("Whisper inference failed: {e}"))?;
+
+    let n = state.full_n_segments();
+    let mut out = String::new();
+    for i in 0..n {
+        if let Some(seg) = state.get_segment(i) {
+            if let Ok(text) = seg.to_str() {
+                out.push_str(text);
+            }
+        }
+    }
+    Ok(out.trim().to_string())
+}
+
+/// Thread count for whisper.cpp: available cores minus a couple (kept for the UI
+/// + audio threads), clamped to [1, 8] since whisper scales poorly past ~8.
+#[cfg(feature = "local-whisper")]
+fn whisper_threads() -> std::os::raw::c_int {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    cores.saturating_sub(2).clamp(1, 8) as std::os::raw::c_int
 }
 
 #[async_trait]
@@ -160,84 +354,52 @@ impl Transcriber for LocalTranscriber {
         language: Option<String>,
         hints: Vec<String>,
     ) -> anyhow::Result<String> {
-        use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
-
-        let (id, path) = self.resolve()?;
-
-        // Fast path: reuse the cached context if it matches the selection. Take
-        // the lock only briefly — never across the heavy load below.
-        let cached = {
-            let cache = self.cache.lock();
-            match cache.as_ref() {
-                Some((cached_id, ctx)) if *cached_id == id => Some(ctx.clone()),
-                _ => None,
-            }
-        };
-        let ctx = if let Some(ctx) = cached {
-            ctx
-        } else {
-            // Cold load: `WhisperContext::new_with_params` reads a large model
-            // file and is CPU-heavy + blocking — run it off the async runtime
-            // and hold no lock while it runs.
-            let path_str = path.to_string_lossy().to_string();
-            let loaded = tauri::async_runtime::spawn_blocking(move || {
-                WhisperContext::new_with_params(&path_str, WhisperContextParameters::default())
-                    .map_err(|e| anyhow::anyhow!("Failed to load Whisper model: {e}"))
-            })
+        let ctx = self.ensure_context().await?;
+        // Decode our own 16 kHz mono i16 WAV bytes back to f32 samples. This WAV
+        // path is kept for direct callers (e.g. history replay); the live
+        // pipeline uses `transcribe_audio` and skips this decode entirely.
+        let samples = Arc::new(decode_wav_f32(&wav)?);
+        tauri::async_runtime::spawn_blocking(move || run_inference(ctx, samples, language, hints))
             .await
-            .map_err(|e| anyhow::anyhow!("Model load task failed: {e}"))??;
-            let ctx = Arc::new(loaded);
-            // Re-check the cache: a concurrent call may have loaded the same
-            // model while we were loading. Prefer the existing entry to avoid a
-            // duplicate; otherwise install ours.
-            let mut cache = self.cache.lock();
-            match cache.as_ref() {
-                Some((cached_id, existing)) if *cached_id == id => existing.clone(),
-                _ => {
-                    *cache = Some((id.clone(), ctx.clone()));
-                    ctx
-                }
-            }
-        };
+            .map_err(|e| anyhow::anyhow!("Transcription task failed: {e}"))?
+    }
 
-        // Decode our own 16 kHz mono i16 WAV bytes back to f32 samples.
-        let samples = decode_wav_f32(&wav)?;
+    #[cfg(feature = "local-whisper")]
+    async fn transcribe_audio(
+        &self,
+        audio: Audio,
+        language: Option<String>,
+        hints: Vec<String>,
+    ) -> anyhow::Result<String> {
+        let ctx = self.ensure_context().await?;
+        let samples = audio.samples;
+        tauri::async_runtime::spawn_blocking(move || run_inference(ctx, samples, language, hints))
+            .await
+            .map_err(|e| anyhow::anyhow!("Transcription task failed: {e}"))?
+    }
 
-        // whisper.cpp inference is sync + CPU-heavy: run it off the async runtime.
-        let prompt = if hints.is_empty() { None } else { Some(hints.join(", ")) };
-        tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<String> {
-            let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-            params.set_print_special(false);
-            params.set_print_progress(false);
-            params.set_print_realtime(false);
-            params.set_print_timestamps(false);
-            if let Some(lang) = language.as_deref() {
-                params.set_language(Some(lang));
-            }
-            if let Some(p) = prompt.as_deref() {
-                params.set_initial_prompt(p);
-            }
+    #[cfg(feature = "local-whisper")]
+    async fn prewarm(&self) -> anyhow::Result<()> {
+        self.ensure_context().await.map(|_| ())
+    }
 
-            let mut state = ctx
-                .create_state()
-                .map_err(|e| anyhow::anyhow!("Whisper state error: {e}"))?;
-            state
-                .full(params, &samples)
-                .map_err(|e| anyhow::anyhow!("Whisper inference failed: {e}"))?;
-
-            let n = state.full_n_segments();
-            let mut out = String::new();
-            for i in 0..n {
-                if let Some(seg) = state.get_segment(i) {
-                    if let Ok(text) = seg.to_str() {
-                        out.push_str(text);
-                    }
-                }
-            }
-            Ok(out.trim().to_string())
+    #[cfg(feature = "local-whisper")]
+    fn whisper_status(&self) -> Option<WhisperStatus> {
+        let model = self.settings.lock().local_whisper_model.clone();
+        let ready = !model.is_empty()
+            && self
+                .cache
+                .lock()
+                .as_ref()
+                .map(|(id, _)| *id == model)
+                .unwrap_or(false);
+        let st = self.load_state.lock().clone();
+        Some(WhisperStatus {
+            model,
+            loading: st.loading,
+            ready,
+            last_load_ms: st.last_load_ms,
         })
-        .await
-        .map_err(|e| anyhow::anyhow!("Transcription task failed: {e}"))?
     }
 }
 
@@ -272,6 +434,10 @@ impl RoutingTranscriber {
             settings,
         }
     }
+
+    fn use_local(&self) -> bool {
+        self.settings.lock().transcription_backend == "local"
+    }
 }
 
 #[async_trait]
@@ -282,8 +448,7 @@ impl Transcriber for RoutingTranscriber {
         language: Option<String>,
         hints: Vec<String>,
     ) -> anyhow::Result<String> {
-        let use_local = self.settings.lock().transcription_backend == "local";
-        if use_local {
+        if self.use_local() {
             match self
                 .local
                 .transcribe(wav.clone(), language.clone(), hints.clone())
@@ -297,5 +462,41 @@ impl Transcriber for RoutingTranscriber {
             }
         }
         self.groq.transcribe(wav, language, hints).await
+    }
+
+    async fn transcribe_audio(
+        &self,
+        audio: Audio,
+        language: Option<String>,
+        hints: Vec<String>,
+    ) -> anyhow::Result<String> {
+        if self.use_local() {
+            // Hand the local backend a cheap Arc clone of the samples; keep the
+            // WAV here in case we have to fall back to Groq.
+            let local_audio = Audio {
+                samples: audio.samples.clone(),
+                wav: Vec::new(),
+            };
+            match self
+                .local
+                .transcribe_audio(local_audio, language.clone(), hints.clone())
+                .await
+            {
+                Ok(text) => return Ok(text),
+                Err(e) if secrets::has_api_key() => {
+                    eprintln!("Local transcription failed ({e}); falling back to Groq");
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        self.groq.transcribe(audio.wav, language, hints).await
+    }
+
+    async fn prewarm(&self) -> anyhow::Result<()> {
+        self.local.prewarm().await
+    }
+
+    fn whisper_status(&self) -> Option<WhisperStatus> {
+        self.local.whisper_status()
     }
 }

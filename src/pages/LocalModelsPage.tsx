@@ -9,6 +9,7 @@ import {
   type ModelBackend,
   type ModelProgressPayload,
   type ModelStatusPayload,
+  type WhisperStatus,
 } from "../lib/api";
 
 function fmtBytes(n: number): string {
@@ -37,6 +38,8 @@ export function LocalModelsPage({
   const [loading, setLoading] = useState(true);
   const [progress, setProgress] = useState<Record<string, Progress>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // Phase 2: readiness of the selected local Whisper model (loaded / loading).
+  const [whisperStatus, setWhisperStatus] = useState<WhisperStatus | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -48,9 +51,27 @@ export function LocalModelsPage({
     }
   }, []);
 
+  const refreshStatus = useCallback(async () => {
+    setWhisperStatus(await api.getLocalWhisperStatus().catch(() => null));
+  }, []);
+
   useEffect(() => {
     load();
-  }, [load]);
+    refreshStatus();
+  }, [load, refreshStatus]);
+
+  // While a model is loading, poll readiness so the badge flips to "Ready".
+  useEffect(() => {
+    if (!whisperStatus?.loading) return;
+    const t = window.setInterval(refreshStatus, 500);
+    return () => window.clearInterval(t);
+  }, [whisperStatus?.loading, refreshStatus]);
+
+  // Prewarm the selected local model (best-effort), then refresh readiness.
+  const prewarm = useCallback(async () => {
+    await api.prewarmLocalModel().catch(() => {});
+    refreshStatus();
+  }, [refreshStatus]);
 
   // Live download lifecycle events from Rust.
   useEffect(() => {
@@ -88,8 +109,15 @@ export function LocalModelsPage({
     await api.updateSettings(next).catch(() => {});
   };
 
-  const setBackend = (key: "transcriptionBackend" | "polishBackend", value: ModelBackend) =>
-    persist({ ...settings, [key]: value });
+  const setBackend = async (
+    key: "transcriptionBackend" | "polishBackend",
+    value: ModelBackend,
+  ) => {
+    await persist({ ...settings, [key]: value });
+    // Switching speech-to-text to local → prewarm the selected model now so the
+    // first dictation isn't slowed by a cold load.
+    if (key === "transcriptionBackend" && value === "local") prewarm();
+  };
 
   const download = async (id: string) => {
     clearTransient(id);
@@ -114,6 +142,8 @@ export function LocalModelsPage({
         : { ...settings, localLlmModel: m.id };
     await persist(next);
     load();
+    // Selecting a speech model while local STT is active → prewarm the new pick.
+    if (m.kind === "whisper" && settings.transcriptionBackend === "local") prewarm();
   };
 
   const whisper = models.filter((m) => m.kind === "whisper");
@@ -168,6 +198,11 @@ export function LocalModelsPage({
         onCancel={cancel}
         onDelete={remove}
         onSelect={selectModel}
+        status={
+          settings.transcriptionBackend === "local" ? (
+            <WhisperReadiness status={whisperStatus} />
+          ) : undefined
+        }
       />
       <ModelSection
         title="Polish models"
@@ -229,6 +264,28 @@ function BackendRow({
   );
 }
 
+function WhisperReadiness({ status }: { status: WhisperStatus | null }) {
+  if (!status || !status.model) return null;
+  if (status.loading)
+    return (
+      <span className="flex items-center gap-1.5 text-xs text-ink-faint">
+        <Loader2 size={12} className="animate-spin" />
+        Loading model…
+      </span>
+    );
+  if (status.ready)
+    return (
+      <span className="flex items-center gap-1.5 text-xs text-accent">
+        <Check size={12} />
+        Model ready
+        {status.lastLoadMs != null && (
+          <span className="text-ink-faint">· loaded in {(status.lastLoadMs / 1000).toFixed(1)}s</span>
+        )}
+      </span>
+    );
+  return <span className="text-xs text-ink-faint">Model loads on first use</span>;
+}
+
 function ModelSection({
   title,
   icon,
@@ -240,6 +297,7 @@ function ModelSection({
   onCancel,
   onDelete,
   onSelect,
+  status,
 }: {
   title: string;
   icon: React.ReactNode;
@@ -251,12 +309,14 @@ function ModelSection({
   onCancel: (id: string) => void;
   onDelete: (id: string) => void;
   onSelect: (m: ModelStatus) => void;
+  status?: React.ReactNode;
 }) {
   return (
     <section className="mt-8">
       <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-ink-faint">
         {icon}
         {title}
+        {status && <span className="ml-2 normal-case tracking-normal">{status}</span>}
       </h2>
       <div className="space-y-3">
         {loading ? (
