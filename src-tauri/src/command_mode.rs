@@ -115,18 +115,33 @@ async fn process_command(app: AppHandle) {
         return;
     }
 
-    let (language, strategy) = {
+    let (language, strategy, backend, vad_enabled, profile) = {
         let s = settings.lock();
         let lang = if s.language == "auto" {
             None
         } else {
             Some(s.language.clone())
         };
-        (lang, s.inject_strategy.clone())
+        (
+            lang,
+            s.inject_strategy.clone(),
+            s.transcription_backend.clone(),
+            s.local_vad_enabled,
+            s.local_transcription_profile.clone(),
+        )
     };
 
+    // Phase 3 (optimization): trim silence before local inference (cloud keeps
+    // the full clip). Command Mode discards the WAV after transcription, so we
+    // can encode the trimmed samples directly rather than keeping a full copy.
     let wav = match tauri::async_runtime::spawn_blocking(move || {
-        let resampled = audio::resample_to_16k(&samples, rate);
+        let mut resampled = audio::resample_to_16k(&samples, rate);
+        if backend == "local" && vad_enabled {
+            let pre = audio::preprocess_local(&resampled, audio::VadParams::for_profile(&profile));
+            if pre.speech_detected {
+                resampled = pre.samples;
+            }
+        }
         audio::encode_wav(&resampled)
     })
     .await

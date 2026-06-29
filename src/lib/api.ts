@@ -12,6 +12,9 @@ export type AudioStoragePolicy = "store" | "delete24h" | "never";
 /** Which backend runs an AI step: cloud Groq or on-device local model. */
 export type ModelBackend = "groq" | "local";
 
+/** Local transcription performance profile (optimization Phase 4). */
+export type LocalProfile = "fast" | "balanced" | "accurate";
+
 export interface Settings {
   shortcut: string;
   language: string; // "auto" or an ISO-639-1 code
@@ -29,6 +32,10 @@ export interface Settings {
   polishBackend: ModelBackend; // local models: polish backend
   localWhisperModel: string; // catalog id of the selected local Whisper model
   localLlmModel: string; // catalog id of the selected local polish LLM
+  localTranscriptionProfile: LocalProfile; // optimization: speed/quality profile
+  localWhisperThreads: number | null; // optimization: explicit whisper.cpp threads (null = auto)
+  localVadEnabled: boolean; // optimization: trim silence before local inference
+  localPrewarmEnabled: boolean; // optimization: prewarm local model on switch/select
   vibeCoding: boolean; // Phase 8: wrap spoken "backtick X backtick" in code editors
   languages: string[]; // Phase 10: enabled languages (["auto"] = auto-detect)
   pausedApps: string[]; // Phase 10: process names where dictation is suppressed
@@ -54,6 +61,10 @@ export const DEFAULT_SETTINGS: Settings = {
   polishBackend: "groq",
   localWhisperModel: "",
   localLlmModel: "",
+  localTranscriptionProfile: "balanced",
+  localWhisperThreads: null,
+  localVadEnabled: true,
+  localPrewarmEnabled: true,
   vibeCoding: true,
   languages: ["auto"],
   pausedApps: ["1password.exe", "keepass.exe", "keepassxc.exe", "bitwarden.exe"],
@@ -229,6 +240,7 @@ export interface WhisperStatus {
   loading: boolean; // a cold load is in flight
   ready: boolean; // loaded + cached, ready for instant inference
   lastLoadMs: number | null; // wall-clock cost of the last cold load
+  lastTranscribeMs: number | null; // wall-clock cost of the last local inference
 }
 
 // ---------------------------------------------------------------------------

@@ -8,6 +8,19 @@ gains. The plan keeps the existing `Transcriber` routing model and prioritizes
 local transcription speed, quality, and perceived responsiveness before considering
 a larger backend replacement.
 
+## Status
+
+- Phase 1 — **Done** (timing visibility, per-session CSV metrics, stage events).
+- Phase 2 — **Done** (prewarm, context cache state, greedy/thread/flag tuning,
+  direct-sample local path).
+- Phase 3 — **Done** (adaptive RMS silence trimming + no-speech guard +
+  conservative peak normalization; local-only, applied to dictation and command
+  modes; full WAV preserved for history/cloud).
+- Phase 4 — **Done** (fast/balanced/accurate profiles, profile-driven model
+  recommendations, thread override, VAD/prewarm toggles, status panel with last
+  local timing).
+- Phases 5–6 — Not started.
+
 ## Phase 1: Baseline and Timing Visibility
 
 - Add structured timing around capture drain, resampling, WAV encoding, local model
@@ -35,7 +48,14 @@ a larger backend replacement.
 - Keep fallback to Groq unchanged when local transcription fails and an API key
   exists.
 
-## Phase 3: Audio Preprocessing and VAD
+## Phase 3: Audio Preprocessing and VAD — Done
+
+Implemented in `audio.rs` (`preprocess_local` / `VadParams` / `normalize_peak`),
+wired into `pipeline.rs` (local path only, before building `Audio`) and
+`command_mode.rs`. The full WAV is encoded before trimming, so history replay and
+the Groq fallback keep the original recording. Trimming is gated on
+`local_vad_enabled` + the local backend; a clip that reads as all-silence fails
+fast with "No speech detected".
 
 - Add local-only silence trimming before inference using an adaptive RMS energy
   gate:
@@ -50,7 +70,15 @@ a larger backend replacement.
   quality-limiting; otherwise keep it for simplicity.
 - Apply preprocessing consistently to dictation mode and command mode.
 
-## Phase 4: User-Selectable Performance Profiles
+## Phase 4: User-Selectable Performance Profiles — Done
+
+New settings `localTranscriptionProfile`, `localWhisperThreads`,
+`localVadEnabled`, and `localPrewarmEnabled` are mirrored in `config.rs` and
+`lib/api.ts`. The profile tunes VAD aggressiveness (`VadParams::for_profile`) and
+drives model recommendations on the Local Models page. `whisper_threads` now
+honors the explicit thread override. `WhisperStatus` gained `lastTranscribeMs`,
+shown in a new status panel (backend / model / readiness / last local timing)
+alongside the profile selector and VAD/prewarm toggles.
 
 - Add a local transcription profile setting:
   - `fast`: prefer `tiny.en` or `base.en`, greedy decoding, aggressive VAD.

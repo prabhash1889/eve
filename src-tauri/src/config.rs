@@ -80,6 +80,24 @@ pub struct Settings {
     /// Catalog id of the local polish LLM to use (e.g. "qwen2.5-1.5b-instruct").
     #[serde(default)]
     pub local_llm_model: String,
+    /// Phase 4 (optimization): local transcription performance profile —
+    /// "fast", "balanced", or "accurate". Guides model recommendations and tunes
+    /// how aggressively silence is trimmed (VAD). Does not silently replace the
+    /// user's selected model.
+    #[serde(default = "default_local_profile")]
+    pub local_transcription_profile: String,
+    /// Phase 4 (optimization): explicit whisper.cpp thread count. `None` lets Eve
+    /// pick from the available cores (cores − 2, clamped to 1..=8).
+    #[serde(default)]
+    pub local_whisper_threads: Option<u32>,
+    /// Phase 3 (optimization): trim leading/trailing silence (and normalize) the
+    /// samples fed to the local Whisper backend before inference. On by default.
+    #[serde(default = "default_true")]
+    pub local_vad_enabled: bool,
+    /// Phase 4 (optimization): prewarm the selected local model when the speech
+    /// backend is switched to local or a new model is picked. On by default.
+    #[serde(default = "default_true")]
+    pub local_prewarm_enabled: bool,
     /// Phase 8 vibe-coding: when the focused app is a code editor (Phase 6
     /// `Code` category), wrap spoken "backtick X backtick" spans in literal
     /// backticks before injection. Defaults on.
@@ -154,6 +172,12 @@ fn default_audio_retention_hours() -> u32 {
 fn default_backend() -> String {
     "groq".into()
 }
+fn default_local_profile() -> String {
+    "balanced".into()
+}
+fn default_true() -> bool {
+    true
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -174,6 +198,10 @@ impl Default for Settings {
             polish_backend: default_backend(),
             local_whisper_model: String::new(),
             local_llm_model: String::new(),
+            local_transcription_profile: default_local_profile(),
+            local_whisper_threads: None,
+            local_vad_enabled: true,
+            local_prewarm_enabled: true,
             vibe_coding: default_vibe_coding(),
             languages: default_languages(),
             paused_apps: default_paused_apps(),

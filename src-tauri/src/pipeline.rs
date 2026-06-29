@@ -103,7 +103,6 @@ pub async fn process(app: AppHandle) {
             return;
         }
     };
-    let samples16k = Arc::new(samples16k);
     timings.mark("resample_encode");
 
     let (
@@ -115,6 +114,8 @@ pub async fn process(app: AppHandle) {
         vibe_coding,
         transcription_backend,
         transcriber_model,
+        vad_enabled,
+        profile,
     ) = {
         let s = settings.lock();
         let lang = if s.language == "auto" {
@@ -137,6 +138,8 @@ pub async fn process(app: AppHandle) {
             s.vibe_coding,
             s.transcription_backend.clone(),
             model,
+            s.local_vad_enabled,
+            s.local_transcription_profile.clone(),
         )
     };
 
@@ -162,6 +165,30 @@ pub async fn process(app: AppHandle) {
     };
 
     timings.set_context(&transcription_backend, &transcriber_model);
+
+    // Phase 3 (optimization): local-only silence trimming + normalization. The
+    // full WAV (built above) is what Groq uploads and what history replays; only
+    // the f32 samples handed to the on-device backend are trimmed. A clip that
+    // reads as all-silence fails fast here rather than after a wasted inference.
+    let samples16k = if transcription_backend == "local" && vad_enabled {
+        let params = audio::VadParams::for_profile(&profile);
+        match tauri::async_runtime::spawn_blocking(move || audio::preprocess_local(&samples16k, params))
+            .await
+        {
+            Ok(pre) if pre.speech_detected => Arc::new(pre.samples),
+            Ok(_) => {
+                window_mgmt::fail(&app, "No speech detected");
+                return;
+            }
+            Err(_) => {
+                window_mgmt::fail(&app, "Audio processing failed");
+                return;
+            }
+        }
+    } else {
+        Arc::new(samples16k)
+    };
+    timings.mark("preprocess");
 
     // Transcribe. Pass the f32 samples + WAV together so the local backend skips
     // the WAV decode while Groq still gets the bytes it uploads.

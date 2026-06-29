@@ -38,6 +38,9 @@ pub struct WhisperStatus {
     pub ready: bool,
     /// Wall-clock cost of the last cold load, for the status panel.
     pub last_load_ms: Option<u64>,
+    /// Phase 4: wall-clock cost of the last local transcription (inference only),
+    /// for the status panel.
+    pub last_transcribe_ms: Option<u64>,
 }
 
 /// A speech-to-text backend. Takes 16 kHz mono WAV bytes, returns raw text.
@@ -172,6 +175,8 @@ pub struct LocalTranscriber {
 struct LoadState {
     loading: bool,
     last_load_ms: Option<u64>,
+    /// Phase 4: cost of the most recent local inference, surfaced in the UI.
+    last_transcribe_ms: Option<u64>,
 }
 
 impl LocalTranscriber {
@@ -269,6 +274,28 @@ impl LocalTranscriber {
         }
         Ok(chosen)
     }
+
+    /// Run inference off the async runtime, recording the wall-clock cost in
+    /// `load_state.last_transcribe_ms` for the UI status panel (Phase 4). Shared
+    /// by the WAV and sample-based paths.
+    #[cfg(feature = "local-whisper")]
+    async fn run_timed(
+        &self,
+        ctx: Arc<whisper_rs::WhisperContext>,
+        samples: Arc<Vec<f32>>,
+        language: Option<String>,
+        hints: Vec<String>,
+        threads: Option<u32>,
+    ) -> anyhow::Result<String> {
+        let t0 = std::time::Instant::now();
+        let out = tauri::async_runtime::spawn_blocking(move || {
+            run_inference(ctx, samples, language, hints, threads)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Transcription task failed: {e}"))?;
+        self.load_state.lock().last_transcribe_ms = Some(t0.elapsed().as_millis() as u64);
+        out
+    }
 }
 
 /// whisper.cpp inference for one clip. Sync + CPU-heavy → always called inside
@@ -280,6 +307,7 @@ fn run_inference(
     samples: Arc<Vec<f32>>,
     language: Option<String>,
     hints: Vec<String>,
+    threads: Option<u32>,
 ) -> anyhow::Result<String> {
     use whisper_rs::{FullParams, SamplingStrategy};
 
@@ -290,7 +318,7 @@ fn run_inference(
     };
 
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_n_threads(whisper_threads());
+    params.set_n_threads(whisper_threads(threads));
     params.set_print_special(false);
     params.set_print_progress(false);
     params.set_print_realtime(false);
@@ -323,14 +351,20 @@ fn run_inference(
     Ok(out.trim().to_string())
 }
 
-/// Thread count for whisper.cpp: available cores minus a couple (kept for the UI
-/// + audio threads), clamped to [1, 8] since whisper scales poorly past ~8.
+/// Thread count for whisper.cpp. An explicit `override_n` (from
+/// `Settings::local_whisper_threads`) wins; otherwise use available cores minus a
+/// couple (kept for the UI + audio threads). Always clamped to [1, 8] since
+/// whisper scales poorly past ~8.
 #[cfg(feature = "local-whisper")]
-fn whisper_threads() -> std::os::raw::c_int {
-    let cores = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
-    cores.saturating_sub(2).clamp(1, 8) as std::os::raw::c_int
+fn whisper_threads(override_n: Option<u32>) -> std::os::raw::c_int {
+    let n = match override_n {
+        Some(v) => v as usize,
+        None => std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .saturating_sub(2),
+    };
+    n.clamp(1, 8) as std::os::raw::c_int
 }
 
 #[async_trait]
@@ -355,13 +389,12 @@ impl Transcriber for LocalTranscriber {
         hints: Vec<String>,
     ) -> anyhow::Result<String> {
         let ctx = self.ensure_context().await?;
+        let threads = self.settings.lock().local_whisper_threads;
         // Decode our own 16 kHz mono i16 WAV bytes back to f32 samples. This WAV
         // path is kept for direct callers (e.g. history replay); the live
         // pipeline uses `transcribe_audio` and skips this decode entirely.
         let samples = Arc::new(decode_wav_f32(&wav)?);
-        tauri::async_runtime::spawn_blocking(move || run_inference(ctx, samples, language, hints))
-            .await
-            .map_err(|e| anyhow::anyhow!("Transcription task failed: {e}"))?
+        self.run_timed(ctx, samples, language, hints, threads).await
     }
 
     #[cfg(feature = "local-whisper")]
@@ -372,10 +405,9 @@ impl Transcriber for LocalTranscriber {
         hints: Vec<String>,
     ) -> anyhow::Result<String> {
         let ctx = self.ensure_context().await?;
-        let samples = audio.samples;
-        tauri::async_runtime::spawn_blocking(move || run_inference(ctx, samples, language, hints))
+        let threads = self.settings.lock().local_whisper_threads;
+        self.run_timed(ctx, audio.samples, language, hints, threads)
             .await
-            .map_err(|e| anyhow::anyhow!("Transcription task failed: {e}"))?
     }
 
     #[cfg(feature = "local-whisper")]
@@ -399,6 +431,7 @@ impl Transcriber for LocalTranscriber {
             loading: st.loading,
             ready,
             last_load_ms: st.last_load_ms,
+            last_transcribe_ms: st.last_transcribe_ms,
         })
     }
 }

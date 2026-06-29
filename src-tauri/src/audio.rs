@@ -191,6 +191,107 @@ pub fn resample_to_16k(samples: &[f32], src_rate: u32) -> Vec<f32> {
     out
 }
 
+// --- Phase 3 (optimization): audio preprocessing + VAD -----------------------
+
+/// How aggressively to trim silence, derived from the performance profile.
+/// Higher `threshold_mult` cuts more borderline-quiet audio; larger `pad_ms`
+/// keeps more around detected speech (i.e. less aggressive).
+#[derive(Clone, Copy)]
+pub struct VadParams {
+    pub threshold_mult: f32,
+    pub pad_ms: u32,
+}
+
+impl VadParams {
+    /// Map a performance-profile id (`Settings::local_transcription_profile`) to
+    /// trimming aggressiveness. Unknown values fall back to "balanced".
+    pub fn for_profile(profile: &str) -> Self {
+        match profile {
+            "fast" => VadParams { threshold_mult: 2.2, pad_ms: 80 },
+            "accurate" => VadParams { threshold_mult: 1.25, pad_ms: 220 },
+            _ => VadParams { threshold_mult: 1.6, pad_ms: 120 },
+        }
+    }
+}
+
+/// Output of [`preprocess_local`]: silence-trimmed, peak-normalized 16 kHz mono
+/// samples plus whether any speech was detected (drives the no-speech guard).
+pub struct Preprocessed {
+    pub samples: Vec<f32>,
+    pub speech_detected: bool,
+}
+
+/// Local-only preprocessing for the on-device Whisper path: trim leading and
+/// trailing silence with an adaptive RMS energy gate, then apply conservative
+/// peak normalization. Input/output are 16 kHz mono. When the whole clip looks
+/// like silence, returns the original samples with `speech_detected = false` so
+/// the caller can fail fast without having mangled the audio. The cloud path is
+/// unaffected — it keeps the full WAV encoded before this runs.
+pub fn preprocess_local(samples: &[f32], params: VadParams) -> Preprocessed {
+    const RATE: usize = 16_000;
+    const WIN: usize = RATE * 30 / 1000; // 30 ms analysis window = 480 samples
+
+    let n_win = samples.len() / WIN;
+    if n_win < 2 {
+        // Too short to analyze — pass through (normalized), assume speech.
+        return Preprocessed {
+            samples: normalize_peak(samples),
+            speech_detected: true,
+        };
+    }
+
+    // Per-window RMS energy.
+    let mut rms = Vec::with_capacity(n_win);
+    for w in 0..n_win {
+        let slice = &samples[w * WIN..w * WIN + WIN];
+        let sum_sq: f32 = slice.iter().map(|s| s * s).sum();
+        rms.push((sum_sq / WIN as f32).sqrt());
+    }
+
+    // Estimate the noise floor from the first ~300 ms (10 windows) when present,
+    // taking the median so a stray click in the lead-in doesn't skew it.
+    let floor_n = (300 / 30).min(n_win).max(1);
+    let mut floor_vals: Vec<f32> = rms[..floor_n].to_vec();
+    floor_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let noise_floor = floor_vals[floor_vals.len() / 2];
+    // Absolute gate floor so a dead-silent lead-in (noise_floor ≈ 0) still needs
+    // real energy to register as speech.
+    let threshold = (noise_floor * params.threshold_mult).max(0.005);
+
+    let first = rms.iter().position(|&r| r > threshold);
+    let last = rms.iter().rposition(|&r| r > threshold);
+    let (Some(first), Some(last)) = (first, last) else {
+        return Preprocessed {
+            samples: samples.to_vec(),
+            speech_detected: false,
+        };
+    };
+
+    // Pad the speech span by the profile's window, in whole analysis windows.
+    let pad_win = (params.pad_ms as usize * RATE / 1000) / WIN;
+    let start = first.saturating_sub(pad_win) * WIN;
+    let end = ((last + pad_win + 1).min(n_win) * WIN).min(samples.len());
+
+    Preprocessed {
+        samples: normalize_peak(&samples[start..end]),
+        speech_detected: true,
+    }
+}
+
+/// Conservative peak normalization: amplify quiet recordings toward a target
+/// peak, never attenuate already-loud audio, and cap the gain so background
+/// noise in a near-silent clip isn't blown up.
+fn normalize_peak(samples: &[f32]) -> Vec<f32> {
+    const TARGET: f32 = 0.7;
+    const MAX_GAIN: f32 = 6.0;
+    let peak = samples.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+    if peak <= 0.0 || peak >= TARGET {
+        return samples.to_vec();
+    }
+    let gain = (TARGET / peak).min(MAX_GAIN);
+    samples.iter().map(|&s| (s * gain).clamp(-1.0, 1.0)).collect()
+}
+
 /// Encode mono f32 samples as 16-bit PCM WAV at 16 kHz. Returns an error
 /// instead of panicking so a writer failure surfaces as a normal pipeline error.
 pub fn encode_wav(samples: &[f32]) -> anyhow::Result<Vec<u8>> {

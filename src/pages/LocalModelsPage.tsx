@@ -7,6 +7,7 @@ import {
   type Settings,
   type ModelStatus,
   type ModelBackend,
+  type LocalProfile,
   type ModelProgressPayload,
   type ModelStatusPayload,
   type WhisperStatus,
@@ -17,6 +18,28 @@ function fmtBytes(n: number): string {
   if (n >= 1e6) return Math.round(n / 1e6) + " MB";
   return Math.round(n / 1e3) + " KB";
 }
+
+/** Performance profiles → recommended speech model ids + a short blurb. */
+const PROFILES: { value: LocalProfile; label: string; blurb: string; recommends: string[] }[] = [
+  {
+    value: "fast",
+    label: "Fast",
+    blurb: "Lowest latency. Aggressive silence trimming, smallest models.",
+    recommends: ["whisper-tiny.en", "whisper-base.en"],
+  },
+  {
+    value: "balanced",
+    label: "Balanced",
+    blurb: "A good speed/quality tradeoff for everyday dictation.",
+    recommends: ["whisper-small.en"],
+  },
+  {
+    value: "accurate",
+    label: "Accurate",
+    blurb: "Highest quality. Gentler trimming, largest model.",
+    recommends: ["whisper-large-v3-turbo"],
+  },
+];
 
 type Progress = { downloaded: number; total: number };
 
@@ -68,10 +91,13 @@ export function LocalModelsPage({
   }, [whisperStatus?.loading, refreshStatus]);
 
   // Prewarm the selected local model (best-effort), then refresh readiness.
+  // Honors the prewarm-enabled setting so a user who opted out isn't surprised
+  // by a cold load happening on switch.
   const prewarm = useCallback(async () => {
+    if (!settings.localPrewarmEnabled) return;
     await api.prewarmLocalModel().catch(() => {});
     refreshStatus();
-  }, [refreshStatus]);
+  }, [refreshStatus, settings.localPrewarmEnabled]);
 
   // Live download lifecycle events from Rust.
   useEffect(() => {
@@ -156,6 +182,17 @@ export function LocalModelsPage({
   const needsLlm =
     settings.polishBackend === "local" && !llm.some((m) => m.active && m.installed);
 
+  const activeProfile =
+    PROFILES.find((p) => p.value === settings.localTranscriptionProfile) ?? PROFILES[1];
+  const recommended = new Set(activeProfile.recommends);
+  // Nudge when the selected speech model isn't one the active profile suggests.
+  const offProfile =
+    settings.transcriptionBackend === "local" &&
+    !!settings.localWhisperModel &&
+    !recommended.has(settings.localWhisperModel);
+
+  const setProfile = (value: LocalProfile) => persist({ ...settings, localTranscriptionProfile: value });
+
   return (
     <div>
       <h1 className="font-serif text-3xl">Local models</h1>
@@ -186,6 +223,62 @@ export function LocalModelsPage({
         </div>
       </section>
 
+      {/* Performance profile + tuning (optimization Phase 4) */}
+      {settings.transcriptionBackend === "local" && (
+        <section className="mt-8">
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-faint">
+            Performance
+          </h2>
+          <div className="space-y-4 rounded-2xl border border-border bg-surface p-5">
+            <div>
+              <div className="mb-2 text-sm font-medium text-ink">Profile</div>
+              <div className="flex flex-wrap gap-1 rounded-xl border border-border bg-canvas p-1">
+                {PROFILES.map((p) => (
+                  <button
+                    key={p.value}
+                    onClick={() => setProfile(p.value)}
+                    className={
+                      "rounded-lg px-3 py-1.5 text-sm transition-colors " +
+                      (settings.localTranscriptionProfile === p.value
+                        ? "bg-accent-soft text-ink"
+                        : "text-ink-faint hover:text-ink")
+                    }
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-ink-faint">{activeProfile.blurb}</p>
+              {offProfile && (
+                <div className="mt-1 flex items-center gap-1 text-xs text-amber-500">
+                  <AlertTriangle size={12} />
+                  Your selected model isn't recommended for this profile.
+                </div>
+              )}
+            </div>
+
+            <ToggleRow
+              label="Trim silence before transcribing"
+              hint="Voice-activity detection cuts leading/trailing silence to speed up local inference."
+              checked={settings.localVadEnabled}
+              onChange={(v) => persist({ ...settings, localVadEnabled: v })}
+            />
+            <ToggleRow
+              label="Prewarm model on switch"
+              hint="Load the selected model into memory when you switch to local, so the first dictation isn't slowed by a cold load."
+              checked={settings.localPrewarmEnabled}
+              onChange={(v) => persist({ ...settings, localPrewarmEnabled: v })}
+            />
+
+            <StatusPanel
+              backend={settings.transcriptionBackend}
+              model={settings.localWhisperModel}
+              status={whisperStatus}
+            />
+          </div>
+        </section>
+      )}
+
       {/* Model catalogs */}
       <ModelSection
         title="Speech models"
@@ -198,6 +291,7 @@ export function LocalModelsPage({
         onCancel={cancel}
         onDelete={remove}
         onSelect={selectModel}
+        recommended={recommended}
         status={
           settings.transcriptionBackend === "local" ? (
             <WhisperReadiness status={whisperStatus} />
@@ -286,6 +380,86 @@ function WhisperReadiness({ status }: { status: WhisperStatus | null }) {
   return <span className="text-xs text-ink-faint">Model loads on first use</span>;
 }
 
+function ToggleRow({
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <div className="max-w-md">
+        <div className="text-sm font-medium text-ink">{label}</div>
+        <div className="mt-0.5 text-xs text-ink-faint">{hint}</div>
+      </div>
+      <button
+        role="switch"
+        aria-checked={checked}
+        onClick={() => onChange(!checked)}
+        className={
+          "relative mt-0.5 h-6 w-10 shrink-0 rounded-full transition-colors " +
+          (checked ? "bg-accent" : "bg-canvas border border-border")
+        }
+      >
+        <span
+          className={
+            "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform " +
+            (checked ? "translate-x-[1.125rem]" : "translate-x-0.5")
+          }
+        />
+      </button>
+    </div>
+  );
+}
+
+/** Small panel: backend, selected model, readiness, and last local timing. */
+function StatusPanel({
+  backend,
+  model,
+  status,
+}: {
+  backend: ModelBackend;
+  model: string;
+  status: WhisperStatus | null;
+}) {
+  const readiness = !model
+    ? "No model selected"
+    : status?.loading
+      ? "Loading…"
+      : status?.ready
+        ? "Ready"
+        : "Loads on first use";
+  return (
+    <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 rounded-xl border border-border bg-canvas p-4 text-xs sm:grid-cols-4">
+      <StatusCell label="Backend" value={backend === "local" ? "Local" : "Groq"} />
+      <StatusCell label="Model" value={model || "—"} />
+      <StatusCell label="Readiness" value={readiness} />
+      <StatusCell
+        label="Last transcribe"
+        value={
+          status?.lastTranscribeMs != null
+            ? `${(status.lastTranscribeMs / 1000).toFixed(1)}s`
+            : "—"
+        }
+      />
+    </div>
+  );
+}
+
+function StatusCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-ink-faint">{label}</div>
+      <div className="truncate font-medium text-ink">{value}</div>
+    </div>
+  );
+}
+
 function ModelSection({
   title,
   icon,
@@ -298,6 +472,7 @@ function ModelSection({
   onDelete,
   onSelect,
   status,
+  recommended,
 }: {
   title: string;
   icon: React.ReactNode;
@@ -310,6 +485,7 @@ function ModelSection({
   onDelete: (id: string) => void;
   onSelect: (m: ModelStatus) => void;
   status?: React.ReactNode;
+  recommended?: Set<string>;
 }) {
   return (
     <section className="mt-8">
@@ -332,6 +508,7 @@ function ModelSection({
               onCancel={() => onCancel(m.id)}
               onDelete={() => onDelete(m.id)}
               onSelect={() => onSelect(m)}
+              recommended={!!recommended?.has(m.id)}
             />
           ))
         )}
@@ -348,6 +525,7 @@ function ModelCard({
   onCancel,
   onDelete,
   onSelect,
+  recommended,
 }: {
   model: ModelStatus;
   progress?: Progress;
@@ -356,6 +534,7 @@ function ModelCard({
   onCancel: () => void;
   onDelete: () => void;
   onSelect: () => void;
+  recommended?: boolean;
 }) {
   const downloading = model.downloading || !!progress;
   const pct = progress && progress.total > 0 ? (progress.downloaded / progress.total) * 100 : 0;
@@ -369,7 +548,14 @@ function ModelCard({
     >
       <div className="flex items-center justify-between gap-3">
         <div>
-          <div className="font-medium text-ink">{model.name}</div>
+          <div className="flex items-center gap-2">
+            <span className="font-medium text-ink">{model.name}</span>
+            {recommended && (
+              <span className="rounded-full bg-accent-soft px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-accent">
+                Recommended
+              </span>
+            )}
+          </div>
           <div className="text-xs text-ink-faint">{fmtBytes(model.sizeBytes)}</div>
         </div>
 
