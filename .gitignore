@@ -32,3 +32,6 @@ graphify-out/
 build/
 *.key
 *.key.pub
+
+# Machine-specific cargo config (local CMAKE path for local-models build)
+src-tauri/.cargo/config.toml

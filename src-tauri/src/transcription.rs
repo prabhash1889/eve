@@ -103,11 +103,11 @@ impl Transcriber for GroqTranscriber {
 /// On-device Whisper (whisper.cpp via `whisper-rs`). The selected model id and
 /// language come from `Settings`; the GGML weights live under `models_dir`. The
 /// loaded context is cached and reused, reloading only when the selection
-/// changes. Real inference is compiled only with the `local-models` feature.
+/// changes. Real inference is compiled only with the `local-whisper` feature.
 pub struct LocalTranscriber {
     models_dir: PathBuf,
     settings: Arc<Mutex<Settings>>,
-    #[cfg(feature = "local-models")]
+    #[cfg(feature = "local-whisper")]
     cache: Mutex<Option<(String, Arc<whisper_rs::WhisperContext>)>>,
 }
 
@@ -116,14 +116,14 @@ impl LocalTranscriber {
         Self {
             models_dir,
             settings,
-            #[cfg(feature = "local-models")]
+            #[cfg(feature = "local-whisper")]
             cache: Mutex::new(None),
         }
     }
 
     /// Resolve the selected model id to an on-disk path, erroring with a
     /// user-facing message when nothing is selected or the file is missing.
-    #[cfg(feature = "local-models")]
+    #[cfg(feature = "local-whisper")]
     fn resolve(&self) -> anyhow::Result<(String, PathBuf)> {
         let id = self.settings.lock().local_whisper_model.clone();
         if id.is_empty() {
@@ -141,7 +141,7 @@ impl LocalTranscriber {
 
 #[async_trait]
 impl Transcriber for LocalTranscriber {
-    #[cfg(not(feature = "local-models"))]
+    #[cfg(not(feature = "local-whisper"))]
     async fn transcribe(
         &self,
         _wav: Vec<u8>,
@@ -150,10 +150,10 @@ impl Transcriber for LocalTranscriber {
     ) -> anyhow::Result<String> {
         // Touch fields so they don't read as dead when the feature is off.
         let _ = (&self.models_dir, &self.settings);
-        anyhow::bail!("Local transcription was not built in (enable the `local-models` feature)")
+        anyhow::bail!("Local transcription was not built in (enable the `local-whisper` feature)")
     }
 
-    #[cfg(feature = "local-models")]
+    #[cfg(feature = "local-whisper")]
     async fn transcribe(
         &self,
         wav: Vec<u8>,
@@ -243,7 +243,7 @@ impl Transcriber for LocalTranscriber {
 
 /// Decode a 16-bit PCM WAV (our `audio::encode_wav` output) into normalized f32
 /// samples in [-1, 1] for whisper.cpp.
-#[cfg(feature = "local-models")]
+#[cfg(feature = "local-whisper")]
 fn decode_wav_f32(wav: &[u8]) -> anyhow::Result<Vec<f32>> {
     let cursor = std::io::Cursor::new(wav);
     let mut reader = hound::WavReader::new(cursor)

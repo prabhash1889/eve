@@ -202,11 +202,11 @@ pub fn strip_wrapping(s: &str) -> String {
 /// On-device polish via a small instruct LLM (llama.cpp through `llama-cpp-2`).
 /// The selected model id comes from `Settings`; GGUF weights live under
 /// `models_dir`. Reuses `system_prompt`/`strip_wrapping` so output matches the
-/// Groq backend. Real inference compiles only with the `local-models` feature.
+/// Groq backend. Real inference compiles only with the `local-llm` feature.
 pub struct LocalPolisher {
     models_dir: PathBuf,
     settings: Arc<Mutex<Settings>>,
-    #[cfg(feature = "local-models")]
+    #[cfg(feature = "local-llm")]
     cache: Mutex<Option<(String, Arc<llama_cpp_2::model::LlamaModel>)>>,
 }
 
@@ -215,12 +215,12 @@ impl LocalPolisher {
         Self {
             models_dir,
             settings,
-            #[cfg(feature = "local-models")]
+            #[cfg(feature = "local-llm")]
             cache: Mutex::new(None),
         }
     }
 
-    #[cfg(feature = "local-models")]
+    #[cfg(feature = "local-llm")]
     fn resolve(&self) -> anyhow::Result<(String, PathBuf)> {
         let id = self.settings.lock().local_llm_model.clone();
         if id.is_empty() {
@@ -238,7 +238,7 @@ impl LocalPolisher {
 
 #[async_trait]
 impl Polisher for LocalPolisher {
-    #[cfg(not(feature = "local-models"))]
+    #[cfg(not(feature = "local-llm"))]
     async fn polish(
         &self,
         _text: String,
@@ -246,10 +246,10 @@ impl Polisher for LocalPolisher {
         _style: Option<StyleHint>,
     ) -> anyhow::Result<String> {
         let _ = (&self.models_dir, &self.settings);
-        anyhow::bail!("Local polish was not built in (enable the `local-models` feature)")
+        anyhow::bail!("Local polish was not built in (enable the `local-llm` feature)")
     }
 
-    #[cfg(feature = "local-models")]
+    #[cfg(feature = "local-llm")]
     async fn polish(
         &self,
         text: String,
@@ -311,7 +311,7 @@ impl Polisher for LocalPolisher {
 
 /// Load a GGUF model. The llama.cpp backend is process-global and may only be
 /// initialized once, so it lives in a `OnceLock`.
-#[cfg(feature = "local-models")]
+#[cfg(feature = "local-llm")]
 fn load_llm(path: &std::path::Path) -> anyhow::Result<llama_cpp_2::model::LlamaModel> {
     use llama_cpp_2::model::params::LlamaModelParams;
     use llama_cpp_2::model::LlamaModel;
@@ -322,7 +322,7 @@ fn load_llm(path: &std::path::Path) -> anyhow::Result<llama_cpp_2::model::LlamaM
         .map_err(|e| anyhow::anyhow!("Failed to load polish model: {e}"))
 }
 
-#[cfg(feature = "local-models")]
+#[cfg(feature = "local-llm")]
 fn llm_backend() -> anyhow::Result<&'static llama_cpp_2::llama_backend::LlamaBackend> {
     use llama_cpp_2::llama_backend::LlamaBackend;
     use std::sync::OnceLock;
@@ -339,7 +339,7 @@ fn llm_backend() -> anyhow::Result<&'static llama_cpp_2::llama_backend::LlamaBac
 /// The chat prompt format an instruct GGUF expects. Different model families use
 /// different turn delimiters; feeding a model the wrong ones badly degrades
 /// output, so we pick per selected model.
-#[cfg(feature = "local-models")]
+#[cfg(feature = "local-llm")]
 #[derive(Debug, Clone, Copy)]
 enum ChatFormat {
     /// ChatML — Qwen2.5 et al. (`<|im_start|>` / `<|im_end|>`).
@@ -351,7 +351,7 @@ enum ChatFormat {
 /// Pick the chat format from a catalog model id. Llama models use the Llama 3
 /// template; everything else defaults to ChatML (Qwen and most other small
 /// instruct GGUFs).
-#[cfg(feature = "local-models")]
+#[cfg(feature = "local-llm")]
 fn chat_format_for(id: &str) -> ChatFormat {
     if id.starts_with("llama") {
         ChatFormat::Llama3
@@ -363,7 +363,7 @@ fn chat_format_for(id: &str) -> ChatFormat {
 /// Build the single-turn chat prompt for the given format. The leading
 /// begin-of-text/BOS token is added by the tokenizer (`AddBos::Always`), so it
 /// is intentionally omitted from the Llama 3 template here.
-#[cfg(feature = "local-models")]
+#[cfg(feature = "local-llm")]
 fn build_chat_prompt(fmt: ChatFormat, system: &str, user: &str) -> String {
     match fmt {
         ChatFormat::ChatMl => format!(
@@ -379,7 +379,7 @@ fn build_chat_prompt(fmt: ChatFormat, system: &str, user: &str) -> String {
 
 /// Greedy single-turn generation using the model's chat template (ChatML for
 /// Qwen, Llama 3 for Llama). Bounded to keep latency reasonable for a polish pass.
-#[cfg(feature = "local-models")]
+#[cfg(feature = "local-llm")]
 fn generate(
     model: &llama_cpp_2::model::LlamaModel,
     fmt: ChatFormat,

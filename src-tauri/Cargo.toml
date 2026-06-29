@@ -11,14 +11,26 @@ name = "eve_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
-# On-device transcription/polish. OFF by default so `cargo check`/`cargo build`
-# work without a native toolchain (the local backends then report "not built in"
-# and the app falls back to Groq). Enable for real on-device inference with
-# `cargo build --features local-models` / `tauri build -- --features local-models`
-# — this requires CMake + a C/C++ compiler (LLVM/clang or MSVC) to build
-# whisper.cpp / llama.cpp, and noticeably increases build time and binary size.
+# On-device inference. OFF by default so `cargo check`/`cargo build` work without
+# a native toolchain (the local backends then report "not built in" and the app
+# falls back to Groq). Enabling these requires CMake + a C/C++ compiler
+# (LLVM/clang or MSVC) to build whisper.cpp / llama.cpp, and noticeably increases
+# build time and binary size.
+#
+# IMPORTANT: `local-whisper` and `local-llm` are MUTUALLY EXCLUSIVE in a single
+# binary. whisper.cpp and llama.cpp each statically vendor their own copy of
+# `ggml`, so linking both produces hundreds of duplicate `ggml_*` symbols
+# (LNK2005 → LNK1169) and the link fails. Pick one per build.
 default = []
-local-models = ["dep:whisper-rs", "dep:llama-cpp-2", "dep:encoding_rs"]
+# On-device speech-to-text (whisper.cpp). Links cleanly on its own.
+local-whisper = ["dep:whisper-rs"]
+# On-device polish (llama.cpp). Build separately from `local-whisper`.
+local-llm = ["dep:llama-cpp-2", "dep:encoding_rs"]
+# Back-compat alias: the historical `local-models` flag now means local STT only
+# (whisper) — the combination that links cleanly and gives offline transcription
+# with no API key. Build with `--features local-llm` (in its own build) for
+# on-device polish instead.
+local-models = ["local-whisper"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -48,8 +60,8 @@ reqwest = { version = "0.12", features = ["multipart", "json", "stream"] }
 sha2 = "0.10"
 futures-util = "0.3"
 
-# On-device inference (behind the `local-models` feature — see [features]).
-# These compile whisper.cpp / llama.cpp via CMake + a C/C++ toolchain.
+# On-device inference (behind the `local-whisper` / `local-llm` features — see
+# [features]). These compile whisper.cpp / llama.cpp via CMake + a C/C++ toolchain.
 whisper-rs = { version = "0.16", optional = true }
 llama-cpp-2 = { version = "0.1", optional = true }
 # Decoder for llama.cpp `token_to_piece` (must match llama-cpp-2's encoding_rs).
