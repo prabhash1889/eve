@@ -208,6 +208,7 @@ pub fn run() {
             commands::delete_model,
             commands::prewarm_local_model,
             commands::get_local_whisper_status,
+            commands::get_local_transcription_benchmark,
             commands::set_autostart,
             commands::check_for_update,
             commands::install_update,
@@ -222,8 +223,8 @@ fn prune_audio_on_launch(db: &db::Db, settings: &config::Settings) {
     if settings.audio_storage_policy != "delete24h" {
         return;
     }
-    let cutoff = chrono::Utc::now().timestamp_millis()
-        - (settings.audio_retention_hours as i64) * 3_600_000;
+    let cutoff =
+        chrono::Utc::now().timestamp_millis() - (settings.audio_retention_hours as i64) * 3_600_000;
     let stale = {
         let conn = db.lock();
         db::queries::prune_audio(&conn, cutoff).unwrap_or_default()

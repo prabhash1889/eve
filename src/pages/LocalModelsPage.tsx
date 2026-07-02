@@ -10,6 +10,7 @@ import {
   type LocalProfile,
   type ModelProgressPayload,
   type ModelStatusPayload,
+  type TranscriptionBenchmark,
   type WhisperStatus,
 } from "../lib/api";
 
@@ -41,6 +42,11 @@ const PROFILES: { value: LocalProfile; label: string; blurb: string; recommends:
   },
 ];
 
+function recommendedModelIds(profile: LocalProfile, language: string): string[] {
+  if (language !== "en" && profile !== "fast") return ["whisper-large-v3-turbo"];
+  return PROFILES.find((p) => p.value === profile)?.recommends ?? ["whisper-small.en"];
+}
+
 type Progress = { downloaded: number; total: number };
 
 /** Return a copy of `map` without the given key. */
@@ -63,6 +69,7 @@ export function LocalModelsPage({
   const [errors, setErrors] = useState<Record<string, string>>({});
   // Phase 2: readiness of the selected local Whisper model (loaded / loading).
   const [whisperStatus, setWhisperStatus] = useState<WhisperStatus | null>(null);
+  const [benchmark, setBenchmark] = useState<TranscriptionBenchmark | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -76,6 +83,7 @@ export function LocalModelsPage({
 
   const refreshStatus = useCallback(async () => {
     setWhisperStatus(await api.getLocalWhisperStatus().catch(() => null));
+    setBenchmark(await api.getLocalTranscriptionBenchmark().catch(() => null));
   }, []);
 
   useEffect(() => {
@@ -184,12 +192,23 @@ export function LocalModelsPage({
 
   const activeProfile =
     PROFILES.find((p) => p.value === settings.localTranscriptionProfile) ?? PROFILES[1];
-  const recommended = new Set(activeProfile.recommends);
+  const recommended = new Set(
+    recommendedModelIds(settings.localTranscriptionProfile, settings.language),
+  );
   // Nudge when the selected speech model isn't one the active profile suggests.
   const offProfile =
     settings.transcriptionBackend === "local" &&
     !!settings.localWhisperModel &&
     !recommended.has(settings.localWhisperModel);
+
+  // Loud warning for the worst-case combo: the large model on a CPU build, where
+  // it runs ~12–25s per clip. (The backend label reads "whisper.cpp CUDA" on a
+  // GPU build, where the large model is fast and this doesn't apply.)
+  const onCpuBuild = !!whisperStatus?.backend?.includes("CPU");
+  const heavyOnCpu =
+    settings.transcriptionBackend === "local" &&
+    onCpuBuild &&
+    settings.localWhisperModel === "whisper-large-v3-turbo";
 
   const setProfile = (value: LocalProfile) => persist({ ...settings, localTranscriptionProfile: value });
 
@@ -230,6 +249,16 @@ export function LocalModelsPage({
             Performance
           </h2>
           <div className="space-y-4 rounded-2xl border border-border bg-surface p-5">
+            {heavyOnCpu && (
+              <div className="flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-400">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                <span>
+                  Large v3 Turbo runs on the CPU in this build (~12–25s per clip).
+                  For fast dictation, switch to Whisper Small (English) below, or
+                  rebuild with CUDA for GPU acceleration.
+                </span>
+              </div>
+            )}
             <div>
               <div className="mb-2 text-sm font-medium text-ink">Profile</div>
               <div className="flex flex-wrap gap-1 rounded-xl border border-border bg-canvas p-1">
@@ -264,6 +293,18 @@ export function LocalModelsPage({
               onChange={(v) => persist({ ...settings, localVadEnabled: v })}
             />
             <ToggleRow
+              label="Beam search for quality"
+              hint="Off = greedy decoding (fastest, the default). On adds beam search to the balanced profile. Accurate always uses it; fast always stays greedy."
+              checked={settings.localBeamSearchEnabled}
+              onChange={(v) => persist({ ...settings, localBeamSearchEnabled: v })}
+            />
+            <ToggleRow
+              label="Correctness rescue"
+              hint="Gentler trimming, quieter normalization, beam search, and large-v3-turbo when downloaded."
+              checked={settings.localCorrectnessRescue}
+              onChange={(v) => persist({ ...settings, localCorrectnessRescue: v })}
+            />
+            <ToggleRow
               label="Prewarm model on switch"
               hint="Load the selected model into memory when you switch to local, so the first dictation isn't slowed by a cold load."
               checked={settings.localPrewarmEnabled}
@@ -274,6 +315,7 @@ export function LocalModelsPage({
               backend={settings.transcriptionBackend}
               model={settings.localWhisperModel}
               status={whisperStatus}
+              benchmark={benchmark}
             />
           </div>
         </section>
@@ -402,14 +444,14 @@ function ToggleRow({
         aria-checked={checked}
         onClick={() => onChange(!checked)}
         className={
-          "relative mt-0.5 h-6 w-10 shrink-0 rounded-full transition-colors " +
+          "relative mt-0.5 h-6 w-11 shrink-0 rounded-full transition-colors " +
           (checked ? "bg-accent" : "bg-canvas border border-border")
         }
       >
         <span
           className={
-            "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform " +
-            (checked ? "translate-x-[1.125rem]" : "translate-x-0.5")
+            "absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform " +
+            (checked ? "translate-x-5" : "translate-x-0")
           }
         />
       </button>
@@ -422,10 +464,12 @@ function StatusPanel({
   backend,
   model,
   status,
+  benchmark,
 }: {
   backend: ModelBackend;
   model: string;
   status: WhisperStatus | null;
+  benchmark: TranscriptionBenchmark | null;
 }) {
   const readiness = !model
     ? "No model selected"
@@ -435,8 +479,8 @@ function StatusPanel({
         ? "Ready"
         : "Loads on first use";
   return (
-    <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 rounded-xl border border-border bg-canvas p-4 text-xs sm:grid-cols-4">
-      <StatusCell label="Backend" value={backend === "local" ? "Local" : "Groq"} />
+    <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 rounded-xl border border-border bg-canvas p-4 text-xs sm:grid-cols-[auto_minmax(0,1fr)_auto_auto]">
+      <StatusCell label="Backend" value={backend === "local" ? (status?.backend ?? "Local") : "Groq"} />
       <StatusCell label="Model" value={model || "—"} />
       <StatusCell label="Readiness" value={readiness} />
       <StatusCell
@@ -447,6 +491,14 @@ function StatusPanel({
             : "—"
         }
       />
+      {benchmark && (
+        <>
+          <StatusCell label="Last mode" value={benchmark.mode} />
+          <StatusCell label="Last clip" value={`${(benchmark.clipDurationMs / 1000).toFixed(1)}s`} />
+          <StatusCell label="Words" value={String(benchmark.wordsProduced)} />
+          <StatusCell label="VAD trimmed" value={benchmark.vadTrimmed ? "Yes" : "No"} />
+        </>
+      )}
     </div>
   );
 }
@@ -455,7 +507,9 @@ function StatusCell({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0">
       <div className="text-ink-faint">{label}</div>
-      <div className="truncate font-medium text-ink">{value}</div>
+      <div className="truncate font-medium text-ink" title={value}>
+        {value}
+      </div>
     </div>
   );
 }

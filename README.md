@@ -13,7 +13,9 @@ Whisper API; AI polish via Groq Llama (Phase 2+).
 - Rust (stable) + Cargo
 - Node 18+ and npm
 - Windows 10/11 with WebView2 (preinstalled on Win11)
-- A **Groq API key** — https://console.groq.com/keys
+- A **Groq API key** — https://console.groq.com/keys — required for the default
+  (cloud) build. Optional if you build with on-device speech-to-text; see
+  [Offline / on-device models](#offline--on-device-models-no-api-key).
 
 ## Install & run (dev)
 
@@ -37,6 +39,85 @@ until you start dictating.
 
 > Cleanup level is "None" in v1 (raw transcript). LLM polish — filler removal,
 > punctuation, tone styles — arrives in Phase 2.
+
+## Offline / on-device models (no API key)
+
+By default Eve transcribes and polishes via **Groq**, so the default build needs a
+Groq API key. You can instead run **speech-to-text fully on-device** (whisper.cpp)
+with no key and no network — behind a Cargo feature that compiles the native
+inference engine.
+
+### Prerequisites (Windows)
+
+On-device inference compiles whisper.cpp / llama.cpp via CMake + a C/C++ toolchain:
+
+- **Visual Studio Build Tools** (or VS Community) with the **"Desktop development
+  with C++"** workload — provides the MSVC compiler + Windows SDK:
+  ```sh
+  winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+  ```
+- **CMake** — use the one bundled with Visual Studio (the **"C++ CMake tools for
+  Windows"** component). A standalone/MinGW CMake older than your installed VS may
+  not know the `Visual Studio <N> <year>` generator and will fail to configure with
+  *"Could not create named generator …"*.
+
+> If the build picks up the wrong CMake (e.g. an old MinGW one earlier on PATH),
+> point it at the VS-bundled CMake. The cleanest way is a **machine-specific**
+> `src-tauri/.cargo/config.toml` (keep it gitignored — the path is per-machine):
+> ```toml
+> [env]
+> CMAKE = "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe"
+> ```
+> Adjust the path to your VS edition/year. (`tauri` runs `cargo` from `src-tauri/`,
+> so the config is discovered there.)
+
+### Build with on-device speech-to-text
+
+```sh
+npm run tauri dev   -- --features local-models   # dev
+npm run tauri build -- --features local-models   # release
+```
+
+For NVIDIA GPU acceleration, build the local Whisper backend with CUDA:
+
+```sh
+npm run tauri:dev:local-cuda
+npm run tauri:build:local-cuda
+```
+
+This enables Cargo feature `local-whisper-cuda` (`local-whisper` plus
+`whisper-rs/cuda`). It still uses the native whisper.cpp backend, but the Local
+models status panel reports whether this binary was built as `whisper.cpp CUDA`
+or `whisper.cpp CPU`.
+
+Then in **Settings → Local models**: set **Speech-to-text → Local**, download a
+Whisper model, and click **Use**. Transcription now runs entirely on your machine —
+no Groq key needed.
+
+### On-device polish is a separate build
+
+The local polish LLM (llama.cpp) and local Whisper **cannot be linked into the same
+binary** — both statically bundle `ggml`, whose symbols collide at link time
+(`LNK2005` → `LNK1169`). They're therefore mutually-exclusive Cargo features:
+
+| Feature | On-device | Builds |
+| --- | --- | --- |
+| `local-whisper` (alias `local-models`) | speech-to-text | whisper.cpp |
+| `local-whisper-cuda` | speech-to-text | whisper.cpp + CUDA |
+| `local-llm` | AI polish | llama.cpp |
+
+Pick **one** per build:
+
+```sh
+npm run tauri dev -- --features local-whisper   # offline transcription
+npm run tauri dev -- --features local-whisper-cuda # offline transcription, CUDA
+npm run tauri dev -- --features local-llm        # offline polish
+```
+
+A build with neither (the default) uses Groq for both and needs an API key. When a
+local backend is selected but unavailable, Eve falls back to Groq if a key is set;
+otherwise it surfaces an error (transcription) or inserts the raw, unpolished text
+(polish).
 
 ## Architecture
 

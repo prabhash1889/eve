@@ -14,7 +14,7 @@ use crate::db::transforms::{self, Transform};
 use crate::models::{self, ModelStatus};
 use crate::secrets;
 use crate::state::{self, AppState};
-use crate::transcription::WhisperStatus;
+use crate::transcription::{TranscriptionBenchmark, WhisperStatus};
 use crate::window_mgmt;
 
 #[tauri::command]
@@ -201,10 +201,22 @@ pub fn import_dictionary_csv(state: State<AppState>, csv: String) -> Result<i64,
             .filter(|s| !s.is_empty());
         let is_starred = fields
             .get(2)
-            .map(|s| matches!(s.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "star"))
+            .map(|s| {
+                matches!(
+                    s.trim().to_lowercase().as_str(),
+                    "1" | "true" | "yes" | "star"
+                )
+            })
             .unwrap_or(false);
-        if dictionary::upsert(&conn, word, replacement.as_deref(), is_starred, "import", now)
-            .is_ok()
+        if dictionary::upsert(
+            &conn,
+            word,
+            replacement.as_deref(),
+            is_starred,
+            "import",
+            now,
+        )
+        .is_ok()
         {
             count += 1;
         }
@@ -231,10 +243,7 @@ pub fn export_dictionary_csv(state: State<AppState>) -> Result<String, String> {
 // --- Phase 5: snippets -------------------------------------------------------
 
 #[tauri::command]
-pub fn get_snippets(
-    state: State<AppState>,
-    query: Option<String>,
-) -> Result<Vec<Snippet>, String> {
+pub fn get_snippets(state: State<AppState>, query: Option<String>) -> Result<Vec<Snippet>, String> {
     snippets::list(&state.db.lock(), query.as_deref()).map_err(|e| e.to_string())
 }
 
@@ -254,7 +263,8 @@ pub fn upsert_snippet(
         return Err("Expansion cannot be empty".into());
     }
     let now = chrono::Utc::now().timestamp_millis();
-    snippets::upsert(&state.db.lock(), trigger, expansion, is_active, now).map_err(|e| e.to_string())
+    snippets::upsert(&state.db.lock(), trigger, expansion, is_active, now)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -325,7 +335,11 @@ pub fn upsert_flow_style(
     }
     let name = {
         let n = name.trim();
-        if n.is_empty() { category } else { n }
+        if n.is_empty() {
+            category
+        } else {
+            n
+        }
     };
     let now = chrono::Utc::now().timestamp_millis();
     flow_styles::upsert(
@@ -561,16 +575,17 @@ pub fn get_local_whisper_status(state: State<AppState>) -> Option<WhisperStatus>
     state.transcriber.whisper_status()
 }
 
+#[tauri::command]
+pub fn get_local_transcription_benchmark(state: State<AppState>) -> Option<TranscriptionBenchmark> {
+    state.last_transcription_benchmark.lock().clone()
+}
+
 // --- Phase 11: startup & auto-update -----------------------------------------
 
 /// Toggle launch-at-startup (registers/unregisters Eve with the OS) and persist
 /// the choice.
 #[tauri::command]
-pub fn set_autostart(
-    app: AppHandle,
-    state: State<AppState>,
-    enabled: bool,
-) -> Result<(), String> {
+pub fn set_autostart(app: AppHandle, state: State<AppState>, enabled: bool) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
     let mgr = app.autolaunch();
     if enabled {

@@ -78,8 +78,16 @@ impl Timings {
     pub fn finish(&self, app: &AppHandle, debug: bool) {
         eprintln!(
             "[timing] backend={} model={} {}",
-            if self.backend.is_empty() { "?" } else { &self.backend },
-            if self.model.is_empty() { "-" } else { &self.model },
+            if self.backend.is_empty() {
+                "?"
+            } else {
+                &self.backend
+            },
+            if self.model.is_empty() {
+                "-"
+            } else {
+                &self.model
+            },
             self.breakdown()
         );
         if debug {
@@ -95,9 +103,21 @@ impl Timings {
         let total = self.total_ms().max(1);
         eprintln!(
             "[timing:debug] session backend={} model={} profile={} total={}ms",
-            if self.backend.is_empty() { "?" } else { &self.backend },
-            if self.model.is_empty() { "-" } else { &self.model },
-            if self.profile.is_empty() { "-" } else { &self.profile },
+            if self.backend.is_empty() {
+                "?"
+            } else {
+                &self.backend
+            },
+            if self.model.is_empty() {
+                "-"
+            } else {
+                &self.model
+            },
+            if self.profile.is_empty() {
+                "-"
+            } else {
+                &self.profile
+            },
             total,
         );
         for (name, ms) in &self.stages {
@@ -126,7 +146,10 @@ impl Timings {
             .join(";");
         let line = format!(
             "{ts},{},{},{},{}\n",
-            self.backend, self.model, stages, self.total_ms()
+            self.backend,
+            self.model,
+            stages,
+            self.total_ms()
         );
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)

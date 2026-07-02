@@ -41,6 +41,31 @@ pub struct WhisperStatus {
     /// Phase 4: wall-clock cost of the last local transcription (inference only),
     /// for the status panel.
     pub last_transcribe_ms: Option<u64>,
+    /// Build/runtime label for the local backend.
+    pub backend: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptionBenchmark {
+    pub mode: String,
+    pub model: String,
+    pub profile: String,
+    pub backend: String,
+    pub clip_duration_ms: u64,
+    pub transcribe_ms: u64,
+    pub words_produced: usize,
+    pub vad_trimmed: bool,
+}
+
+pub fn local_backend_label() -> &'static str {
+    if cfg!(feature = "local-whisper-cuda") {
+        "whisper.cpp CUDA"
+    } else if cfg!(feature = "local-whisper") {
+        "whisper.cpp CPU"
+    } else {
+        "local whisper unavailable"
+    }
 }
 
 /// A speech-to-text backend. Takes 16 kHz mono WAV bytes, returns raw text.
@@ -165,6 +190,8 @@ pub struct LocalTranscriber {
     settings: Arc<Mutex<Settings>>,
     #[cfg(feature = "local-whisper")]
     cache: Mutex<Option<(String, Arc<whisper_rs::WhisperContext>)>>,
+    #[cfg(feature = "local-whisper")]
+    load_gate: tokio::sync::Mutex<()>,
     /// Phase 2: cold-load state for `whisper_status` (loading flag + last load ms).
     #[cfg(feature = "local-whisper")]
     load_state: Mutex<LoadState>,
@@ -179,6 +206,20 @@ struct LoadState {
     last_transcribe_ms: Option<u64>,
 }
 
+/// Per-call inference knobs, snapshotted from `Settings` + the active profile.
+/// Grouped into a struct so the speed/quality decisions (beam vs greedy,
+/// temperature fallback, audio-context cap) live in one place.
+#[cfg(feature = "local-whisper")]
+#[derive(Clone)]
+struct Tuning {
+    threads: Option<u32>,
+    profile: String,
+    /// The `local_beam_search_enabled` toggle. Accurate/rescue force beam search
+    /// regardless; fast always stays greedy.
+    beam_search: bool,
+    correctness_rescue: bool,
+}
+
 impl LocalTranscriber {
     pub fn new(models_dir: PathBuf, settings: Arc<Mutex<Settings>>) -> Self {
         Self {
@@ -186,6 +227,8 @@ impl LocalTranscriber {
             settings,
             #[cfg(feature = "local-whisper")]
             cache: Mutex::new(None),
+            #[cfg(feature = "local-whisper")]
+            load_gate: tokio::sync::Mutex::new(()),
             #[cfg(feature = "local-whisper")]
             load_state: Mutex::new(LoadState::default()),
         }
@@ -195,12 +238,28 @@ impl LocalTranscriber {
     /// user-facing message when nothing is selected or the file is missing.
     #[cfg(feature = "local-whisper")]
     fn resolve(&self) -> anyhow::Result<(String, PathBuf)> {
-        let id = self.settings.lock().local_whisper_model.clone();
+        let id = {
+            let s = self.settings.lock();
+            if s.local_correctness_rescue {
+                let rescue_id = "whisper-large-v3-turbo";
+                if let Some(info) = crate::models::find(rescue_id) {
+                    if self.models_dir.join(info.file_name).exists() {
+                        rescue_id.to_string()
+                    } else {
+                        s.local_whisper_model.clone()
+                    }
+                } else {
+                    s.local_whisper_model.clone()
+                }
+            } else {
+                s.local_whisper_model.clone()
+            }
+        };
         if id.is_empty() {
             anyhow::bail!("No local speech model selected — pick one in Models");
         }
-        let info = crate::models::find(&id)
-            .ok_or_else(|| anyhow::anyhow!("Unknown local model: {id}"))?;
+        let info =
+            crate::models::find(&id).ok_or_else(|| anyhow::anyhow!("Unknown local model: {id}"))?;
         let path = self.models_dir.join(info.file_name);
         if !path.exists() {
             anyhow::bail!("Model '{}' is not downloaded yet", info.name);
@@ -229,6 +288,19 @@ impl LocalTranscriber {
             return Ok(ctx);
         }
 
+        let _load_gate = self.load_gate.lock().await;
+
+        let cached = {
+            let cache = self.cache.lock();
+            match cache.as_ref() {
+                Some((cached_id, ctx)) if *cached_id == id => Some(ctx.clone()),
+                _ => None,
+            }
+        };
+        if let Some(ctx) = cached {
+            return Ok(ctx);
+        }
+
         // Cold load: `WhisperContext::new_with_params` reads a large model file
         // and is CPU-heavy + blocking — run it off the async runtime and hold no
         // lock while it runs.
@@ -236,7 +308,16 @@ impl LocalTranscriber {
         let path_str = path.to_string_lossy().to_string();
         let t0 = std::time::Instant::now();
         let loaded = tauri::async_runtime::spawn_blocking(move || {
-            WhisperContext::new_with_params(&path_str, WhisperContextParameters::default())
+            let mut params = WhisperContextParameters::default();
+            // Flash attention is a clear speedup on the CUDA backend and safe
+            // here (it only conflicts with DTW, which we don't use). It has no
+            // effect on the CPU build, so gate it to the CUDA feature to avoid
+            // any chance of a CPU-path regression. `cfg!` folds to a constant,
+            // so the branch is compiled out entirely off-CUDA.
+            if cfg!(feature = "local-whisper-cuda") {
+                params.flash_attn(true);
+            }
+            WhisperContext::new_with_params(&path_str, params)
                 .map_err(|e| anyhow::anyhow!("Failed to load Whisper model: {e}"))
         })
         .await;
@@ -275,6 +356,19 @@ impl LocalTranscriber {
         Ok(chosen)
     }
 
+    /// Snapshot the inference knobs from the live `Settings`. Held briefly — the
+    /// guard drops before any await.
+    #[cfg(feature = "local-whisper")]
+    fn tuning(&self) -> Tuning {
+        let s = self.settings.lock();
+        Tuning {
+            threads: s.local_whisper_threads,
+            profile: s.local_transcription_profile.clone(),
+            beam_search: s.local_beam_search_enabled,
+            correctness_rescue: s.local_correctness_rescue,
+        }
+    }
+
     /// Run inference off the async runtime, recording the wall-clock cost in
     /// `load_state.last_transcribe_ms` for the UI status panel (Phase 4). Shared
     /// by the WAV and sample-based paths.
@@ -285,11 +379,11 @@ impl LocalTranscriber {
         samples: Arc<Vec<f32>>,
         language: Option<String>,
         hints: Vec<String>,
-        threads: Option<u32>,
+        tuning: Tuning,
     ) -> anyhow::Result<String> {
         let t0 = std::time::Instant::now();
         let out = tauri::async_runtime::spawn_blocking(move || {
-            run_inference(ctx, samples, language, hints, threads)
+            run_inference(ctx, samples, language, hints, tuning)
         })
         .await
         .map_err(|e| anyhow::anyhow!("Transcription task failed: {e}"))?;
@@ -299,15 +393,23 @@ impl LocalTranscriber {
 }
 
 /// whisper.cpp inference for one clip. Sync + CPU-heavy → always called inside
-/// `spawn_blocking`. Configured for the fast path: greedy decoding, a
-/// conservative thread count, and all the print/timestamp flags off.
+/// `spawn_blocking`.
+///
+/// Two latency/quality regimes, chosen from the active profile:
+///  - **fast / balanced** — greedy decoding, a single decode pass (temperature
+///    fallback disabled), and the encoder's audio context capped to the clip.
+///    Optimized for low, *predictable* latency.
+///  - **accurate / correctness-rescue** — beam search, whisper's temperature
+///    fallback, and the full 30 s audio context. Optimized for quality.
+///
+/// All the print/timestamp flags are off in both regimes.
 #[cfg(feature = "local-whisper")]
 fn run_inference(
     ctx: Arc<whisper_rs::WhisperContext>,
     samples: Arc<Vec<f32>>,
     language: Option<String>,
     hints: Vec<String>,
-    threads: Option<u32>,
+    tuning: Tuning,
 ) -> anyhow::Result<String> {
     use whisper_rs::{FullParams, SamplingStrategy};
 
@@ -317,12 +419,42 @@ fn run_inference(
         Some(hints.join(", "))
     };
 
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_n_threads(whisper_threads(threads));
+    // Quality regime: the accurate profile, or correctness rescue for hard clips.
+    let quality = tuning.profile == "accurate" || tuning.correctness_rescue;
+    // Beam search costs ~2–3× a greedy decode for a marginal dictation-quality
+    // gain, so it's opt-in on balanced (the toggle) and forced only when quality
+    // matters; fast always stays greedy.
+    let use_beam = tuning.profile != "fast" && (tuning.beam_search || quality);
+
+    let sampling = if use_beam {
+        SamplingStrategy::BeamSearch {
+            beam_size: 5,
+            patience: 1.0,
+        }
+    } else {
+        SamplingStrategy::Greedy { best_of: 1 }
+    };
+    let mut params = FullParams::new(sampling);
+    params.set_n_threads(whisper_threads(tuning.threads));
     params.set_print_special(false);
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
+    // Each dictation is an independent clip — there is no prior context to carry,
+    // and a fresh state starts empty anyway, so make that explicit.
+    params.set_no_context(true);
+    // Cap the encoder's audio context (whisper.cpp's `-ac`) to the actual clip.
+    // Without this the encoder always processes the full 1500-token / 30 s
+    // context, so a short dictation pays for ~30 s of silence. VAD has already
+    // trimmed to speech, so the cap never truncates real audio. Quality keeps it.
+    params.set_audio_ctx(audio_ctx_for(samples.len(), quality));
+    // Outside the quality regime, disable whisper's temperature-fallback loop. A
+    // hard/noisy clip otherwise re-decodes up to ~6× at rising temperature —
+    // exactly the cause of the worst-case latency spikes seen in the metrics. A
+    // single pass keeps latency bounded; quality modes keep the fallback.
+    if !quality {
+        params.set_temperature_inc(0.0);
+    }
     // Pin the language when the user selected exactly one (passed through as
     // `Some`); `None` lets whisper auto-detect.
     if let Some(lang) = language.as_deref() {
@@ -349,6 +481,21 @@ fn run_inference(
         }
     }
     Ok(out.trim().to_string())
+}
+
+/// Encoder audio-context size (whisper.cpp's `-ac`) for a clip, in audio-context
+/// tokens. whisper runs ~50 tokens/sec (1500 = 30 s); we cover the clip length
+/// plus 20% headroom, clamped to [256, 1500]. The floor keeps very short clips
+/// safe; the ceiling is whisper's full context. Quality keeps the full 1500.
+#[cfg(feature = "local-whisper")]
+fn audio_ctx_for(n_samples: usize, quality: bool) -> std::os::raw::c_int {
+    const FULL: i64 = 1500;
+    if quality {
+        return FULL as std::os::raw::c_int;
+    }
+    let seconds = n_samples as f64 / 16_000.0;
+    let tokens = (seconds * 50.0 * 1.2).ceil() as i64;
+    tokens.clamp(256, FULL) as std::os::raw::c_int
 }
 
 /// Thread count for whisper.cpp. An explicit `override_n` (from
@@ -389,12 +536,12 @@ impl Transcriber for LocalTranscriber {
         hints: Vec<String>,
     ) -> anyhow::Result<String> {
         let ctx = self.ensure_context().await?;
-        let threads = self.settings.lock().local_whisper_threads;
+        let tuning = self.tuning();
         // Decode our own 16 kHz mono i16 WAV bytes back to f32 samples. This WAV
         // path is kept for direct callers (e.g. history replay); the live
         // pipeline uses `transcribe_audio` and skips this decode entirely.
         let samples = Arc::new(decode_wav_f32(&wav)?);
-        self.run_timed(ctx, samples, language, hints, threads).await
+        self.run_timed(ctx, samples, language, hints, tuning).await
     }
 
     #[cfg(feature = "local-whisper")]
@@ -405,8 +552,8 @@ impl Transcriber for LocalTranscriber {
         hints: Vec<String>,
     ) -> anyhow::Result<String> {
         let ctx = self.ensure_context().await?;
-        let threads = self.settings.lock().local_whisper_threads;
-        self.run_timed(ctx, audio.samples, language, hints, threads)
+        let tuning = self.tuning();
+        self.run_timed(ctx, audio.samples, language, hints, tuning)
             .await
     }
 
@@ -432,6 +579,7 @@ impl Transcriber for LocalTranscriber {
             ready,
             last_load_ms: st.last_load_ms,
             last_transcribe_ms: st.last_transcribe_ms,
+            backend: local_backend_label().to_string(),
         })
     }
 }
@@ -441,8 +589,8 @@ impl Transcriber for LocalTranscriber {
 #[cfg(feature = "local-whisper")]
 fn decode_wav_f32(wav: &[u8]) -> anyhow::Result<Vec<f32>> {
     let cursor = std::io::Cursor::new(wav);
-    let mut reader = hound::WavReader::new(cursor)
-        .map_err(|e| anyhow::anyhow!("Bad WAV data: {e}"))?;
+    let mut reader =
+        hound::WavReader::new(cursor).map_err(|e| anyhow::anyhow!("Bad WAV data: {e}"))?;
     let samples = reader
         .samples::<i16>()
         .map(|s| s.map(|v| v as f32 / 32768.0))

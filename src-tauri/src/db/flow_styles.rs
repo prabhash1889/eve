@@ -94,9 +94,8 @@ pub fn delete(conn: &Connection, id: i64) -> rusqlite::Result<()> {
 /// The active style for a category, or `None` if there isn't one (or it's
 /// disabled). Used by the pipeline to shape the polish prompt.
 pub fn active_for(conn: &Connection, app_category: &str) -> rusqlite::Result<Option<FlowStyle>> {
-    let mut stmt = conn.prepare(
-        "SELECT * FROM flow_styles WHERE app_category = ?1 AND is_active <> 0 LIMIT 1",
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT * FROM flow_styles WHERE app_category = ?1 AND is_active <> 0 LIMIT 1")?;
     let mut rows = stmt.query_map(params![app_category], row_to_style)?;
     match rows.next() {
         Some(r) => Ok(Some(r?)),

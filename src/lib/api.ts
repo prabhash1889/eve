@@ -35,6 +35,8 @@ export interface Settings {
   localTranscriptionProfile: LocalProfile; // optimization: speed/quality profile
   localWhisperThreads: number | null; // optimization: explicit whisper.cpp threads (null = auto)
   localVadEnabled: boolean; // optimization: trim silence before local inference
+  localBeamSearchEnabled: boolean; // optimization: beam search for balanced/accurate local profiles
+  localCorrectnessRescue: boolean; // quality-first local mode for difficult clips
   localPrewarmEnabled: boolean; // optimization: prewarm local model on switch/select
   debugTiming: boolean; // Phase 5: print a detailed per-stage latency breakdown per session
   vibeCoding: boolean; // Phase 8: wrap spoken "backtick X backtick" in code editors
@@ -65,6 +67,8 @@ export const DEFAULT_SETTINGS: Settings = {
   localTranscriptionProfile: "balanced",
   localWhisperThreads: null,
   localVadEnabled: true,
+  localBeamSearchEnabled: true,
+  localCorrectnessRescue: false,
   localPrewarmEnabled: true,
   debugTiming: false,
   vibeCoding: true,
@@ -243,6 +247,18 @@ export interface WhisperStatus {
   ready: boolean; // loaded + cached, ready for instant inference
   lastLoadMs: number | null; // wall-clock cost of the last cold load
   lastTranscribeMs: number | null; // wall-clock cost of the last local inference
+  backend: string; // "whisper.cpp CPU" | "whisper.cpp CUDA" | unavailable
+}
+
+export interface TranscriptionBenchmark {
+  mode: "dictation" | "command" | string;
+  model: string;
+  profile: LocalProfile | string;
+  backend: string;
+  clipDurationMs: number;
+  transcribeMs: number;
+  wordsProduced: number;
+  vadTrimmed: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -396,6 +412,8 @@ export const api = {
   // Phase 2: prewarm + readiness of the selected local Whisper model.
   prewarmLocalModel: () => invoke<void>("prewarm_local_model"),
   getLocalWhisperStatus: () => invoke<WhisperStatus | null>("get_local_whisper_status"),
+  getLocalTranscriptionBenchmark: () =>
+    invoke<TranscriptionBenchmark | null>("get_local_transcription_benchmark"),
   // Startup & auto-update (Phase 11)
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   checkForUpdate: () => invoke<string | null>("check_for_update"),

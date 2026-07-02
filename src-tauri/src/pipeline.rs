@@ -13,7 +13,7 @@ use crate::db::{dictionary, flow_styles, queries, snippets, transforms, Db};
 use crate::polish::StyleHint;
 use crate::state::AppState;
 use crate::timing::Timings;
-use crate::transcription::Audio;
+use crate::transcription::{local_backend_label, Audio, TranscriptionBenchmark};
 use crate::{audio, events, injection, text_processing, window_mgmt};
 
 /// Emit a coarse processing-stage label to the Flow Bar (Phase 1 visibility).
@@ -41,7 +41,19 @@ pub async fn process(app: AppHandle) {
     let _processing = ProcessingGuard(app.state::<AppState>().is_processing.clone());
 
     // Snapshot the Arc-backed state up front so we never hold the guard across an await.
-    let (buffer, sample_rate, settings, transcriber, polisher, last_transcript, db, hwnd, context, to_scratchpad) = {
+    let (
+        buffer,
+        sample_rate,
+        settings,
+        transcriber,
+        polisher,
+        last_transcript,
+        last_benchmark,
+        db,
+        hwnd,
+        context,
+        to_scratchpad,
+    ) = {
         let st = app.state::<AppState>();
         // Bind the guarded clone to a local so the MutexGuard temporary drops
         // before the block's value (the tuple) is returned.
@@ -53,6 +65,7 @@ pub async fn process(app: AppHandle) {
             st.transcriber.clone(),
             st.polisher.clone(),
             st.last_transcript.clone(),
+            st.last_transcription_benchmark.clone(),
             st.db.clone(),
             st.foreground_hwnd.load(Ordering::SeqCst),
             context,
@@ -66,10 +79,8 @@ pub async fn process(app: AppHandle) {
     let mut timings = Timings::new();
 
     // Give the capture thread a moment to stop and flush its last samples.
-    let _ = tauri::async_runtime::spawn_blocking(|| {
-        std::thread::sleep(Duration::from_millis(60))
-    })
-    .await;
+    let _ = tauri::async_runtime::spawn_blocking(|| std::thread::sleep(Duration::from_millis(60)))
+        .await;
 
     let samples = {
         let mut b = buffer.lock();
@@ -115,6 +126,7 @@ pub async fn process(app: AppHandle) {
         transcription_backend,
         transcriber_model,
         vad_enabled,
+        correctness_rescue,
         profile,
         debug_timing,
     ) = {
@@ -140,6 +152,7 @@ pub async fn process(app: AppHandle) {
             s.transcription_backend.clone(),
             model,
             s.local_vad_enabled,
+            s.local_correctness_rescue,
             s.local_transcription_profile.clone(),
             s.debug_timing,
         )
@@ -172,12 +185,18 @@ pub async fn process(app: AppHandle) {
     // full WAV (built above) is what Groq uploads and what history replays; only
     // the f32 samples handed to the on-device backend are trimmed. A clip that
     // reads as all-silence fails fast here rather than after a wasted inference.
+    let mut vad_trimmed = false;
     let samples16k = if transcription_backend == "local" && vad_enabled {
-        let params = audio::VadParams::for_profile(&profile);
-        match tauri::async_runtime::spawn_blocking(move || audio::preprocess_local(&samples16k, params))
-            .await
+        let params = audio::VadParams::for_profile(&profile, correctness_rescue);
+        match tauri::async_runtime::spawn_blocking(move || {
+            audio::preprocess_local(&samples16k, params)
+        })
+        .await
         {
-            Ok(pre) if pre.speech_detected => Arc::new(pre.samples),
+            Ok(pre) if pre.speech_detected => {
+                vad_trimmed = pre.trimmed;
+                Arc::new(pre.samples)
+            }
             Ok(_) => {
                 window_mgmt::fail(&app, "No speech detected");
                 return;
@@ -199,18 +218,41 @@ pub async fn process(app: AppHandle) {
         samples: samples16k,
         wav,
     };
-    let raw = match transcriber.transcribe_audio(audio_input, language, hints).await {
+    let transcribe_started = std::time::Instant::now();
+    let raw = match transcriber
+        .transcribe_audio(audio_input, language, hints)
+        .await
+    {
         Ok(t) => t,
         Err(e) => {
             window_mgmt::fail(&app, &friendly_error(&e.to_string()));
             return;
         }
     };
+    let transcribe_ms = transcribe_started.elapsed().as_millis() as u64;
     timings.mark("transcribe");
     if raw.trim().is_empty() {
         window_mgmt::fail(&app, "No speech detected");
         return;
     }
+    *last_benchmark.lock() = Some(TranscriptionBenchmark {
+        mode: "dictation".into(),
+        model: if transcription_backend == "local" {
+            transcriber_model.clone()
+        } else {
+            "whisper-large-v3-turbo".into()
+        },
+        profile: profile.clone(),
+        backend: if transcription_backend == "local" {
+            local_backend_label().to_string()
+        } else {
+            "Groq".into()
+        },
+        clip_duration_ms: duration_ms.max(0) as u64,
+        transcribe_ms,
+        words_produced: raw.split_whitespace().count(),
+        vad_trimmed,
+    });
 
     // Preview the raw transcript on the Flow Bar before polishing.
     let _ = app.emit_to(

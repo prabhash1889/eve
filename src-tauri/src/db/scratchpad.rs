@@ -61,7 +61,13 @@ pub fn create(conn: &Connection, title: &str, now: i64) -> rusqlite::Result<Scra
 }
 
 /// Autosave a tab's title + content (called on every edit, debounced in the UI).
-pub fn save(conn: &Connection, id: i64, title: &str, content: &str, now: i64) -> rusqlite::Result<()> {
+pub fn save(
+    conn: &Connection,
+    id: i64,
+    title: &str,
+    content: &str,
+    now: i64,
+) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE scratchpad_tabs SET title = ?2, content = ?3, updated_at = ?4 WHERE id = ?1",
         params![id, title, content, now],

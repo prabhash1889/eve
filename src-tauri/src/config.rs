@@ -94,6 +94,17 @@ pub struct Settings {
     /// samples fed to the local Whisper backend before inference. On by default.
     #[serde(default = "default_true")]
     pub local_vad_enabled: bool,
+    /// Local Whisper: opt into beam search on the *balanced* profile for higher
+    /// quality at the cost of speed. Off by default — greedy decoding is ~2–3×
+    /// faster and fine for dictation. Fast always stays greedy; accurate and
+    /// correctness rescue always use beam search regardless of this toggle.
+    #[serde(default)]
+    pub local_beam_search_enabled: bool,
+    /// Local Whisper: quality-first rescue mode for difficult clips. Uses
+    /// gentler VAD/normalization, beam search, and prefers large-v3-turbo when
+    /// it is downloaded.
+    #[serde(default)]
+    pub local_correctness_rescue: bool,
     /// Phase 4 (optimization): prewarm the selected local model when the speech
     /// backend is switched to local or a new model is picked. On by default.
     #[serde(default = "default_true")]
@@ -206,6 +217,8 @@ impl Default for Settings {
             local_transcription_profile: default_local_profile(),
             local_whisper_threads: None,
             local_vad_enabled: true,
+            local_beam_search_enabled: false,
+            local_correctness_rescue: false,
             local_prewarm_enabled: true,
             debug_timing: false,
             vibe_coding: default_vibe_coding(),

@@ -185,7 +185,11 @@ pub fn resample_to_16k(samples: &[f32], src_rate: u32) -> Vec<f32> {
         let idx = pos.floor() as usize;
         let frac = (pos - idx as f64) as f32;
         let a = samples[idx];
-        let b = if idx + 1 < samples.len() { samples[idx + 1] } else { a };
+        let b = if idx + 1 < samples.len() {
+            samples[idx + 1]
+        } else {
+            a
+        };
         out.push(a + (b - a) * frac);
     }
     out
@@ -200,16 +204,36 @@ pub fn resample_to_16k(samples: &[f32], src_rate: u32) -> Vec<f32> {
 pub struct VadParams {
     pub threshold_mult: f32,
     pub pad_ms: u32,
+    pub min_peak_for_gain: f32,
 }
 
 impl VadParams {
     /// Map a performance-profile id (`Settings::local_transcription_profile`) to
     /// trimming aggressiveness. Unknown values fall back to "balanced".
-    pub fn for_profile(profile: &str) -> Self {
+    pub fn for_profile(profile: &str, correctness_rescue: bool) -> Self {
+        if correctness_rescue {
+            return VadParams {
+                threshold_mult: 1.1,
+                pad_ms: 320,
+                min_peak_for_gain: 0.03,
+            };
+        }
         match profile {
-            "fast" => VadParams { threshold_mult: 2.2, pad_ms: 80 },
-            "accurate" => VadParams { threshold_mult: 1.25, pad_ms: 220 },
-            _ => VadParams { threshold_mult: 1.6, pad_ms: 120 },
+            "fast" => VadParams {
+                threshold_mult: 2.2,
+                pad_ms: 80,
+                min_peak_for_gain: 0.005,
+            },
+            "accurate" => VadParams {
+                threshold_mult: 1.25,
+                pad_ms: 220,
+                min_peak_for_gain: 0.01,
+            },
+            _ => VadParams {
+                threshold_mult: 1.6,
+                pad_ms: 120,
+                min_peak_for_gain: 0.01,
+            },
         }
     }
 }
@@ -219,6 +243,7 @@ impl VadParams {
 pub struct Preprocessed {
     pub samples: Vec<f32>,
     pub speech_detected: bool,
+    pub trimmed: bool,
 }
 
 /// Local-only preprocessing for the on-device Whisper path: trim leading and
@@ -235,8 +260,9 @@ pub fn preprocess_local(samples: &[f32], params: VadParams) -> Preprocessed {
     if n_win < 2 {
         // Too short to analyze — pass through (normalized), assume speech.
         return Preprocessed {
-            samples: normalize_peak(samples),
+            samples: normalize_peak(samples, params.min_peak_for_gain),
             speech_detected: true,
+            trimmed: false,
         };
     }
 
@@ -264,6 +290,7 @@ pub fn preprocess_local(samples: &[f32], params: VadParams) -> Preprocessed {
         return Preprocessed {
             samples: samples.to_vec(),
             speech_detected: false,
+            trimmed: false,
         };
     };
 
@@ -272,24 +299,29 @@ pub fn preprocess_local(samples: &[f32], params: VadParams) -> Preprocessed {
     let start = first.saturating_sub(pad_win) * WIN;
     let end = ((last + pad_win + 1).min(n_win) * WIN).min(samples.len());
 
+    let trimmed = start > 0 || end < samples.len();
     Preprocessed {
-        samples: normalize_peak(&samples[start..end]),
+        samples: normalize_peak(&samples[start..end], params.min_peak_for_gain),
         speech_detected: true,
+        trimmed,
     }
 }
 
 /// Conservative peak normalization: amplify quiet recordings toward a target
 /// peak, never attenuate already-loud audio, and cap the gain so background
 /// noise in a near-silent clip isn't blown up.
-fn normalize_peak(samples: &[f32]) -> Vec<f32> {
+fn normalize_peak(samples: &[f32], min_peak_for_gain: f32) -> Vec<f32> {
     const TARGET: f32 = 0.7;
     const MAX_GAIN: f32 = 6.0;
     let peak = samples.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
-    if peak <= 0.0 || peak >= TARGET {
+    if peak < min_peak_for_gain || peak >= TARGET {
         return samples.to_vec();
     }
     let gain = (TARGET / peak).min(MAX_GAIN);
-    samples.iter().map(|&s| (s * gain).clamp(-1.0, 1.0)).collect()
+    samples
+        .iter()
+        .map(|&s| (s * gain).clamp(-1.0, 1.0))
+        .collect()
 }
 
 /// Encode mono f32 samples as 16-bit PCM WAV at 16 kHz. Returns an error

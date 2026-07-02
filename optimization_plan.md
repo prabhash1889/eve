@@ -26,6 +26,12 @@ a larger backend replacement.
   decision is to keep native whisper.cpp as the default local backend and defer the
   sidecar until its full lifecycle (install, downloads, fallback, updates) is
   specified. See the Phase 6 section for the decision and adoption gate.
+- Phase 7 — **Done**. Inference-parameter tuning (Track A) and GPU enablement
+  (Track B — CUDA sm_120 build via Ninja + `-allow-unsupported-compiler`, see
+  `src-tauri/.cargo/config.toml`). Verified on the RTX 5060: `large-v3-turbo`
+  went from 12–25 s/clip on CPU to **0.05–0.7 s/clip** on the CUDA build
+  (`latency.csv`, 2026-07-02), total release-to-done ≈ 0.3–0.9 s. See the
+  Phase 7 section.
 
 ## Phase 1: Baseline and Timing Visibility
 
@@ -175,6 +181,70 @@ an additive backend without disrupting Groq or whisper.cpp.
 4. Specify reliability: sidecar spawn/health-check/restart, IPC protocol, and
    fallback to whisper.cpp (then Groq) on sidecar failure — fallback must never
    regress from today's behavior.
+
+## Phase 7: Inference-Parameter Tuning + GPU Enablement
+
+Driven by the measured `latency.csv`: with Phases 1–5 in place, every stage
+except inference is already negligible (drain ≈60 ms, resample ≈5 ms, VAD ≈2 ms,
+inject ≈200 ms, polish skipped at `None`). Inference is ~99% of release-to-done
+latency. Observed: `large-v3-turbo` on the CPU build = **12–25 s/clip**;
+`small.en` ≈ **2.5 s**, but with worst-case spikes to **19 s** from whisper's
+temperature-fallback loop. So this phase targets inference directly, on two
+tracks.
+
+### Track A — inference parameters (Done)
+
+All in `transcription.rs::run_inference` unless noted. Two regimes by profile:
+fast/balanced optimize for low, *predictable* latency; accurate/correctness-rescue
+optimize for quality.
+
+- **Cap the encoder audio context** (`set_audio_ctx`, new `audio_ctx_for`). The
+  encoder otherwise always processes the full 1500-token / 30 s context, so a
+  short dictation pays for ~30 s of silence. We cap it to the clip length (~50
+  tokens/sec + 20% headroom, clamped to [256, 1500]); VAD has already trimmed to
+  speech so the cap never truncates. Quality keeps the full 1500. Biggest CPU win
+  for short clips; helps every model and the GPU path too.
+- **Greedy by default** (gating + `config.rs` default of `local_beam_search_enabled`
+  flipped to `false`). Beam search (size 5) cost ~2–3× a greedy decode for a
+  marginal dictation gain. Now: fast → greedy; balanced → greedy unless the toggle
+  is on; accurate / correctness-rescue → beam search always.
+- **Disable temperature fallback** outside the quality regime (`set_temperature_inc(0.0)`).
+  This is the loop that re-decodes a hard clip up to ~6× at rising temperature —
+  the source of the 19–25 s spikes. One pass keeps latency bounded; quality modes
+  keep the fallback.
+- **`set_no_context(true)`** — each dictation is an independent clip.
+- **UI (`LocalModelsPage.tsx`)** — updated the beam-search toggle copy and added a
+  loud warning when `large-v3-turbo` is selected on a **CPU** build (reads the
+  `whisper.cpp CPU` vs `whisper.cpp CUDA` backend label), steering users to
+  `small.en` or the CUDA build.
+
+The `Tuning` struct now groups the per-call knobs (threads/profile/beam/rescue)
+snapshotted from `Settings`, so the speed/quality decisions live in one place.
+
+### Track B — GPU enablement (CUDA, done)
+
+Target machine: RTX 5060 Laptop = **Blackwell, compute capability 12.0 (sm_120)**,
+which needs CUDA ≥ 12.8 (CUDA 13.0 is installed). The `local-whisper-cuda` build
+was failing; root causes found from the build logs:
+
+1. **Stale CMake build dir** — a prior interrupted CUDA configure left a
+   `CMakeCache.txt` using the **Ninja** generator; whisper-rs-sys/cmake-rs then
+   auto-picked the **Visual Studio** generator, and CMake refuses to switch
+   in-place. Fixed by `cargo clean -p whisper-rs-sys`.
+2. **The VS generator can't build CUDA here** — CUDA 13.0 installs its MSBuild
+   integration (`CUDA*.props`/`.targets`) only for VS 2019/2022, **not** the VS
+   2026 (v18) preview, so the VS generator fails "no CUDA toolset found". Fix:
+   force **Ninja** (invokes `nvcc` directly), built from an x64 MSVC env.
+3. **Blackwell arch + new host compiler** — set `CUDAARCHS=120` (sm_120), and
+   `NVCC_PREPEND_FLAGS=-allow-unsupported-compiler` because nvcc 13.0 rejects the
+   MSVC 14.50 (cl 19.50) host. All three live in the gitignored, machine-specific
+   `src-tauri/.cargo/config.toml [env]`.
+- **`flash_attn`** is enabled on the CUDA context in `transcription.rs::ensure_context`
+  (cfg-gated to `local-whisper-cuda`; no effect on the CPU build). Safe — it only
+  conflicts with DTW, which we don't use.
+
+Expected result once the CUDA build links: `large-v3-turbo` ≈ 1–2 s/clip at full
+accuracy. Falls back to Groq exactly as before if the local backend errors.
 
 ## Public Interfaces and Types
 

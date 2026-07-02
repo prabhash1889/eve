@@ -226,8 +226,8 @@ impl LocalPolisher {
         if id.is_empty() {
             anyhow::bail!("No local polish model selected — pick one in Models");
         }
-        let info = crate::models::find(&id)
-            .ok_or_else(|| anyhow::anyhow!("Unknown local model: {id}"))?;
+        let info =
+            crate::models::find(&id).ok_or_else(|| anyhow::anyhow!("Unknown local model: {id}"))?;
         let path = self.models_dir.join(info.file_name);
         if !path.exists() {
             anyhow::bail!("Model '{}' is not downloaded yet", info.name);
@@ -393,8 +393,7 @@ fn generate(
     use std::num::NonZeroU32;
 
     let backend = llm_backend()?;
-    let ctx_params =
-        LlamaContextParams::default().with_n_ctx(NonZeroU32::new(4096));
+    let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(4096));
     let mut ctx = model
         .new_context(backend, ctx_params)
         .map_err(|e| anyhow::anyhow!("llama context: {e}"))?;
@@ -411,7 +410,8 @@ fn generate(
             .add(*tok, i as i32, &[0], i as i32 == last)
             .map_err(|e| anyhow::anyhow!("batch add: {e}"))?;
     }
-    ctx.decode(&mut batch).map_err(|e| anyhow::anyhow!("decode: {e}"))?;
+    ctx.decode(&mut batch)
+        .map_err(|e| anyhow::anyhow!("decode: {e}"))?;
 
     // Cap the number of *new* tokens relative to where the prompt ends, not as
     // an absolute position. The old `min(prompt + 256, 2000)` meant a prompt
@@ -443,7 +443,8 @@ fn generate(
             .add(token, n_cur, &[0], true)
             .map_err(|e| anyhow::anyhow!("batch add: {e}"))?;
         n_cur += 1;
-        ctx.decode(&mut batch).map_err(|e| anyhow::anyhow!("decode: {e}"))?;
+        ctx.decode(&mut batch)
+            .map_err(|e| anyhow::anyhow!("decode: {e}"))?;
     }
 
     // Strip any trailing turn-end marker the model may emit (ChatML or Llama 3).

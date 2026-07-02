@@ -57,7 +57,12 @@ pub fn classify(process: &str, title: &str) -> AppCategory {
     let title_l = title.to_ascii_lowercase();
 
     // Direct desktop-app matches.
-    const EMAIL: &[&str] = &["outlook.exe", "thunderbird.exe", "mailspring.exe", "em client"];
+    const EMAIL: &[&str] = &[
+        "outlook.exe",
+        "thunderbird.exe",
+        "mailspring.exe",
+        "em client",
+    ];
     const WORK_MSG: &[&str] = &["slack.exe", "teams.exe", "ms-teams.exe", "msteams.exe"];
     const PERSONAL_MSG: &[&str] = &[
         "whatsapp.exe",
@@ -118,7 +123,13 @@ pub fn classify(process: &str, title: &str) -> AppCategory {
 fn classify_browser_title(title: &str) -> AppCategory {
     let contains = |needles: &[&str]| needles.iter().any(|n| title.contains(n));
 
-    if contains(&["gmail", "outlook", "proton mail", "protonmail", "yahoo mail"]) {
+    if contains(&[
+        "gmail",
+        "outlook",
+        "proton mail",
+        "protonmail",
+        "yahoo mail",
+    ]) {
         AppCategory::Email
     } else if contains(&["slack", "microsoft teams", "google chat"]) {
         AppCategory::WorkMsg
@@ -192,11 +203,7 @@ pub fn resolve(hwnd: windows::Win32::Foundation::HWND) -> AppContext {
                 .is_ok()
                 {
                     let full = String::from_utf16_lossy(&buf[..size as usize]);
-                    process = full
-                        .rsplit(['\\', '/'])
-                        .next()
-                        .unwrap_or(&full)
-                        .to_string();
+                    process = full.rsplit(['\\', '/']).next().unwrap_or(&full).to_string();
                 }
                 let _ = CloseHandle(handle);
             }

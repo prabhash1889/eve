@@ -20,6 +20,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 use crate::db::transforms;
 use crate::state::AppState;
+use crate::transcription::{local_backend_label, Audio, TranscriptionBenchmark};
 use crate::{audio, events, hotkey, injection, llm, polish, window_mgmt};
 
 #[cfg(windows)]
@@ -89,7 +90,7 @@ pub fn on_release(app: &AppHandle, st: &AppState) {
 /// Post-release Command Mode flow: transcribe the instruction → capture the
 /// selection → rewrite-or-generate via the LLM → inject.
 async fn process_command(app: AppHandle) {
-    let (buffer, sample_rate, settings, transcriber, last_transcript, hwnd) = {
+    let (buffer, sample_rate, settings, transcriber, last_transcript, last_benchmark, hwnd) = {
         let st = app.state::<AppState>();
         (
             st.audio_buffer.clone(),
@@ -97,6 +98,7 @@ async fn process_command(app: AppHandle) {
             st.settings.clone(),
             st.transcriber.clone(),
             st.last_transcript.clone(),
+            st.last_transcription_benchmark.clone(),
             st.foreground_hwnd.load(Ordering::SeqCst),
         )
     };
@@ -115,7 +117,9 @@ async fn process_command(app: AppHandle) {
         return;
     }
 
-    let (language, strategy, backend, vad_enabled, profile) = {
+    let duration_ms = (samples.len() as u64 * 1000) / rate.max(1) as u64;
+
+    let (language, strategy, backend, vad_enabled, correctness_rescue, profile, model) = {
         let s = settings.lock();
         let lang = if s.language == "auto" {
             None
@@ -127,43 +131,92 @@ async fn process_command(app: AppHandle) {
             s.inject_strategy.clone(),
             s.transcription_backend.clone(),
             s.local_vad_enabled,
+            s.local_correctness_rescue,
             s.local_transcription_profile.clone(),
+            if s.transcription_backend == "local" {
+                s.local_whisper_model.clone()
+            } else {
+                String::new()
+            },
         )
     };
 
-    // Phase 3 (optimization): trim silence before local inference (cloud keeps
-    // the full clip). Command Mode discards the WAV after transcription, so we
-    // can encode the trimmed samples directly rather than keeping a full copy.
-    let wav = match tauri::async_runtime::spawn_blocking(move || {
+    // Build the same dual-form audio payload as dictation mode. The local path
+    // consumes samples directly; the WAV stays available for Groq/fallback.
+    let backend_for_preprocess = backend.clone();
+    let profile_for_preprocess = profile.clone();
+    let processed = match tauri::async_runtime::spawn_blocking(move || {
         let mut resampled = audio::resample_to_16k(&samples, rate);
-        if backend == "local" && vad_enabled {
-            let pre = audio::preprocess_local(&resampled, audio::VadParams::for_profile(&profile));
-            if pre.speech_detected {
-                resampled = pre.samples;
+        let mut vad_trimmed = false;
+        if backend_for_preprocess == "local" && vad_enabled {
+            let pre = audio::preprocess_local(
+                &resampled,
+                audio::VadParams::for_profile(&profile_for_preprocess, correctness_rescue),
+            );
+            if !pre.speech_detected {
+                return anyhow::Ok((resampled, Vec::new(), vad_trimmed, false));
             }
+            vad_trimmed = pre.trimmed;
+            resampled = pre.samples;
         }
-        audio::encode_wav(&resampled)
+        let wav = audio::encode_wav(&resampled)?;
+        anyhow::Ok((resampled, wav, vad_trimmed, true))
     })
     .await
     {
-        Ok(Ok(w)) => w,
+        Ok(Ok(v)) => v,
         Ok(Err(_)) | Err(_) => {
             window_mgmt::fail(&app, "Audio processing failed");
             return;
         }
     };
+    let (samples16k, wav, vad_trimmed, speech_detected) = processed;
+    if !speech_detected {
+        window_mgmt::fail(&app, "No speech detected");
+        return;
+    }
 
-    let instruction = match transcriber.transcribe(wav, language, Vec::new()).await {
+    let transcribe_started = std::time::Instant::now();
+    let instruction = match transcriber
+        .transcribe_audio(
+            Audio {
+                samples: std::sync::Arc::new(samples16k),
+                wav,
+            },
+            language,
+            Vec::new(),
+        )
+        .await
+    {
         Ok(t) => t,
         Err(e) => {
             window_mgmt::fail(&app, &command_error(&e.to_string()));
             return;
         }
     };
+    let transcribe_ms = transcribe_started.elapsed().as_millis() as u64;
     if instruction.trim().is_empty() {
         window_mgmt::fail(&app, "No instruction heard");
         return;
     }
+    *last_benchmark.lock() = Some(TranscriptionBenchmark {
+        mode: "command".into(),
+        model: if model.is_empty() {
+            "whisper-large-v3-turbo".into()
+        } else {
+            model
+        },
+        profile,
+        backend: if settings.lock().transcription_backend == "local" {
+            local_backend_label().to_string()
+        } else {
+            "Groq".into()
+        },
+        clip_duration_ms: duration_ms,
+        transcribe_ms,
+        words_produced: instruction.split_whitespace().count(),
+        vad_trimmed,
+    });
 
     // Read the selection from the still-focused target app (blocking key sim).
     let app_for_sel = app.clone();

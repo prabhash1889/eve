@@ -62,10 +62,7 @@ pub fn course_correct(text: &str) -> String {
         }
 
         // Start of the marker's own clause.
-        let mut clause_start = result[..pos]
-            .rfind(boundaries)
-            .map(|i| i + 1)
-            .unwrap_or(0);
+        let mut clause_start = result[..pos].rfind(boundaries).map(|i| i + 1).unwrap_or(0);
 
         // If nothing precedes the marker within its clause, the user is
         // retracting the *previous* clause — extend the cut back over it.
@@ -243,8 +240,8 @@ fn replace_phrase_ci(text: &str, trigger: &str, expansion: &str) -> String {
                 .map(|t| t.lower.as_str())
                 .collect::<Vec<_>>()
                 .join(" ");
-            let is_match = candidate == trigger_norm
-                || (fuzzy && levenshtein(&candidate, &trigger_norm) <= 1);
+            let is_match =
+                candidate == trigger_norm || (fuzzy && levenshtein(&candidate, &trigger_norm) <= 1);
             if is_match {
                 out.push_str(&text[cursor..tokens[i].start]);
                 out.push_str(expansion);
@@ -325,7 +322,10 @@ fn wrap_backticks_line(line: &str) -> String {
 /// as the Insights "corrections" metric — a cheap proxy for how much cleanup a
 /// dictation needed. Comparison is case-insensitive over whitespace tokens.
 pub fn count_edits(before: &str, after: &str) -> usize {
-    let a: Vec<String> = before.split_whitespace().map(|w| w.to_lowercase()).collect();
+    let a: Vec<String> = before
+        .split_whitespace()
+        .map(|w| w.to_lowercase())
+        .collect();
     let b: Vec<String> = after.split_whitespace().map(|w| w.to_lowercase()).collect();
     word_levenshtein(&a, &b)
 }
@@ -474,8 +474,9 @@ pub fn format_lists(text: &str) -> String {
     let mut hits: Vec<(usize, usize)> = Vec::new();
     for (i, w) in words.iter().enumerate() {
         let cleaned = strip_word(w);
-        if let Some(ord) =
-            LIST_MARKERS.iter().position(|aliases| aliases.contains(&cleaned.as_str()))
+        if let Some(ord) = LIST_MARKERS
+            .iter()
+            .position(|aliases| aliases.contains(&cleaned.as_str()))
         {
             let is_ordinal = cleaned == LIST_MARKERS[ord][0];
             let at_clause_start = i == 0
@@ -765,9 +766,6 @@ mod tests {
 
     #[test]
     fn finalize_combines_passes() {
-        assert_eq!(
-            finalize("hello   world period"),
-            "hello world."
-        );
+        assert_eq!(finalize("hello   world period"), "hello world.");
     }
 }

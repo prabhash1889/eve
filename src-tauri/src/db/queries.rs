@@ -136,7 +136,11 @@ pub fn insert_transcript(conn: &Connection, t: &NewTranscript) -> rusqlite::Resu
 fn fts_match(q: &str) -> Option<String> {
     let expr = q
         .split_whitespace()
-        .map(|tok| tok.chars().filter(|c| c.is_alphanumeric()).collect::<String>())
+        .map(|tok| {
+            tok.chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>()
+        })
         .filter(|t| !t.is_empty())
         .map(|t| format!("{t}*"))
         .collect::<Vec<_>>()
@@ -235,7 +239,13 @@ pub fn get_stats(conn: &Connection, since: i64) -> rusqlite::Result<Stats> {
            FROM transcripts
           WHERE deleted_at IS NULL AND created_at >= ?1",
         params![since],
-        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+        |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        },
     )?;
 
     // Corrections come from the forward-only `daily_stats` rollup. Compare the
@@ -342,7 +352,11 @@ pub fn record_daily(
     )?;
     let mut map: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(&usage_json).unwrap_or_default();
-    let cat = if category.is_empty() { "other" } else { category };
+    let cat = if category.is_empty() {
+        "other"
+    } else {
+        category
+    };
     let n = map.get(cat).and_then(|v| v.as_i64()).unwrap_or(0) + 1;
     map.insert(cat.to_string(), serde_json::json!(n));
     let updated = serde_json::to_string(&map).unwrap_or_else(|_| "{}".into());

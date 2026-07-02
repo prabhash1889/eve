@@ -15,7 +15,7 @@ use crate::config::Settings;
 use crate::context::AppContext;
 use crate::db::Db;
 use crate::polish::{Polisher, RoutingPolisher};
-use crate::transcription::{RoutingTranscriber, Transcriber};
+use crate::transcription::{RoutingTranscriber, Transcriber, TranscriptionBenchmark};
 
 pub struct AppState {
     pub is_recording: Arc<AtomicBool>,
@@ -53,6 +53,7 @@ pub struct AppState {
     /// whenever transforms are edited.
     pub transform_shortcuts: Arc<Mutex<Vec<(Shortcut, i64)>>>,
     pub last_transcript: Arc<Mutex<Option<String>>>,
+    pub last_transcription_benchmark: Arc<Mutex<Option<TranscriptionBenchmark>>>,
     pub settings: Arc<Mutex<Settings>>,
     pub settings_path: PathBuf,
     /// Routing transcriber/polisher: each holds both the Groq and local backends
@@ -97,6 +98,7 @@ impl AppState {
             to_scratchpad: Arc::new(AtomicBool::new(false)),
             transform_shortcuts: Arc::new(Mutex::new(Vec::new())),
             last_transcript: Arc::new(Mutex::new(None)),
+            last_transcription_benchmark: Arc::new(Mutex::new(None)),
             transcriber: Arc::new(RoutingTranscriber::new(
                 models_dir.clone(),
                 settings.clone(),
