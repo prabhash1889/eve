@@ -104,6 +104,10 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # AppImage's linuxdeploy tooling normally mounts via FUSE, which GitHub
+          # runners don't provide - extract-and-run instead so bundling doesn't
+          # hang/crash. No-op on Windows/macOS.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
           # Updater artifact signing (required so `latest.json` is signed and the
           # in-app updater trusts the bundle). Generate with `tauri signer generate`
           # and put the PUBLIC key in tauri.conf.json `plugins.updater.pubkey`.
