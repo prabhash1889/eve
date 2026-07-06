@@ -125,7 +125,10 @@ fn read_active_window(conn: &RustConnection, target: u32, prop: u32) -> Option<u
         .ok()?
         .reply()
         .ok()?;
-    reply.value32()?.next().filter(|w| *w != 0)
+    // Bind before returning: `value32()` yields an iterator borrowing `reply`, so
+    // the value must be pulled out (and the iterator dropped) before `reply` does.
+    let win = reply.value32()?.next().filter(|w| *w != 0);
+    win
 }
 
 /// `_NET_WM_PID` (CARDINAL) of the given window, when the app advertises it.
@@ -136,7 +139,9 @@ fn read_pid(conn: &RustConnection, win: u32) -> Option<u32> {
         .ok()?
         .reply()
         .ok()?;
-    reply.value32()?.next()
+    // Bind before returning (same borrow reason as `read_active_window`).
+    let pid = reply.value32()?.next();
+    pid
 }
 
 /// The window caption: `_NET_WM_NAME` (UTF-8) first, falling back to the legacy

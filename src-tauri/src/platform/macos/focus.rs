@@ -15,7 +15,7 @@
 use std::thread;
 use std::time::Duration;
 
-use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
+use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 
 /// PID of the app that currently owns the foreground, or `None` if it can't be
 /// resolved (e.g. no frontmost app).
@@ -45,14 +45,11 @@ pub fn restore_focus(pid: isize) -> bool {
     };
 
     unsafe {
-        // `activate()` (macOS 14+) is the modern replacement, but
-        // `activateWithOptions:` still works across 12/13/14/15 and lets us force
-        // the switch even when another app is active. Pin the exact call on
-        // hardware if deprecation churn matters.
-        #[allow(deprecated)]
-        app.activateWithOptions(
-            NSApplicationActivationOptions::NSApplicationActivateIgnoringOtherApps,
-        );
+        // `activate()` (the 0-arg form) is the current API in objc2-app-kit; the
+        // older `activateWithOptions:` / `NSApplicationActivateIgnoringOtherApps`
+        // is deprecated and not surfaced in these bindings. It re-activates the
+        // target app; the poll below confirms the switch actually landed.
+        app.activate();
     }
 
     // Poll up to ~500 ms for the activation to land before we let the caller

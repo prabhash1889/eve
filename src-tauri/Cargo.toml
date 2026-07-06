@@ -103,7 +103,7 @@ async-trait = "0.1"
 # Phase 5 (optimization): `tokio::time::timeout` bounds the polish step so a slow
 # LLM never stalls injection. Tauri already pulls tokio in; the `time` feature is
 # the only piece we use directly.
-tokio = { version = "1", features = ["time", "sync"] }
+tokio = { version = "1", features = ["time", "sync", "macros"] }
 autocorrect = "2.14"
 
 [target.'cfg(windows)'.dependencies]
