@@ -12,6 +12,13 @@ The app uses Tauri 2 with a Rust backend and a React/TypeScript/Vite frontend.
 Cloud transcription and polish use Groq. Local Whisper and local LLM support are
 available as separate Cargo feature builds.
 
+Windows is the primary, fully featured platform. A cross-platform seam
+(`src-tauri/src/platform/`) lets the backend compile on macOS and Linux, and a
+macOS core-dictation path (hotkey -> record -> transcribe -> paste -> sound)
+exists behind `#[cfg(target_os = "macos")]`. CI compiles all three targets; see
+`cross-platform-plan.md`. Windows OS-integration internals stay byte-identical -
+new platform code lives behind cfg siblings, never by editing the Windows path.
+
 ## Read First
 
 Before modifying code in a subdirectory, read the nearest `AGENTS.md`:
@@ -43,7 +50,10 @@ cargo clippy
 
 There is no comprehensive automated test suite. Treat `npm run build`,
 `cargo check`, and manual Windows dictation smoke testing as the default
-verification baseline.
+verification baseline. CI (`.github/workflows/ci.yml`) runs
+`cargo check`/`clippy -D warnings`/`test` plus `npm run build` on a
+`{windows, macos, ubuntu-22.04}` matrix, so non-Windows code must at least
+compile clippy-clean.
 
 ## Architecture
 
@@ -61,6 +71,13 @@ The Rust backend owns OS integration:
 - clipboard/text insertion
 - SQLite persistence
 - tray, autostart, updater, and app windows
+
+OS-specific integration is abstracted behind `src-tauri/src/platform/`:
+`platform::frontmost` (focus capture/restore), `injection.rs` (paste path with
+its `INJECTING` guard), and `sound.rs`. Each has a Windows arm and a
+macOS/Linux arm selected by cfg; `platform/macos/` holds the macOS focus and
+key implementations. Add per-platform behavior as a new cfg arm here rather than
+branching inside shared code.
 
 ## Core Flow
 
