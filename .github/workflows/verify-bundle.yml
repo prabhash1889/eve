@@ -25,12 +25,12 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
-            args: "--bundles nsis,msi"
+            args: '--bundles nsis,msi --config {"bundle":{"createUpdaterArtifacts":false}}'
           - platform: macos-latest
             target: universal-apple-darwin
-            args: "--target universal-apple-darwin --bundles app,dmg"
+            args: '--target universal-apple-darwin --bundles app,dmg --config {"bundle":{"createUpdaterArtifacts":false}}'
           - platform: ubuntu-22.04
-            args: "--bundles deb,appimage"
+            args: '--bundles deb,appimage --config {"bundle":{"createUpdaterArtifacts":false}}'
 
     runs-on: ${{ matrix.platform }}
     steps:
