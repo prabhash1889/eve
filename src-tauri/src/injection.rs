@@ -15,8 +15,8 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 use windows::Win32::Foundation::HWND;
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
-    VIRTUAL_KEY, VK_C, VK_CONTROL, VK_V,
+    MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+    KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, VIRTUAL_KEY, VK_C, VK_CONTROL, VK_V,
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{IsWindow, SetForegroundWindow};
@@ -164,14 +164,21 @@ fn restore_focus(hwnd: isize) -> bool {
 }
 
 /// Build a single keyboard `INPUT` event for `SendInput`.
+///
+/// The scan code must be populated (not left 0): Chromium-based hosts (WebView2 and
+/// Electron terminals, e.g. Saple Bridge / VS Code) derive `KeyboardEvent.code` from the
+/// hardware scan code, not the virtual key. A zero `wScan` yields `code: ""`, so any app
+/// shortcut handler matching on `event.code` (like a Ctrl+V paste interceptor) never
+/// fires and the keystroke degrades to a raw control byte inside the terminal.
 #[cfg(windows)]
 fn key_event(vk: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS) -> INPUT {
+    let scan = unsafe { MapVirtualKeyW(vk.0 as u32, MAPVK_VK_TO_VSC) } as u16;
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
                 wVk: vk,
-                wScan: 0,
+                wScan: scan,
                 dwFlags: flags,
                 time: 0,
                 dwExtraInfo: 0,
