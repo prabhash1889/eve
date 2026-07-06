@@ -159,8 +159,9 @@ pub async fn process(app: AppHandle) {
     // Groq rejects uploads over 25 MB (≈13 min of 16 kHz mono WAV). Detect that
     // here and surface a clear "too long" message rather than letting the request
     // fail with a generic "check your connection".
-    const GROQ_MAX_WAV_BYTES: usize = 25 * 1024 * 1024;
-    if transcription_backend == "groq" && wav.len() > GROQ_MAX_WAV_BYTES {
+    if transcription_backend == "groq"
+        && wav.len() > crate::transcription::GROQ_MAX_WAV_BYTES
+    {
         window_mgmt::fail(
             &app,
             "Recording too long — keep dictations under about 13 minutes",
@@ -466,6 +467,7 @@ fn persist(
         word_count,
         duration_ms,
         was_polished,
+        source_file: None,
     };
     let conn = db.lock();
     let _ = queries::insert_transcript(&conn, &row);

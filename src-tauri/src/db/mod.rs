@@ -25,6 +25,7 @@ const MIGRATION_003: &str = include_str!("migrations/003_snippets.sql");
 const MIGRATION_004: &str = include_str!("migrations/004_flow_styles.sql");
 const MIGRATION_005: &str = include_str!("migrations/005_transforms.sql");
 const MIGRATION_006: &str = include_str!("migrations/006_scratchpad.sql");
+const MIGRATION_007: &str = include_str!("migrations/007_file_source.sql");
 
 /// Open (or create) the database at `path` and apply any pending migrations.
 pub fn open(path: &Path) -> anyhow::Result<Db> {
@@ -62,6 +63,10 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
     if version < 6 {
         conn.execute_batch(MIGRATION_006)?;
         conn.pragma_update(None, "user_version", 6i64)?;
+    }
+    if version < 7 {
+        conn.execute_batch(MIGRATION_007)?;
+        conn.pragma_update(None, "user_version", 7i64)?;
     }
     Ok(())
 }

@@ -58,6 +58,12 @@ pub struct TranscriptionBenchmark {
     pub vad_trimmed: bool,
 }
 
+/// Groq rejects uploads over 25 MB (≈13 min of 16 kHz mono WAV). The mic
+/// pipeline and the file-transcription queue both pre-check the encoded WAV
+/// against this so an over-length clip fails with a clear message instead of a
+/// generic network error.
+pub const GROQ_MAX_WAV_BYTES: usize = 25 * 1024 * 1024;
+
 pub fn local_backend_label() -> &'static str {
     if cfg!(feature = "local-whisper-cuda") {
         "whisper.cpp CUDA"

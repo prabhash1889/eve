@@ -8,6 +8,7 @@
     "core:event:default",
     "opener:default",
     "updater:default",
-    "autostart:default"
+    "autostart:default",
+    "dialog:default"
   ]
 }

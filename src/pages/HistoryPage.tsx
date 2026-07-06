@@ -1,10 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
-import { Search, Trash2, RotateCcw, Copy, Check, ChevronLeft, ChevronRight } from "lucide-react";
+import {
+  Search,
+  Trash2,
+  RotateCcw,
+  Copy,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  FileAudio,
+} from "lucide-react";
 import { api, type Transcript } from "../lib/api";
 
 const PER_PAGE = 20;
 
-export function HistoryPage() {
+export function HistoryPage({ reloadSignal }: { reloadSignal?: number }) {
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const [items, setItems] = useState<Transcript[]>([]);
@@ -37,6 +46,12 @@ export function HistoryPage() {
   useEffect(() => {
     setPage(1);
   }, [query]);
+
+  // Reload when a file transcription finishes (parent bumps the signal).
+  useEffect(() => {
+    if (reloadSignal) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadSignal]);
 
   const onDelete = async (t: Transcript) => {
     // Only drop the row from the UI if the backend delete actually succeeded —
@@ -175,6 +190,17 @@ function HistoryCard({ t, onDelete }: { t: Transcript; onDelete: () => void }) {
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-ink-faint">
+        {t.sourceFile && (
+          <>
+            <span
+              className="flex items-center gap-1 text-accent"
+              title={t.sourceFile}
+            >
+              <FileAudio size={12} /> {fileName(t.sourceFile)}
+            </span>
+            <Dot />
+          </>
+        )}
         <span>{formatTime(t.createdAt)}</span>
         <Dot />
         <span>{t.wordCount} words</span>
@@ -226,6 +252,12 @@ function EmptyState({ searching }: { searching: boolean }) {
 }
 
 const Dot = () => <span className="text-ink-faint/50">·</span>;
+
+/** Last path segment of a source-file path, for the History badge. */
+function fileName(path: string): string {
+  const parts = path.split(/[\\/]/);
+  return parts[parts.length - 1] || path;
+}
 
 function preview(t: Transcript): string {
   const s = (t.polishedText || t.rawText).trim();

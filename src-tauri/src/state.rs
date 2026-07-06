@@ -2,10 +2,10 @@
 //! handler, audio thread, and commands. All mutable fields are behind Arc so
 //! the audio capture thread can own clones.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -76,6 +76,17 @@ pub struct AppState {
     /// Local-models: in-flight downloads keyed by model id; the bool is a
     /// cancel-requested flag the download task observes.
     pub model_downloads: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    /// Phase C (file transcription): pending files awaiting transcription,
+    /// drained serially by a single worker task (`file_transcribe::run_worker`).
+    pub file_queue: Arc<Mutex<VecDeque<crate::file_transcribe::QueuedFile>>>,
+    /// Monotonic id source for queue items.
+    pub queue_next_id: Arc<AtomicU64>,
+    /// True while the queue worker is draining. Guards against spawning a second
+    /// worker; the worker clears it (under the `file_queue` lock) when it empties.
+    pub queue_worker_running: Arc<AtomicBool>,
+    /// Ids the user cancelled: a pending item is dropped, a processing item is
+    /// abandoned at the next stage boundary (checked in the worker).
+    pub queue_cancelled: Arc<Mutex<HashSet<u64>>>,
 }
 
 impl AppState {
@@ -119,6 +130,10 @@ impl AppState {
             settings_path,
             db,
             model_downloads: Arc::new(Mutex::new(HashMap::new())),
+            file_queue: Arc::new(Mutex::new(VecDeque::new())),
+            queue_next_id: Arc::new(AtomicU64::new(1)),
+            queue_worker_running: Arc::new(AtomicBool::new(false)),
+            queue_cancelled: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 }

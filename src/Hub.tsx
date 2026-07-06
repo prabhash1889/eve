@@ -34,6 +34,7 @@ import {
   SHORTCUT_CHOICES,
 } from "./lib/options";
 import { ShortcutCapture } from "./components/ShortcutCapture";
+import { FileQueue } from "./components/FileQueue";
 import { Onboarding, LanguageMultiSelect } from "./components/onboarding/Onboarding";
 import { HistoryPage } from "./pages/HistoryPage";
 import { DictionaryPage } from "./pages/DictionaryPage";
@@ -256,6 +257,8 @@ function Dashboard({
   hasKey: boolean;
   onConfigure: () => void;
 }) {
+  // Bumped when a queued file finishes so the embedded History list reloads.
+  const [historyReload, setHistoryReload] = useState(0);
   return (
     <div>
       <h1 className="font-serif text-3xl">Welcome to Eve</h1>
@@ -304,8 +307,12 @@ function Dashboard({
         </div>
       </div>
 
+      <div className="mt-6">
+        <FileQueue hasKey={hasKey} onItemDone={() => setHistoryReload((n) => n + 1)} />
+      </div>
+
       <div className="mt-10">
-        <HistoryPage />
+        <HistoryPage reloadSignal={historyReload} />
       </div>
     </div>
   );

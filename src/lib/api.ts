@@ -107,6 +107,7 @@ export interface Transcript {
   durationMs: number;
   wasPolished: boolean;
   deletedAt: number | null;
+  sourceFile: string | null; // Phase C: source audio path for file transcriptions
 }
 
 export interface HistoryPage {
@@ -292,6 +293,10 @@ export const EVT = {
   limit: "session://limit",
   // Phase 11: tray "Check for updates" → Hub runs the check.
   checkUpdate: "app://check-update",
+  // Phase C: file-transcription queue lifecycle (emitted to the Hub window).
+  queueProgress: "queue://progress",
+  queueDone: "queue://done",
+  queueError: "queue://error",
   // Phase 9: dictated text routed into the focused Scratchpad editor.
   scratchpadInsert: "scratchpad://insert",
   // Local-model download lifecycle (emitted to the Hub window).
@@ -317,6 +322,33 @@ export interface StartPayload {
   bubbleOpacity: number;
   mode: "dictation" | "command"; // Phase 7: Command Mode tints the Flow Bar
   toggleHint: boolean; // Parity A1: toggle/hybrid mode - hint that a tap stops
+}
+
+// Phase C: file-transcription queue --------------------------------------------
+
+/** A file accepted into the transcription queue (mirrors QueueItem in Rust). */
+export interface QueueItem {
+  id: number;
+  fileName: string;
+}
+
+export interface QueueProgressPayload {
+  id: number;
+  fileName: string;
+  stage: string; // "Queued" | "Decoding" | "Transcribing" | "Polishing"
+}
+
+export interface QueueDonePayload {
+  id: number;
+  fileName: string;
+  transcriptId: number;
+  text: string;
+}
+
+export interface QueueErrorPayload {
+  id: number;
+  fileName: string;
+  message: string;
 }
 
 export function on<T>(event: string, cb: EventCallback<T>): Promise<UnlistenFn> {
@@ -426,6 +458,9 @@ export const api = {
   getLocalWhisperStatus: () => invoke<WhisperStatus | null>("get_local_whisper_status"),
   getLocalTranscriptionBenchmark: () =>
     invoke<TranscriptionBenchmark | null>("get_local_transcription_benchmark"),
+  // File transcription (Phase C)
+  transcribeFiles: (paths: string[]) => invoke<QueueItem[]>("transcribe_files", { paths }),
+  cancelQueueItem: (id: number) => invoke<void>("cancel_queue_item", { id }),
   // Startup & auto-update (Phase 11)
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   checkForUpdate: () => invoke<string | null>("check_for_update"),

@@ -5,6 +5,7 @@ mod config;
 mod context;
 mod db;
 mod events;
+mod file_transcribe;
 #[cfg(windows)]
 mod hooks;
 mod hotkey;
@@ -31,6 +32,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        // Phase C: native file picker for "Transcribe files…".
+        .plugin(tauri_plugin_dialog::init())
         // Phase 11: self-update + launch-at-startup. Autostart registers Eve with
         // no extra CLI args; the updater reads its endpoint/pubkey from
         // `tauri.conf.json` (`plugins.updater`).
@@ -232,6 +235,8 @@ pub fn run() {
             commands::prewarm_local_model,
             commands::get_local_whisper_status,
             commands::get_local_transcription_benchmark,
+            commands::transcribe_files,
+            commands::cancel_queue_item,
             commands::set_autostart,
             commands::check_for_update,
             commands::install_update,

@@ -22,6 +22,9 @@ pub struct Transcript {
     pub duration_ms: i64,
     pub was_polished: bool,
     pub deleted_at: Option<i64>,
+    /// Phase C: source audio-file path when this transcript came from file
+    /// transcription (read in place, never copied). `None` for mic dictations.
+    pub source_file: Option<String>,
 }
 
 /// Fields for a freshly recorded dictation (id/created_at are assigned on insert).
@@ -38,6 +41,8 @@ pub struct NewTranscript {
     pub word_count: i64,
     pub duration_ms: i64,
     pub was_polished: bool,
+    /// Phase C: set for file transcriptions (the source path); `None` for mic.
+    pub source_file: Option<String>,
 }
 
 /// One page of history plus the total matching count (for pagination UI).
@@ -103,6 +108,7 @@ fn row_to_transcript(row: &Row) -> rusqlite::Result<Transcript> {
         duration_ms: row.get("duration_ms")?,
         was_polished: row.get::<_, i64>("was_polished")? != 0,
         deleted_at: row.get("deleted_at")?,
+        source_file: row.get("source_file")?,
     })
 }
 
@@ -110,8 +116,9 @@ pub fn insert_transcript(conn: &Connection, t: &NewTranscript) -> rusqlite::Resu
     conn.execute(
         "INSERT INTO transcripts
             (created_at, raw_text, polished_text, cleanup_level, language, audio_path,
-             app_process, app_title, app_category, word_count, duration_ms, was_polished)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             app_process, app_title, app_category, word_count, duration_ms, was_polished,
+             source_file)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             t.created_at,
             t.raw_text,
@@ -125,6 +132,7 @@ pub fn insert_transcript(conn: &Connection, t: &NewTranscript) -> rusqlite::Resu
             t.word_count,
             t.duration_ms,
             t.was_polished as i64,
+            t.source_file,
         ],
     )?;
     Ok(conn.last_insert_rowid())

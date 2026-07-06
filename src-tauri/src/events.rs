@@ -33,6 +33,12 @@ pub const MODEL_DONE: &str = "model://done";
 /// Local-models: a model download failed or was cancelled.
 pub const MODEL_ERROR: &str = "model://error";
 
+/// Phase C: file-transcription queue lifecycle (emitted to the Hub window). One
+/// item moves progress → done | error.
+pub const QUEUE_PROGRESS: &str = "queue://progress";
+pub const QUEUE_DONE: &str = "queue://done";
+pub const QUEUE_ERROR: &str = "queue://error";
+
 /// Phase 11: tray "Check for updates" was clicked — the Hub runs the check and
 /// shows the result in Settings.
 pub const CHECK_UPDATE: &str = "app://check-update";
@@ -84,6 +90,35 @@ pub struct ModelStatusPayload {
     pub id: String,
     /// Present only on `MODEL_ERROR`.
     pub message: Option<String>,
+}
+
+/// Phase C: a queued file advanced to a new stage ("Decoding", "Transcribing",
+/// "Polishing"), for the Dashboard queue card.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueProgressPayload {
+    pub id: u64,
+    pub file_name: String,
+    pub stage: String,
+}
+
+/// Phase C: a queued file finished; the transcript now lives in History.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueDonePayload {
+    pub id: u64,
+    pub file_name: String,
+    pub transcript_id: i64,
+    pub text: String,
+}
+
+/// Phase C: a queued file failed (decode/transcription error or over-length).
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueErrorPayload {
+    pub id: u64,
+    pub file_name: String,
+    pub message: String,
 }
 
 /// Flow Bar appearance, sent with `START` so the (event-only) bar can size and

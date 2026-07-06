@@ -64,7 +64,26 @@ known-good baseline.
   catalog entries in `models.rs` now carry exact sizes + SHA-256 from the
   Hugging Face LFS pointers, so downloads are verified. Parakeet second
   engine stays deferred (see Summary).
-- Phase C (file transcription) - **Pending**
+- Phase C (file transcription) - **Done** (build-verified; live drop/transcribe
+  smoke test pending). Migration 7 adds a `source_file` column to `transcripts`
+  (`queries.rs` `Transcript`/`NewTranscript` carry it; mic dictations write
+  `None`). New `src-tauri/src/file_transcribe.rs` decodes dropped/picked files
+  with `symphonia` (wav/mp3/m4a/flac/ogg), downmixes to mono, reuses
+  `audio::resample_to_16k`, and runs them through the existing
+  `transcriber.transcribe_audio` -> dictionary/course-correct -> polish
+  (time-bounded) -> `finalize` -> history path; injection is skipped. A
+  `VecDeque<QueuedFile>` in `AppState` is drained serially by one worker task
+  (`queue_worker_running` guards against a second worker; the flag is cleared
+  under the queue lock so no wakeup is lost); `cancel_queue_item` drops a pending
+  file and abandons an in-flight one at the next stage boundary
+  (`queue_cancelled`). Groq's 25 MB WAV cap is pre-checked per file (shared
+  `transcription::GROQ_MAX_WAV_BYTES`, also now used by the mic pipeline); long
+  files error clearly (chunking is a follow-up). IPC: `queue://progress | done |
+  error` events + `transcribe_files`/`cancel_queue_item` commands (four-file
+  adds, `dialog:default` capability, `tauri-plugin-dialog`). UI: `FileQueue.tsx`
+  on the Dashboard - window `onDragDropEvent` drop zone + "Transcribe files…"
+  picker, per-item stage/cancel card; finished items reload the embedded History
+  list and show a source-file badge (`HistoryPage.tsx`).
 - Phase D (translate mode) - **Pending**
 - Phase E (polish batch) - **Pending**
 
