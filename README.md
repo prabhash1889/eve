@@ -1,159 +1,157 @@
-# Eve — system-wide AI voice dictation
+# Eve
 
-A Wispr Flow–style dictation app: hold a hotkey anywhere, speak, release, and the
-cleaned-up text is typed into whatever app has focus. Built with **Tauri 2**
-(Rust backend + React/TypeScript frontend). Transcription via the **Groq**
-Whisper API; AI polish via Groq Llama (Phase 2+).
+System-wide AI voice dictation for Windows, built with Tauri 2, Rust, React, and
+TypeScript.
 
-> Status: **Phase 0 (scaffolding) + Phase 1 (walking-skeleton MVP)** complete.
-> See `~/.claude/plans/i-want-to-build-frolicking-sunset.md` for the full roadmap.
+Hold a shortcut anywhere, speak, release, and Eve transcribes the audio, cleans up
+the text, and inserts it into the focused app. Eve can use Groq for cloud
+transcription and polish, or a local whisper.cpp build for on-device
+speech-to-text.
+
+## Status
+
+Eve is an early Windows-first desktop app. The main dictation flow, history,
+snippets, dictionary, scratchpad, file transcription, local Whisper builds, and
+release packaging are in progress or implemented. macOS and Linux support are
+planned but not production-ready.
+
+## Features
+
+- Push-to-talk dictation with a floating flow bar
+- Cloud transcription through Groq Whisper
+- AI cleanup and deterministic text transforms
+- Optional local whisper.cpp speech-to-text builds
+- History, snippets, dictionary, transforms, and scratchpad surfaces
+- File transcription queue
+- Windows tray app with updater-enabled release bundles
+- API key storage through the OS credential store, not project files
 
 ## Prerequisites
 
-- Rust (stable) + Cargo
-- Node 18+ and npm
-- Windows 10/11 with WebView2 (preinstalled on Win11)
-- A **Groq API key** — https://console.groq.com/keys — required for the default
-  (cloud) build. Optional if you build with on-device speech-to-text; see
-  [Offline / on-device models](#offline--on-device-models-no-api-key).
+- Windows 10/11
+- Rust stable and Cargo
+- Node.js 20+ and npm
+- WebView2 runtime
+- Groq API key for the default cloud build
 
-## Install & run (dev)
+Local Whisper builds additionally require CMake and a C/C++ toolchain. On Windows,
+Visual Studio Build Tools with the "Desktop development with C++" workload is the
+recommended setup.
+
+## Development
 
 ```sh
 npm install
 npm run tauri dev
 ```
 
-The Hub window opens and a tray icon appears. The floating Flow Bar is hidden
-until you start dictating.
-
-## How to use (Phase 1)
-
-1. In the Hub → **Settings**, paste your Groq API key and click **Save**
-   (stored in Windows Credential Manager, never on disk).
-2. Optionally pick a **language** and **push-to-talk hotkey** (default **F8**).
-3. Focus any text field (Notepad, VS Code, a browser box…).
-4. **Hold F8**, speak, then **release**. The Flow Bar shows a live waveform while
-   listening, "Transcribing…", then the text is pasted at your cursor.
-5. Press **Esc** while holding to cancel.
-
-> Cleanup level is "None" in v1 (raw transcript). LLM polish — filler removal,
-> punctuation, tone styles — arrives in Phase 2.
-
-## Offline / on-device models (no API key)
-
-By default Eve transcribes and polishes via **Groq**, so the default build needs a
-Groq API key. You can instead run **speech-to-text fully on-device** (whisper.cpp)
-with no key and no network — behind a Cargo feature that compiles the native
-inference engine.
-
-### Prerequisites (Windows)
-
-On-device inference compiles whisper.cpp / llama.cpp via CMake + a C/C++ toolchain:
-
-- **Visual Studio Build Tools** (or VS Community) with the **"Desktop development
-  with C++"** workload — provides the MSVC compiler + Windows SDK:
-  ```sh
-  winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-  ```
-- **CMake** — use the one bundled with Visual Studio (the **"C++ CMake tools for
-  Windows"** component). A standalone/MinGW CMake older than your installed VS may
-  not know the `Visual Studio <N> <year>` generator and will fail to configure with
-  *"Could not create named generator …"*.
-
-> If the build picks up the wrong CMake (e.g. an old MinGW one earlier on PATH),
-> point it at the VS-bundled CMake. The cleanest way is a **machine-specific**
-> `src-tauri/.cargo/config.toml` (keep it gitignored — the path is per-machine):
-> ```toml
-> [env]
-> CMAKE = "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe"
-> ```
-> Adjust the path to your VS edition/year. (`tauri` runs `cargo` from `src-tauri/`,
-> so the config is discovered there.)
-
-### Build with on-device speech-to-text
+Useful checks:
 
 ```sh
-npm run tauri dev   -- --features local-models   # dev
-npm run tauri build -- --features local-models   # release
+npm run build
+cd src-tauri
+cargo check
 ```
 
-For NVIDIA GPU acceleration, build the local Whisper backend with CUDA:
+The frontend-only Vite server can be started with:
+
+```sh
+npm run dev
+```
+
+That is useful for UI work, but it does not run the Rust backend or OS integration.
+
+## Local Speech-To-Text Builds
+
+The default build uses Groq for speech-to-text and polish. To build Eve with
+on-device speech-to-text, enable the local Whisper feature:
+
+```sh
+npm run tauri dev -- --features local-whisper
+npm run tauri build -- --features local-whisper
+```
+
+CUDA builds are available for NVIDIA systems:
 
 ```sh
 npm run tauri:dev:local-cuda
 npm run tauri:build:local-cuda
 ```
 
-This enables Cargo feature `local-whisper-cuda` (`local-whisper` plus
-`whisper-rs/cuda`). It still uses the native whisper.cpp backend, but the Local
-models status panel reports whether this binary was built as `whisper.cpp CUDA`
-or `whisper.cpp CPU`.
-
-Then in **Settings → Local models**: set **Speech-to-text → Local**, download a
-Whisper model, and click **Use**. Transcription now runs entirely on your machine —
-no Groq key needed.
-
-### On-device polish is a separate build
-
-The local polish LLM (llama.cpp) and local Whisper **cannot be linked into the same
-binary** — both statically bundle `ggml`, whose symbols collide at link time
-(`LNK2005` → `LNK1169`). They're therefore mutually-exclusive Cargo features:
-
-| Feature | On-device | Builds |
-| --- | --- | --- |
-| `local-whisper` (alias `local-models`) | speech-to-text | whisper.cpp |
-| `local-whisper-cuda` | speech-to-text | whisper.cpp + CUDA |
-| `local-llm` | AI polish | llama.cpp |
-
-Pick **one** per build:
+Local Whisper and local LLM polish are separate build variants. They cannot be
+linked into the same binary because whisper.cpp and llama.cpp both vendor ggml
+symbols. Use one of these feature sets per build:
 
 ```sh
-npm run tauri dev -- --features local-whisper   # offline transcription
-npm run tauri dev -- --features local-whisper-cuda # offline transcription, CUDA
-npm run tauri dev -- --features local-llm        # offline polish
+npm run tauri dev -- --features local-whisper
+npm run tauri dev -- --features local-whisper-cuda
+npm run tauri dev -- --features local-llm
 ```
 
-A build with neither (the default) uses Groq for both and needs an API key. When a
-local backend is selected but unavailable, Eve falls back to Groq if a key is set;
-otherwise it surfaces an error (transcription) or inserts the raw, unpolished text
-(polish).
+## Release Builds
+
+Create a local release bundle with:
+
+```sh
+npm run release
+```
+
+The release script collects installers into `build/<version>/`. Release artifacts,
+signing keys, local model files, and generated build output are intentionally
+ignored by git.
+
+The GitHub release workflow builds the CPU `local-whisper` Windows updater channel.
+It expects updater signing material to be configured as GitHub Actions secrets:
+
+- `TAURI_SIGNING_PRIVATE_KEY`
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+
+Do not commit private signing keys. The updater public key in
+`src-tauri/tauri.conf.json` is safe to publish.
+
+## Privacy And Secrets
+
+- User API keys are stored in the operating system credential store.
+- Settings are stored as local app configuration.
+- Audio files and generated artifacts are local runtime/build data and should not
+  be committed.
+- `.env*`, signing keys, release output, local models, and Rust/Node build output
+  are gitignored.
+
+Before publishing a fork, run a secret scan over both the working tree and git
+history.
 
 ## Architecture
 
-```
-src/                      React frontend (two entry points)
-  main.tsx / Hub.tsx        Hub window: Dashboard + Settings
-  flow-bar.tsx              Floating Flow Bar widget (event-driven)
-  lib/api.ts                Typed IPC: commands + event names (mirrors Rust)
-  styles/globals.css        Tailwind v4 design tokens (light/dark)
+```text
+src/
+  main.tsx / Hub.tsx          Hub window
+  flow-bar.tsx                Floating dictation widget
+  scratchpad.tsx              Scratchpad window
+  lib/api.ts                  Typed Tauri IPC wrappers
+  styles/globals.css          Tailwind v4 design tokens
 
-src-tauri/src/            Rust backend
-  lib.rs                    App builder: plugins, windows, tray, shortcut wiring
-  hotkey.rs                 Push-to-talk press/release/cancel handlers
-  audio.rs                  cpal capture thread → 16 kHz mono → WAV
-  transcription.rs          Transcriber trait + GroqTranscriber (+ local stub)
-  polish.rs                 Polisher trait + NoOpPolisher (Groq polish = Phase 2)
-  injection.rs              Clipboard + Win32 Ctrl+V paste, focus restore
-  pipeline.rs               Orchestrates drain → transcribe → polish → inject
-  window_mgmt.rs            Show/hide/position the Flow Bar
-  config.rs / secrets.rs    JSON settings + keychain API key
-  commands.rs / tray.rs     Frontend commands + system tray
-```
-
-### The dictation flow
-
-`F8 down` → Rust captures the foreground window + starts the cpal mic thread +
-shows the Flow Bar → waveform animates from live amplitude → `F8 up` → audio is
-resampled to 16 kHz WAV → POSTed to Groq Whisper → (no-op polish in v1) → focus
-restored to the original window → text pasted via clipboard + `Ctrl+V` →
-clipboard restored.
-
-## Build a release bundle
-
-```sh
-npm run tauri build
+src-tauri/src/
+  lib.rs                      App builder, plugins, windows, tray
+  hotkey.rs / hooks.rs        Shortcut and trigger handling
+  audio.rs                    Microphone capture and WAV encoding
+  transcription.rs            Cloud/local transcription boundary
+  polish.rs                   Cloud/local cleanup boundary
+  pipeline.rs                 Dictation processing pipeline
+  injection.rs                Clipboard and text insertion
+  config.rs / secrets.rs      Settings and OS credential-store access
+  db/                         SQLite persistence
 ```
 
-(Windows code signing is configured in Phase 11; unsigned builds trigger a
-SmartScreen "Run anyway" prompt.)
+Core flow:
+
+```text
+shortcut down -> capture audio -> shortcut up -> transcribe -> polish/finalize
+-> restore focus -> paste/type text -> restore clipboard
+```
+
+## Contributing
+
+This repository does not currently have a full automated test suite. At minimum,
+run `npm run build` and `cargo check` before submitting changes. For OS-integration
+changes, manually smoke test dictation into a normal text field on Windows.

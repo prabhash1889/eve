@@ -8,7 +8,6 @@ Groq Whisper `whisper-large-v3-turbo` for transcription · Groq Llama
 `llama-3.1-8b-instant` for AI polish (Phase 2+) · Windows-first.
 Local on-device Whisper is deferred behind a trait (not built in v1).
 
-> Full original plan: `~/.claude/plans/i-want-to-build-frolicking-sunset.md`
 > Reference clones to study: `cjpais/handy`, `Open-Less/openless`,
 > `moinulmoin/voicetypr`, `xarthurx/whisperi`.
 

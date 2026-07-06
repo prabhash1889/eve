@@ -7,10 +7,16 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependencies and frontend build output
 node_modules
 dist
 dist-ssr
 *.local
+
+# Environment and local secret files
+.env
+.env.*
+!.env.example
 
 # Editor directories and files
 .vscode/*
@@ -23,15 +29,29 @@ dist-ssr
 *.sln
 *.sw?
 
-# Local tooling / generated artifacts (not project source)
+# Local tooling / generated artifacts
 .claude/
 .saple/
 graphify-out/
+.code-review-graph/
 
-# Release output (copied installers) + signing keys — never commit
+# Release output and signing keys
 build/
 *.key
 *.key.pub
+*.pem
+*.p12
+*.pfx
 
-# Machine-specific cargo config (local CMAKE path for local-models build)
+# Rust / Tauri build output
+target/
+src-tauri/target/
+
+# Downloaded local model artifacts
+models/
+*.gguf
+*.bin
+*.safetensors
+
+# Machine-specific cargo config
 src-tauri/.cargo/config.toml

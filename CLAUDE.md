@@ -1,153 +1,124 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file gives coding agents the repository context needed to work on Eve.
 
-## What this is
+## Project
 
-**Eve** is a Wispr Flow–style system-wide AI voice dictation app: hold a hotkey
-anywhere, speak, release → the transcribed (and later AI-polished) text is typed
-into whatever app has focus. **Tauri 2** (Rust backend + React/TypeScript/Vite
-frontend), Windows-first. Transcription via the **Groq** Whisper API; AI polish
-via Groq Llama (`llama-3.1-8b-instant`) shipped in Phase 2.
+Eve is a Windows-first system-wide AI voice dictation app. Hold a shortcut,
+speak, release, and Eve transcribes, cleans up, and inserts the result into the
+focused app.
 
-`plan.md` is the source of truth for roadmap and phase status (Phases 0–2 done;
-Phase 3 = History & SQLite is next). Read it before starting feature work — each
-phase section says what to build and exactly where.
+The app uses Tauri 2 with a Rust backend and a React/TypeScript/Vite frontend.
+Cloud transcription and polish use Groq. Local Whisper and local LLM support are
+available as separate Cargo feature builds.
 
-## Intent Layer
+## Read First
 
-**Before modifying code in a subdirectory, read its `AGENTS.md` first** for local
-patterns and invariants. This CLAUDE.md is the only root context node; per-subsystem
-detail lives in the child nodes below.
+Before modifying code in a subdirectory, read the nearest `AGENTS.md`:
 
-- **Frontend** — `src/AGENTS.md`: the two React webviews (Hub + event-driven Flow Bar) and the IPC mirror.
-- **Backend** — `src-tauri/src/AGENTS.md`: Rust — global hotkey, mic capture, Groq calls, injection, the dictation pipeline.
+- `src/AGENTS.md` for frontend conventions and IPC expectations
+- `src-tauri/src/AGENTS.md` for backend invariants and OS-integration rules
 
-### Global invariants
-
-- The Rust↔TS IPC contract is **hand-mirrored** across three pairs (events, commands, `Settings`) — change both sides in the same edit. See the sync table under "Architecture".
-- **Windows-first**: OS integration (HWND capture, `SendInput`, keychain) sits behind `#[cfg(windows)]`; cross-platform needs matching backends.
-- Deferred work (SQLite, local Whisper, LLM polish) lives behind seams and is **not yet built** — `plan.md` says which phase adds each.
+Root roadmap documents such as `plan.md`, `parity_plan.md`,
+`optimization_plan.md`, `fix_plan1.md`, and `cross-platform-plan.md` are planning
+references, not automatically current implementation truth. Verify against the
+code before changing behavior.
 
 ## Commands
 
 ```sh
-npm install                 # install JS deps (also fetches Rust deps on first tauri run)
-npm run tauri dev           # run the full app (spawns vite + builds/launches Rust) — primary dev loop
-npm run tauri build         # release bundle (Windows installer/exe)
-
-npm run dev                 # frontend only (vite, no Rust) — rarely useful alone
-npm run build               # frontend typecheck + bundle: `tsc && vite build`. This is the JS lint/typecheck gate.
+npm install
+npm run tauri dev
+npm run build
+npm run release
 ```
 
-Rust checks (run from `src-tauri/`):
+Rust checks from `src-tauri/`:
 
 ```sh
-cargo check                 # fast type check
-cargo build                 # debug build
-cargo clippy                # lint
+cargo check
+cargo build
+cargo clippy
 ```
 
-There is **no automated test suite**. Verification is: `npm run build` (clean
-tsc + vite) + `cargo check`/`cargo build` (0 warnings expected), then manual —
-run the app, paste a Groq key in Settings, hold F8 in Notepad, speak, release.
+There is no comprehensive automated test suite. Treat `npm run build`,
+`cargo check`, and manual Windows dictation smoke testing as the default
+verification baseline.
 
 ## Architecture
 
-Two processes talking over Tauri IPC:
+The app has three Tauri windows:
 
-- **Rust backend** (`src-tauri/src/`) owns the OS integration: global hotkey,
-  mic capture, HTTP to Groq, and text injection.
-- **React frontend** (`src/`) is split across **two windows / two HTML entry
-  points** (this is the non-obvious structural fact):
-  - `index.html` → `main.tsx` → `Hub.tsx` — the **Hub** window (Dashboard +
-    Settings), normal window, hides-to-tray on close.
-  - `flowbar.html` → `flow-bar.tsx` — the **Flow Bar**, a frameless,
-    transparent, always-on-top, non-focusable floating widget that is hidden
-    until you dictate. It is purely **event-driven** (renders state from
-    `session://*` events, sends no commands).
+- `index.html` -> `src/main.tsx` -> `src/Hub.tsx`: main Hub window
+- `flowbar.html` -> `src/flow-bar.tsx`: floating dictation status widget
+- `scratchpad.html` -> `src/scratchpad.tsx`: always-on-top scratchpad
 
-  Both windows are declared in `src-tauri/tauri.conf.json` (`label: "main"` /
-  `"flowbar"`) and both are rollup inputs in `vite.config.ts`. Adding a window
-  means: new `.html` + new rollup input + new window entry in `tauri.conf.json`.
+The Rust backend owns OS integration:
 
-### The dictation pipeline (the core flow)
+- global shortcut and low-level trigger handling
+- microphone capture
+- transcription and polish pipeline
+- clipboard/text insertion
+- SQLite persistence
+- tray, autostart, updater, and app windows
 
-`lib.rs` wires the global-shortcut handler, which dispatches to `hotkey.rs`:
+## Core Flow
 
-1. **Key down** (`hotkey::on_press`) — guard against key-repeat via an atomic,
-   capture the foreground window HWND (to paste back into later), show the Flow
-   Bar, register **Esc** as a cancel shortcut, start the `audio.rs` capture
-   thread.
-2. **While held** — `audio.rs` runs a **`cpal` capture thread** (it owns the
-   `!Send` audio stream; chosen over WebView `getUserMedia` to avoid permission
-   friction and control sample rate), accumulates mono f32, and pushes live
-   amplitude to the Flow Bar ~30×/s.
-3. **Key up** (`hotkey::on_release`) — spawns `pipeline::process()`.
-4. **`pipeline.rs::process`** — the post-release flow: drain buffer → resample
-   to 16 kHz + WAV-encode (`audio.rs`, off the async runtime via
-   `spawn_blocking`) → `transcriber.transcribe()` (Groq Whisper) →
-   `text_processing::course_correct` → `polisher.polish()` (Groq Llama; no-op for
-   `CleanupLevel::None`, falls back to raw on error) → `text_processing::finalize`
-   (spoken punctuation + lists) → `injection::inject()` → emit `done`.
-5. **`injection.rs`** — save clipboard → `SetForegroundWindow` to the captured
-   HWND → write text → Win32 `SendInput` Ctrl+V (`paste` strategy) → restore
-   clipboard. `enigo` char-by-char (`type` strategy) is the fallback.
+```text
+shortcut down
+-> capture foreground target and start microphone
+-> emit flow-bar state
+-> shortcut up
+-> drain and encode audio
+-> transcribe
+-> course-correct, polish, finalize
+-> restore focus
+-> paste/type text
+-> restore clipboard
+```
 
-**Esc** during recording → `hotkey::on_cancel` clears the buffer and hides the
-bar.
+`Esc` during recording cancels the current session.
 
-### Trait seams for deferred work
+## IPC Contract
 
-Two pluggable boundaries let v1 ship without local models or LLM polish:
+Rust and TypeScript IPC are hand mirrored. Keep these in sync:
 
-- `transcription.rs`: `Transcriber` trait — `GroqTranscriber` (live) +
-  `LocalTranscriber` (stub for future on-device Whisper).
-- `polish.rs`: `Polisher` trait — `GroqPolisher` (live, Groq Llama) +
-  `NoOpPolisher` (fallback/tests). `AppState::new` always installs `GroqPolisher`;
-  it short-circuits to a pass-through for `CleanupLevel::None`, so the level can
-  change at runtime. Deterministic transforms live in `text_processing.rs`.
+| Rust | TypeScript | Purpose |
+| --- | --- | --- |
+| `events.rs` | `src/lib/api.ts` `EVT` | Event names and payloads |
+| `commands.rs` and `lib.rs` handler list | `src/lib/api.ts` wrappers | Tauri commands |
+| `config.rs` `Settings` | `src/lib/api.ts` `Settings` | Settings shape |
 
-### State & concurrency
+Adding a command requires four edits:
 
-`state.rs::AppState` is Tauri-managed shared state. **All mutable fields are
-`Arc`-backed** so the audio thread can own clones. **Rule:** snapshot the Arc
-clones up front and **never hold a `parking_lot` guard across an `.await`**
-(`pipeline::process` does this deliberately — see its opening block).
+1. Define the command in `src-tauri/src/commands.rs`.
+2. Register it in the `generate_handler!` list in `src-tauri/src/lib.rs`.
+3. Add the TypeScript wrapper in `src/lib/api.ts`.
+4. Grant permission in `src-tauri/capabilities/default.json`.
 
-### The IPC contract — keep three pairs in sync
+## Backend Invariants
 
-These Rust ↔ TypeScript pairs are hand-mirrored; changing one side requires
-changing the other:
+- Do not store API keys in settings, JSON, logs, or project files. Use
+  `src-tauri/src/secrets.rs`.
+- Do not hold a mutex/parking_lot guard across `.await`.
+- Snapshot shared `Arc` state before async work in the pipeline.
+- Keep Windows OS-integration behavior behind the existing cfg boundaries unless
+  deliberately working on platform support.
+- Local Whisper and local LLM builds are mutually exclusive feature variants.
 
-| Rust | TypeScript | What |
-|---|---|---|
-| `events.rs` (`START`/`PROCESSING`/`AMPLITUDE`/`DONE`/`ERROR`/`CANCEL`/`TRANSCRIPT_RAW`/`TRANSCRIPT_POLISHED`/`COPIED`) | `lib/api.ts` `EVT` map | `session://*` event names emitted to the Flow Bar (`START` carries `StartPayload`) |
-| `commands.rs` + the `generate_handler!` list in `lib.rs` | `lib/api.ts` `api.*` wrappers | invokable commands |
-| `config.rs` `Settings` (note `#[serde(rename_all = "camelCase")]`) | `lib/api.ts` `Settings` interface | settings shape — Rust uses `snake_case` fields serialized as `camelCase` |
+## Frontend Invariants
 
-**Adding a Tauri command** requires four edits: define it in `commands.rs`,
-register it in the `generate_handler!` macro in `lib.rs`, add a wrapper in
-`lib/api.ts`, and grant permission in `src-tauri/capabilities/default.json`.
+- Tailwind v4 is configured through the Vite plugin and CSS tokens in
+  `src/styles/globals.css`; there is no `tailwind.config.js`.
+- `tsconfig` is strict. Unused locals and unused parameters fail `npm run build`.
+- The Flow Bar is event-driven. Avoid adding command calls from `flow-bar.tsx`
+  unless the window contract changes deliberately.
 
-### Persistence & secrets
+## Public Repo Hygiene
 
-- **Settings** → JSON file in the app config dir (`config.rs` load/save).
-  SQLite is deferred to Phase 3.
-- **Groq API key** → OS keychain only (Windows Credential Manager via
-  `keyring`), never on disk (`secrets.rs`).
-
-### Windows-specific code
-
-HWND capture (`hotkey.rs`), `SendInput`/`SetForegroundWindow` (`injection.rs`),
-and the keychain backend are Windows-only (behind `#[cfg(windows)]` / the
-`windows` crate / `keyring` `windows-native` feature). Cross-platform support
-would need matching backends.
-
-## Frontend conventions
-
-- React 19, **Tailwind v4** via `@tailwindcss/vite` (no `tailwind.config.js`;
-  design tokens live in `src/styles/globals.css`, class-based dark mode).
-  Fonts: Figtree + Fraunces. `zustand` is installed but not yet used.
-- `tsconfig` is strict with `noUnusedLocals`/`noUnusedParameters` — unused
-  symbols fail the `npm run build` gate.
+- Keep `.env*`, signing keys, release output, local model files, `target/`,
+  `dist/`, `build/`, and local tooling output untracked.
+- GitHub Actions should reference secrets through `secrets.*`; never commit the
+  secret values themselves.
+- The updater public key in `tauri.conf.json` is public material. The updater
+  private key is not.
