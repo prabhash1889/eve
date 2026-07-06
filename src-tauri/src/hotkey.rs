@@ -14,9 +14,6 @@ use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use crate::state::AppState;
 use crate::{audio, events, pipeline, window_mgmt};
 
-#[cfg(windows)]
-use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-
 /// Parity A1: in hybrid mode, a press shorter than this is a "tap" that arms a
 /// hands-free toggle; holding past it behaves like push-to-talk.
 const HOLD_THRESHOLD: Duration = Duration::from_millis(300);
@@ -25,9 +22,17 @@ const HOLD_THRESHOLD: Duration = Duration::from_millis(300);
 /// activation mode: when idle, always starts recording; while recording, a
 /// *new* press (not an OS key-repeat) stops it in toggle/hybrid mode.
 pub fn on_main_pressed(app: &AppHandle, st: &AppState) {
+    // Key-repeat fires `Pressed` continuously while the trigger is held; the
+    // physical-down latch drops everything but the fresh press. This must run
+    // first: after a toggle/hybrid stop-press the app is idle again, and a
+    // repeat arriving once the pipeline finishes would otherwise start an
+    // unintended new recording.
+    if st.trigger_down.swap(true, Ordering::SeqCst) {
+        return;
+    }
     if st.is_recording.load(Ordering::SeqCst) {
-        // Key-repeat fires `Pressed` continuously while the trigger is held;
-        // only a press that follows a release can mean "stop".
+        // A fresh press of a *different* trigger while the starting one is
+        // still held (no release observed yet) must not stop the recording.
         if !st.saw_release.load(Ordering::SeqCst) {
             return;
         }
@@ -46,6 +51,7 @@ pub fn on_main_pressed(app: &AppHandle, st: &AppState) {
 /// that the release happened; hybrid stops only when the press was a genuine
 /// hold (>= [`HOLD_THRESHOLD`]) - a quick tap leaves the recording running.
 pub fn on_main_released(app: &AppHandle, st: &AppState) {
+    st.trigger_down.store(false, Ordering::SeqCst);
     if !st.is_recording.load(Ordering::SeqCst) {
         return;
     }
@@ -72,6 +78,54 @@ pub fn on_main_released(app: &AppHandle, st: &AppState) {
     }
 }
 
+/// Remember the app that had focus so we can paste back into it, resolve its
+/// context (process/title/category) for per-app Flow Styles + history, apply the
+/// Phase 10 privacy-pause gate, and set the Scratchpad routing flag. Returns
+/// `false` when the focused app is privacy-paused: recording is suppressed
+/// (`is_recording` reset), the Flow Bar flashes the paused hint, and the caller
+/// must bail. Platform-neutral - the OS-specific foreground capture lives behind
+/// [`crate::platform::frontmost`].
+pub fn capture_focus_and_gate(app: &AppHandle, st: &AppState) -> bool {
+    // Reset the Scratchpad routing flag each press; set below if our own
+    // Scratchpad window had focus (Phase 9 focus-aware dictation).
+    st.to_scratchpad.store(false, Ordering::SeqCst);
+
+    let front = crate::platform::frontmost(app);
+    st.foreground_hwnd.store(front.handle, Ordering::SeqCst);
+
+    // Phase 10 auto-pause: if the focused app is on the privacy pause list,
+    // suppress recording entirely and flash a hint on the Flow Bar.
+    let (paused_apps, context_awareness) = {
+        let s = st.settings.lock();
+        (s.paused_apps.clone(), s.context_awareness)
+    };
+    let proc = front.ctx.process.to_ascii_lowercase();
+    if !proc.is_empty()
+        && paused_apps
+            .iter()
+            .any(|p| p.trim().to_ascii_lowercase() == proc)
+    {
+        st.is_recording.store(false, Ordering::SeqCst);
+        window_mgmt::show_flowbar(app);
+        let _ = app.emit_to(events::FLOWBAR, events::PAUSED, ());
+        window_mgmt::hide_flowbar_after(app.clone(), 1400);
+        return false;
+    }
+
+    // Phase 10 privacy: only store the resolved title/category when context
+    // awareness is on; otherwise fall back to an unknown context so history and
+    // Flow Styles see nothing app-specific.
+    *st.current_context.lock() = Some(if context_awareness {
+        front.ctx
+    } else {
+        crate::context::active_window::AppContext::unknown()
+    });
+    if front.is_scratchpad {
+        st.to_scratchpad.store(true, Ordering::SeqCst);
+    }
+    true
+}
+
 pub fn on_press(app: &AppHandle, st: &AppState) {
     // Refuse to start a new capture while the previous dictation is still being
     // processed (transcribe → polish → inject). Without this, a rapid
@@ -87,48 +141,11 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
 
     crate::sound::play_start_sound(&st.settings.lock());
 
-    // Remember the app that had focus so we can paste back into it, and resolve
-    // its context (process/title/category) for per-app Flow Styles + history.
-    // Reset the Scratchpad routing flag each press; set it below if our own
-    // Scratchpad window had focus (Phase 9 focus-aware dictation).
-    st.to_scratchpad.store(false, Ordering::SeqCst);
-    #[cfg(windows)]
-    unsafe {
-        let hwnd = GetForegroundWindow();
-        let fg = hwnd.0 as isize;
-        st.foreground_hwnd.store(fg, Ordering::SeqCst);
-        let ctx = crate::context::active_window::resolve(hwnd);
-
-        // Phase 10 auto-pause: if the focused app is on the privacy pause list,
-        // suppress recording entirely and flash a hint on the Flow Bar.
-        let (paused_apps, context_awareness) = {
-            let s = st.settings.lock();
-            (s.paused_apps.clone(), s.context_awareness)
-        };
-        let proc = ctx.process.to_ascii_lowercase();
-        if !proc.is_empty()
-            && paused_apps
-                .iter()
-                .any(|p| p.trim().to_ascii_lowercase() == proc)
-        {
-            st.is_recording.store(false, Ordering::SeqCst);
-            window_mgmt::show_flowbar(app);
-            let _ = app.emit_to(events::FLOWBAR, events::PAUSED, ());
-            window_mgmt::hide_flowbar_after(app.clone(), 1400);
-            return;
-        }
-
-        // Phase 10 privacy: only store the resolved title/category when context
-        // awareness is on; otherwise fall back to an unknown context so history
-        // and Flow Styles see nothing app-specific.
-        *st.current_context.lock() = Some(if context_awareness {
-            ctx
-        } else {
-            crate::context::active_window::AppContext::unknown()
-        });
-        if fg != 0 && window_mgmt::scratchpad_hwnd(app) == Some(fg) {
-            st.to_scratchpad.store(true, Ordering::SeqCst);
-        }
+    // Capture the paste target + its context, apply the privacy-pause gate, and
+    // flag Scratchpad routing. Bails (recording already reset, paused hint shown)
+    // when the focused app is on the privacy pause list.
+    if !capture_focus_and_gate(app, st) {
+        return;
     }
 
     // Tell the (event-only) Flow Bar how to size/fade itself for this session.

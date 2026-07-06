@@ -23,14 +23,15 @@ use windows::Win32::UI::WindowsAndMessaging::{IsWindow, SetForegroundWindow};
 
 /// Restores a previously-saved clipboard value when dropped, so the user's prior
 /// clipboard comes back even if we bail (or panic) between writing our payload
-/// and the normal restore point.
-#[cfg(windows)]
+/// and the normal restore point. Cross-platform: the paste/selection backends on
+/// every OS share it (macOS/Linux wire it up in later phases, hence the
+/// dead-code allow off Windows for now).
+#[cfg_attr(not(windows), allow(dead_code))]
 struct ClipboardGuard<'a> {
     app: &'a AppHandle,
     previous: Option<String>,
 }
 
-#[cfg(windows)]
 impl Drop for ClipboardGuard<'_> {
     fn drop(&mut self) {
         if let Some(prev) = self.previous.take() {

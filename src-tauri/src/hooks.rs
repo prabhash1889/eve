@@ -119,15 +119,11 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
             let injected = kb.flags.0 & LLKHF_INJECTED.0 != 0;
             if !injected && kb.vkCode == target {
                 match wparam.0 as u32 {
-                    WM_KEYDOWN | WM_SYSKEYDOWN => {
-                        if !MOD_DOWN.swap(true, Ordering::SeqCst) {
-                            send(true);
-                        }
+                    WM_KEYDOWN | WM_SYSKEYDOWN if !MOD_DOWN.swap(true, Ordering::SeqCst) => {
+                        send(true);
                     }
-                    WM_KEYUP | WM_SYSKEYUP => {
-                        if MOD_DOWN.swap(false, Ordering::SeqCst) {
-                            send(false);
-                        }
+                    WM_KEYUP | WM_SYSKEYUP if MOD_DOWN.swap(false, Ordering::SeqCst) => {
+                        send(false);
                     }
                     _ => {}
                 }

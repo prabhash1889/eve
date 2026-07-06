@@ -33,6 +33,13 @@ pub struct AppState {
     /// this is set - the OS auto-repeats `Pressed` while a key is held, and
     /// those repeats must not stop the recording.
     pub saw_release: Arc<AtomicBool>,
+    /// Parity A1: true while the trigger is physically down (set on the first
+    /// `Pressed`, cleared on `Released`). The OS auto-repeats `Pressed` while a
+    /// key is held; `saw_release` only filters repeats while recording, but
+    /// after a toggle/hybrid stop-press the app is idle again and a repeat
+    /// arriving once the pipeline finishes would start an unintended new
+    /// recording - this latch drops every `Pressed` that isn't a fresh press.
+    pub trigger_down: Arc<AtomicBool>,
     pub audio_buffer: Arc<Mutex<Vec<f32>>>,
     pub sample_rate: Arc<AtomicU32>,
     pub current_amplitude: Arc<Mutex<f32>>,
@@ -106,6 +113,7 @@ impl AppState {
             is_processing: Arc::new(AtomicBool::new(false)),
             press_at: Arc::new(Mutex::new(None)),
             saw_release: Arc::new(AtomicBool::new(false)),
+            trigger_down: Arc::new(AtomicBool::new(false)),
             audio_buffer: Arc::new(Mutex::new(Vec::new())),
             sample_rate: Arc::new(AtomicU32::new(16_000)),
             current_amplitude: Arc::new(Mutex::new(0.0)),

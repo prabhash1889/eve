@@ -1,0 +1,423 @@
+# Eve Cross-Platform Plan: macOS + Linux Full Parity (without breaking Windows)
+
+## Context
+
+Eve is currently Windows-only in practice: the OS-integration layer (foreground-window
+capture, SendInput paste, low-level keyboard/mouse hooks, PlaySoundW, Windows Credential
+Manager) exists only behind `#[cfg(windows)]`. Everything else (Tauri 2, cpal audio,
+Groq HTTP, the React frontend, tray, autostart, the global-shortcut plugin) is already
+cross-platform, and the focus handle is already abstracted as `isize` through
+state/pipeline (`state.rs` `foreground_hwnd: Arc<AtomicIsize>`).
+
+Goal: full-parity macOS and Linux support - hotkey (including bare-modifier and
+mouse-button triggers), paste injection into the focused app, selection capture /
+command mode / transforms, sounds, secure key storage, privacy pause, scratchpad
+routing - added as NEW platform backends behind the existing cfg seams. The Windows
+build must never regress. Linux supports both X11 and Wayland via runtime detection.
+
+Status: Phase 0 complete (compile-everywhere seam + CI gate). Phases 1-5 not
+started. Phases are ordered and each one is independently shippable.
+
+---
+
+## Core design decisions
+
+### 1. Code organization: hybrid - cfg siblings in place, new code in `platform/`
+
+Windows code does NOT move. Existing `#[cfg(windows)]` blocks stay byte-identical
+(pattern already proven in `injection.rs` and `command_mode.rs::on_transform`). New
+`#[cfg(target_os = "macos")]` / `"linux"` siblings are thin one-line delegations into:
+
+```
+src-tauri/src/platform/
+├── mod.rs              // cfg re-exports; Frontmost struct; frontmost() facade
+├── macos/
+│   ├── focus.rs        // frontmost pid capture; activate-by-pid restore
+│   ├── input.rs        // CGEventTap: bare-modifier + mouse triggers, self-injection filter
+│   ├── keys.rs         // enigo Cmd+V / Cmd+C combos
+│   ├── context.rs      // NSWorkspace name/bundle-id + AX focused-window title
+│   └── permissions.rs  // AXIsProcessTrusted(+WithOptions prompt)
+└── linux/
+    ├── mod.rs          // Session::{X11, Wayland} runtime detection (OnceLock)
+    ├── x11.rs          // EWMH focus capture/restore, XI2 raw triggers, XGrabButton
+    ├── wayland.rs      // ashpd GlobalShortcuts portal; virtual-keyboard injection
+    └── context.rs      // _NET_WM_PID -> /proc/<pid>/comm, _NET_WM_NAME (X11 only)
+```
+
+`hooks.rs` stays where it is as the de-facto Windows input module.
+
+**The ONE sanctioned Windows refactor (Phase 0, mechanical):** `hotkey.rs::on_press`
+lines 104-141 wrap platform-neutral business logic (privacy-pause check,
+context-awareness gating, scratchpad routing) inside `#[cfg(windows)]` around just two
+Win32 calls (`GetForegroundWindow`, `active_window::resolve`). Extract into a
+platform-neutral `capture_focus_and_gate(app, st) -> bool` that calls
+`platform::frontmost(app) -> Frontmost { handle: isize, ctx: AppContext,
+is_scratchpad: bool }`; the Windows impl of `frontmost` is a verbatim ~12-line lift.
+Same extraction for `command_mode.rs::on_press` (lines 41-46) and `on_transform`
+(lines 264-267).
+
+**The `isize` handle keeps its name** (`foreground_hwnd`); only its per-OS meaning is
+documented: Windows = HWND, macOS = frontmost app pid, Linux/X11 = X window id,
+Linux/Wayland = always 0. All plumbing (AtomicIsize, pipeline, `injection::inject`)
+unchanged.
+
+### 2. macOS approach
+
+- **Focus**: app-level pid via `NSWorkspace.frontmostApplication` (objc2-app-kit).
+  Restore: `NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+  .activate()`, then poll frontmost == pid up to ~500 ms; return `false` -> bail
+  before touching the clipboard (same abort contract as Windows `restore_focus`).
+- **Paste/copy**: enigo key combos (Meta+V / Meta+C) - already a dependency, uses
+  CGEvent underneath, and the same code covers Linux/X11. Direct CGEvent only as
+  fallback if combo timing proves unreliable in Phase 1 testing.
+- **Bare-modifier + mouse triggers**: CGEventTap (`core-graphics`) on a dedicated
+  CFRunLoop thread; `flagsChanged` for modifier up/down, `otherMouseDown/Up` for
+  mouse; consume mouse clicks by returning None from an active tap (needs
+  Accessibility). Dispatch through the same channel-to-dispatcher pattern as
+  `hooks.rs` into `hotkey::on_main_pressed/released`. Re-enable the tap on
+  `tapDisabledByTimeout`.
+- **Self-injection filter**: process-global `INJECTING: AtomicBool` in `injection.rs`
+  set around send-combo calls; taps/listeners drop trigger events while set. Windows
+  keeps its existing `LLKHF_INJECTED` check untouched.
+- **Permissions**: `NSMicrophoneUsageDescription` via new `src-tauri/Info.plist`
+  (Tauri merges it). New commands `check_accessibility` / `request_accessibility`
+  wrapping `AXIsProcessTrusted(WithOptions)` (small extern "C" block, no extra
+  crate); onboarding step + Settings banner while untrusted. Verify on hardware
+  whether newer macOS also wants Input Monitoring.
+- **Context**: bundle id + localizedName; focused-window title via AX (best-effort).
+  `active_window.rs::classify` gains ADDITIVE macOS bundle-id lists; the Windows
+  `.exe` lists stay byte-identical. `default_paused_apps()` extended additively
+  (equality matching makes extra entries inert on Windows).
+- **Keychain**: keyring `apple-native` feature.
+
+### 3. Linux approach
+
+- **Runtime detection** (`platform/linux/mod.rs`): Wayland iff `WAYLAND_DISPLAY` is
+  set (tie-break with `XDG_SESSION_TYPE`); else X11 iff `DISPLAY`. One binary serves
+  both.
+- **X11** (`x11rb 0.13`, features `xtest, xinput` - pure Rust): capture
+  `_NET_ACTIVE_WINDOW`; context via `_NET_WM_PID` -> `/proc/<pid>/comm` +
+  `_NET_WM_NAME`; restore via EWMH `_NET_ACTIVE_WINDOW` ClientMessage (NOT
+  `XSetInputFocus`, which bypasses the WM) with verify-by-reread. Bare-modifier
+  triggers via XI2 raw key events (no grab, no permissions); mouse trigger via
+  `XGrabButton` (a grab inherently consumes the click, matching the Windows
+  `LRESULT(1)` behavior). Paste = shared enigo Ctrl+V.
+- **Wayland**:
+  - Global shortcuts: the tauri global-shortcut plugin is a no-op on Wayland. Use
+    the `org.freedesktop.portal.GlobalShortcuts` XDG portal via `ashpd` (~0.12,
+    tokio feature) - it delivers Activated/Deactivated pairs (exactly push-to-talk's
+    press/release), works on KDE 5.25+ and GNOME 45+. Bind
+    main/copy/command/scratchpad/transform accelerators through one portal session,
+    dispatch into the SAME handler entry points. `lib.rs` wraps existing
+    registration in a runtime `if !use_portal` branch (`use_portal` is const false
+    off-Linux, so Windows compiles identically).
+  - Injection: enigo `wayland` feature (zwp_virtual_keyboard_v1; KDE + wlroots).
+    GNOME lacks the protocol: degrade with a one-time Flow Bar error + docs link
+    (ydotool opt-in); libei/RemoteDesktop portal is a documented follow-up, not
+    parity-critical.
+  - Focus capture/restore of foreign windows: impossible on Wayland. `frontmost()`
+    returns handle 0 + `AppContext::unknown()`; restore is skipped (focus is still
+    on the target app at release time). Documented degradations: privacy pause
+    cannot match (info note in Settings), Flow Styles use the default style,
+    history app attribution is blank.
+  - Bare-modifier/mouse triggers: not expressible via the portal - hide those
+    pickers in the UI on Wayland. Esc-cancel does not map to the portal bind-once
+    model - document (cancel via toggling the main trigger).
+- **Keyring**: `sync-secret-service` feature (GNOME Keyring / KWallet).
+
+### 4. Sound
+
+`#[cfg(not(windows))] play_start_sound` in `sound.rs` generates the same 880 Hz
+decaying sine as f32 samples (~12 duplicated lines - deliberate, so the Windows
+`generate_start_sound`/`PlaySoundW` path is not edited) and plays via a cpal default
+output stream on a short-lived thread. No rodio (cpal is already compiled in). If
+output setup latency is audible, pre-build the stream in a `OnceLock` - still no new
+crate.
+
+### 5. Frontend / IPC
+
+Add `tauri-plugin-os` + a new `get_platform_info` command (returns platform +
+`isWayland`, since JS cannot see the session type) exported from `src/lib/api.ts`.
+
+- `src/Hub.tsx` (~lines 475-490): hide modifier/mouse trigger pickers on Wayland;
+  relabel "Alt" -> "Option" on macOS.
+- `src/components/ShortcutCapture.tsx:112`: handle `e.metaKey` -> "Cmd"; show
+  Cmd/Option glyphs on macOS; verify captured strings still parse via
+  `Shortcut::from_str`.
+- Per-OS strings: `Hub.tsx:416` (Credential Manager -> Keychain / system keyring),
+  `:522`, `:717`, `:816` (paused-apps examples: `.exe` vs bundle id / comm name),
+  `:730`; `Onboarding.tsx:547`, `:690` (mic permission help); new macOS
+  Accessibility onboarding step (Phase 2); Wayland portal note (Phase 4).
+- **IPC contract**: no new `Settings` fields needed (existing fields get per-OS
+  semantics), so `config.rs` <-> `api.ts` stays in sync by default. New commands
+  (`get_platform_info`, `check_accessibility`, `request_accessibility`) follow the
+  4-edit rule: `commands.rs` + `generate_handler!` + `api.ts` +
+  `capabilities/default.json`. Off-macOS stubs return true.
+
+### 6. Windows regression guardrails (no test suite exists)
+
+1. **New `.github/workflows/ci.yml` (Phase 0), on every push + PR**: matrix
+   {windows-latest, macos-latest, ubuntu-22.04}: `cargo check --all-targets`,
+   `cargo clippy -- -D warnings`, `cargo test` (the classify unit tests),
+   `npm ci && npm run build`. Today NOTHING gates pushes - this is the
+   highest-value guardrail.
+2. **Byte-identical policy**: per phase, `git diff <phase-start> --
+   src-tauri/src/hooks.rs src-tauri/src/sound.rs` must be empty; no changes inside
+   `#[cfg(windows)]` items in `injection.rs` / `window_mgmt.rs` /
+   `active_window.rs` (only cfg-widening of `ClipboardGuard` + additive lists).
+   Only sanctioned moves: the three Phase 0 extractions.
+3. **Manual Windows smoke checklist** per phase: hold-F8 into Notepad (paste), type
+   strategy, toggle/hybrid modes, bare Right-Alt trigger, middle-mouse trigger
+   consumes click, Esc cancel, command-mode rewrite, transform shortcut, scratchpad
+   routing, privacy pause, copy-last, start sound, caret bar, settings persist, API
+   key survives restart.
+4. **Dependency freeze**: all new crates in `[target.'cfg(target_os = ...)']`
+   tables; verify `cargo tree --target x86_64-pc-windows-msvc` diff shows only the
+   keyring feature split.
+
+---
+
+## Phase 0 - Compile everywhere + CI gate (no behavior change on any OS)
+
+**Status: DONE.** Windows verified locally (cargo check --all-targets, cargo
+clippy -D warnings, cargo test [26 pass], npm run build - all green); the
+`#[cfg(windows)]` OS-integration internals are unchanged, only the three
+sanctioned seam extractions and the ClipboardGuard cfg-widening. macOS/Linux
+compilation is gated on the new CI workflow. What shipped:
+
+- `src-tauri/src/platform/mod.rs` (new): `Frontmost { handle, ctx, is_scratchpad }`
+  + `frontmost(app)`. Windows impl is the verbatim `GetForegroundWindow` +
+  `active_window::resolve` lift; the non-Windows stub returns handle 0 / unknown
+  ctx and answers `is_scratchpad` via the Scratchpad window's `is_focused()`.
+- `hotkey.rs`: the Win32 block in `on_press` extracted into the platform-neutral
+  `capture_focus_and_gate(app, st) -> bool` (privacy-pause gate + context store +
+  Scratchpad routing); the `GetForegroundWindow` import is gone.
+- `command_mode.rs`: `on_press` and `on_transform` now call `platform::frontmost`;
+  the `GetForegroundWindow` import is gone.
+- `injection.rs`: `ClipboardGuard` cfg widened to all platforms (dead-code allow
+  off Windows until the mac/Linux paste backends use it).
+- `Cargo.toml`: `keyring` split into per-target tables (windows-native /
+  apple-native / sync-secret-service); `secrets.rs` unchanged.
+- `lib.rs`: `mod platform;`.
+- `.github/workflows/ci.yml` (new): push + PR, matrix {windows-latest,
+  macos-latest, ubuntu-22.04}, running cargo check/clippy/test + npm build on the
+  default (non-native-inference) feature set.
+- `scripts/release.mjs`: bundle targets now derived from `process.platform`
+  (win32 -> msi,nsis; darwin -> dmg,macos; linux -> deb,rpm,appimage).
+
+### Rust
+
+- `Cargo.toml`: split `keyring` (line 91) into three target tables: windows
+  `["windows-native"]` (identical), macos `["apple-native"]`, linux
+  `["sync-secret-service"]`. `secrets.rs` unchanged.
+- New `src-tauri/src/platform/mod.rs`: `Frontmost` struct + `frontmost(app)`.
+  Windows impl = verbatim lift from `hotkey.rs`; mac/linux stubs (handle 0, unknown
+  ctx, is_scratchpad via `is_focused()`).
+- `hotkey.rs::on_press`: replace the cfg block (lines 104-141) with the
+  platform-neutral `capture_focus_and_gate`. Same for `command_mode.rs::on_press` /
+  `on_transform`; drop the now-unused `GetForegroundWindow` imports.
+- `window_mgmt.rs`: add `#[cfg(not(windows))] scratchpad_hwnd -> None` (or fold
+  into `frontmost`).
+- `injection.rs`: widen `ClipboardGuard` cfg to all platforms.
+- `lib.rs`: `mod platform;`.
+
+### Build / CI
+
+- New `.github/workflows/ci.yml` (ubuntu deps: libwebkit2gtk-4.1-dev libgtk-3-dev
+  libayatana-appindicator3-dev librsvg2-dev libasound2-dev libxkbcommon-dev
+  libdbus-1-dev patchelf).
+- `scripts/release.mjs:85`: replace the hardcoded `["msi","nsis"]` with a
+  `process.platform` map: win32 -> msi,nsis; darwin -> dmg,macos; linux ->
+  deb,rpm,appimage.
+
+### Verify
+
+CI green on all three runners (this is the phase gate); full Windows smoke
+checklist; diff audit. On Mac/Linux hardware: app launches, Hub renders, settings
+persist, Groq key stores/retrieves (Keychain / Secret Service), file transcription
+works - i.e. everything not gated on the platform seams.
+
+### Risks
+
+Clippy `-D warnings` may flag pre-existing warnings on the new cfg paths - fix here
+while the surface is small. sync-secret-service needs libdbus (listed in CI deps,
+present on desktop distros).
+
+---
+
+## Phase 1 - macOS core dictation (hotkey -> record -> transcribe -> paste -> sound)
+
+- `platform/macos/focus.rs` (crates: objc2 0.6, objc2-foundation, objc2-app-kit 0.3
+  with NSWorkspace + NSRunningApplication): `frontmost()` + `restore_focus(pid)`
+  with activation poll.
+- `platform/macos/keys.rs`: enigo Meta+V / Meta+C wrapped in the `INJECTING` atomic.
+- `injection.rs`: real `#[cfg(target_os = "macos")] inject_paste` mirroring the
+  Windows structure (restore -> guard -> write -> PRE sleep -> combo -> SETTLE
+  sleep); tune PRE for activation latency (~50-150 ms expected).
+- `sound.rs`: cpal-based non-Windows `play_start_sound`.
+- New `src-tauri/Info.plist` with `NSMicrophoneUsageDescription`; confirm
+  `icons/icon.icns` exists.
+- Frontend: tauri-plugin-os + `get_platform_info`; per-OS strings; ShortcutCapture
+  Meta handling.
+
+### Verify (Mac hardware)
+
+F8 hold-to-dictate pastes into TextEdit/Safari/VS Code; type strategy;
+toggle/hybrid; clipboard restored after paste; start sound; scratchpad routing;
+Keychain prompt behavior on first key read. CI green x3; Windows smoke re-run;
+hooks.rs/sound.rs diff empty.
+
+### Risks
+
+enigo Cmd+V timing vs activation - mitigated by the poll-until-frontmost gate before
+pasting; fallback to direct CGEvent posting isolated inside `keys.rs`. `activate()`
+deprecation churn across macOS 14/15 - pin behavior on the actual hardware.
+
+---
+
+## Phase 2 - macOS parity (triggers, selection/command mode, permissions UX, context)
+
+- `platform/macos/input.rs` (core-graphics 0.24, core-foundation 0.10): CGEventTap
+  on a CFRunLoop thread, `update_triggers(&Settings)` mirroring the `hooks.rs`
+  statics, dispatcher channel, mouse consumption, INJECTING filter, timeout
+  re-enable. `lib.rs` setup + `commands.rs::update_settings` get
+  `#[cfg(target_os = "macos")]` siblings next to the existing `#[cfg(windows)]`
+  blocks (lib.rs:144-149, commands.rs:30-31).
+- `platform/macos/permissions.rs` + `check_accessibility` /
+  `request_accessibility` commands; tap init deferred/retried until trusted.
+- `injection.rs`: macOS `capture_selection` (restore -> clear -> Cmd+C -> poll
+  <=600 ms).
+- `platform/macos/context.rs`: AX focused-window title; wire into `frontmost()`.
+- `active_window.rs`: additive macOS lists in `classify` + unit tests (run in CI
+  on macOS).
+- Frontend: Accessibility onboarding step; untrusted banner; Option/Command labels.
+
+### Verify (Mac hardware)
+
+Right-Option bare trigger with key-up; middle-mouse trigger consumed; no
+self-retrigger when pasting with Left-Cmd bound; command mode rewrites a selection
+in Notes; transforms; privacy pause by bundle id; Flow Styles detect VS Code.
+Windows smoke; CI x3.
+
+### Risks
+
+Active event taps get disabled by the OS if the callback stalls - keep it as lean
+as the `hooks.rs` procs (atomics + channel push, re-enable on
+`tapDisabledByTimeout`). Input Monitoring possibly required on newer macOS - test
+early in the phase, add to the permissions UX if needed.
+
+---
+
+## Phase 3 - Linux X11
+
+- `platform/linux/mod.rs`: Session detection.
+- `platform/linux/x11.rs` + `context.rs` (x11rb 0.13, features xtest + xinput):
+  focus capture (`_NET_ACTIVE_WINDOW`), context (`_NET_WM_PID` -> `/proc`,
+  `_NET_WM_NAME`), EWMH restore, XI2 raw modifier triggers, XGrabButton mouse
+  trigger - all behind `session() == X11` guards.
+- `injection.rs`: `#[cfg(target_os = "linux")] inject_paste` /
+  `capture_selection` - X11 real; Wayland temporarily falls back to `inject_type`
+  (replaced in Phase 4).
+- `active_window.rs`: Linux comm-name list (`code`, `slack`, `discord`,
+  `keepassxc`, ...); extend `default_paused_apps()` additively.
+- `lib.rs` / `commands.rs`: linux trigger init/update siblings (inert on Wayland).
+- Frontend: paused-apps placeholder per OS.
+
+### Verify (Linux box, X11 session)
+
+Dictation into gedit/Firefox/VS Code with paste + clipboard restore; focus restore
+after alt-tab during processing; bare-modifier + middle-mouse (click consumed);
+command mode + transforms; privacy pause on keepassxc; Secret Service key across
+reboot. Clippy 0 warnings x3; Windows + macOS smoke.
+
+### Risks
+
+WM variance in EWMH activation (test GNOME-Xorg + KDE-Xorg, XFCE if handy).
+Left/right modifier distinction needs keycode<->keysym resolution via the keyboard
+mapping at trigger-config time.
+
+---
+
+## Phase 4 - Linux Wayland
+
+- `platform/linux/wayland.rs` (ashpd ~0.12, tokio): GlobalShortcuts portal session;
+  translate accelerator strings to portal trigger descriptions;
+  Activated/Deactivated -> existing handler entry points. `lib.rs` `use_portal`
+  branch; Wayland branches in `commands.rs::swap_global_shortcut` +
+  `command_mode::register_transform_shortcuts`.
+- Injection: enigo `wayland` feature where the protocol exists; graceful error +
+  docs link on GNOME (ydotool opt-in); libei follow-up documented.
+- UI degradations wired: hide trigger pickers, privacy-pause info note, Esc-cancel
+  note in shortcut help.
+
+### Verify (same Linux box, Wayland session)
+
+Portal permission dialog on first run (KDE, GNOME if available); hold-to-dictate
+via portal Activated/Deactivated; paste lands in the focused app (KDE); type
+fallback messaging on GNOME; the SAME binary detects both session types correctly;
+X11 behavior unregressed (re-run Phase 3 checks).
+
+### Risks
+
+Portal Deactivated semantics differ per desktop - hybrid/toggle modes do not depend
+on release; document hold-mode caveats per desktop. Accelerator -> portal-trigger
+mapping is lossy - keep a small translation table and surface bind failures in
+Settings.
+
+---
+
+## Phase 5 - Packaging, release matrix, distribution
+
+- `.github/workflows/release.yml` -> matrix: windows-latest (unchanged, incl. the
+  libclang step, `--bundles nsis,msi,updater`); macos-latest
+  (universal-apple-darwin, `--bundles app,dmg,updater`; whisper.cpp builds with
+  Metal via Xcode CLT - no libclang step); ubuntu-22.04 (ci.yml system deps,
+  `--bundles deb,rpm,appimage,updater`). tauri-action merges all platforms into
+  one draft release + a single multi-platform latest.json (the existing updater
+  endpoint keeps working). Keep `--features local-whisper` on all three.
+- macOS signing/notarization: optional follow-up (APPLE_* secrets in tauri-action);
+  until then document right-click-Open / `xattr -d com.apple.quarantine`. Linux:
+  note that the tauri updater only updates AppImage installs.
+- Docs: per-platform permission matrix (mic, Accessibility, portal) + known
+  Wayland degradations.
+
+### Verify
+
+Tag a prerelease; all three jobs upload; install + auto-update E2E on each OS
+(dummy version bump); `release.mjs` collects per-OS artifacts into
+`build/<version>/` correctly.
+
+---
+
+## Crate additions (all in per-target tables; pin exact versions at implementation)
+
+| Target | Crate | Features | Purpose |
+|---|---|---|---|
+| macos | objc2 0.6 / objc2-foundation / objc2-app-kit 0.3 | NSWorkspace, NSRunningApplication | focus, context |
+| macos | core-graphics 0.24, core-foundation 0.10 | - | CGEventTap triggers |
+| macos | keyring 3 | apple-native | key storage |
+| linux | x11rb 0.13 | xtest, xinput | focus/EWMH, triggers, grabs |
+| linux | ashpd ~0.12 | tokio | Wayland GlobalShortcuts portal |
+| linux | keyring 3 | sync-secret-service | key storage |
+| all | enigo 0.3 (existing) | + wayland on linux | injection |
+| all | tauri-plugin-os | - | frontend platform detection |
+
+## Critical files
+
+- `src-tauri/src/hotkey.rs` - the Phase 0 seam extraction (the one sanctioned
+  Windows refactor)
+- `src-tauri/src/injection.rs` - paste/selection seams for every platform
+- `src-tauri/src/lib.rs` - trigger init, portal-vs-plugin branch, new commands
+- `src-tauri/src/platform/**` - all new platform code
+- `src-tauri/Cargo.toml` - keyring target tables + platform crates
+- `.github/workflows/ci.yml` (new) + `release.yml` - the regression gate
+- `scripts/release.mjs` - platform-aware artifact collection
+- `src/lib/api.ts`, `src/Hub.tsx`, `src/components/ShortcutCapture.tsx`,
+  `src/Onboarding.tsx` - frontend platform awareness
+
+## Verification summary
+
+Every phase gates on: CI green on all three runners (cargo check + clippy
+`-D warnings` + cargo test + `npm run build`), the manual Windows smoke checklist,
+a diff audit proving `#[cfg(windows)]` internals are untouched, and hands-on E2E
+dictation on the target platform hardware for that phase.

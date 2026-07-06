@@ -55,7 +55,7 @@ pub fn play_start_sound(settings: &Settings) {
     use windows::core::PCWSTR;
     
     static WAV_BYTES: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-    let wav = WAV_BYTES.get_or_init(|| generate_start_sound());
+    let wav = WAV_BYTES.get_or_init(generate_start_sound);
     
     unsafe {
         let pszsound = PCWSTR(wav.as_ptr() as *const u16);

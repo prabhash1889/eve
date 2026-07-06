@@ -86,9 +86,10 @@ llama-cpp-2 = { version = "0.1", optional = true }
 # Decoder for llama.cpp `token_to_piece` (must match llama-cpp-2's encoding_rs).
 encoding_rs = { version = "0.8", optional = true }
 
-# Secure API-key storage in the OS credential store (Windows Credential Manager).
-# For macOS/Linux later, add the matching backend feature under a target table.
-keyring = { version = "3", features = ["windows-native"] }
+# Secure API-key storage in the OS credential store. The backend crate feature
+# is platform-specific, so `keyring` is declared per-target below (Windows
+# Credential Manager / macOS Keychain / Linux Secret Service). `secrets.rs` uses
+# the same crate API regardless of backend, so it stays unchanged.
 
 # History persistence (Phase 3). `bundled` compiles SQLite (FTS5 enabled) so
 # there's no system dependency. `chrono` for timestamps + daily-stats date keys.
@@ -118,3 +119,14 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Gdi",
     "Win32_System_Ole",
 ] }
+# Windows Credential Manager backend for secure API-key storage.
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS Keychain backend for secure API-key storage.
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Linux Secret Service backend (GNOME Keyring / KWallet) for secure API-key
+# storage. Needs libdbus at build time (provided in CI + on desktop distros).
+keyring = { version = "3", features = ["sync-secret-service"] }

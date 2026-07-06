@@ -104,16 +104,22 @@ unsafe fn get_caret_from_gui_thread_info() -> Option<(i32, i32)> {
     use windows::Win32::Graphics::Gdi::ClientToScreen;
     use windows::Win32::Foundation::POINT;
 
-    let mut info = GUITHREADINFO::default();
-    info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+    let mut info = GUITHREADINFO {
+        cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
+    };
 
     if GetGUIThreadInfo(0, &mut info).is_ok() {
-        if !info.hwndFocus.is_invalid() && info.rcCaret.left != 0 && info.rcCaret.top != 0 {
+        // `rcCaret` is relative to `hwndCaret`'s client area (which can be a
+        // child control of `hwndFocus`); a null `hwndCaret` means the thread
+        // has no caret at all. A caret at client x=0 or y=0 is legitimate, so
+        // only a degenerate (height-less) rect is rejected.
+        if !info.hwndCaret.is_invalid() && info.rcCaret.bottom > info.rcCaret.top {
             let mut pt = POINT {
                 x: info.rcCaret.left,
                 y: info.rcCaret.top,
             };
-            if ClientToScreen(info.hwndFocus, &mut pt).as_bool() {
+            if ClientToScreen(info.hwndCaret, &mut pt).as_bool() {
                 return Some((pt.x, pt.y));
             }
         }
@@ -131,7 +137,10 @@ unsafe fn get_caret_from_uia() -> Option<(i32, i32)> {
         CoInitializeEx, CoCreateInstance, CLSCTX_INPROC_SERVER,
         COINIT_APARTMENTTHREADED,
     };
-    use windows::Win32::System::Ole::{SafeArrayAccessData, SafeArrayUnaccessData};
+    use windows::Win32::System::Ole::{
+        SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetLBound, SafeArrayGetUBound,
+        SafeArrayUnaccessData,
+    };
     use windows::core::Interface;
 
     // Best effort COM initialization
@@ -156,16 +165,24 @@ unsafe fn get_caret_from_uia() -> Option<(i32, i32)> {
         return None;
     }
 
-    let mut data_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-    if SafeArrayAccessData(rects, &mut data_ptr).is_ok() {
-        let f64_ptr = data_ptr as *mut f64;
-        let left = *f64_ptr;
-        let top = *f64_ptr.add(1);
-        let _ = SafeArrayUnaccessData(rects);
-        return Some((left as i32, top as i32));
+    // The array holds [left, top, width, height] per rectangle. A degenerate
+    // caret range can legitimately return an *empty* (non-null) array, so
+    // bound-check before dereferencing. The array is owned by us: destroy it
+    // on every path or it leaks each time the bar is shown.
+    let mut pos = None;
+    let lbound = SafeArrayGetLBound(rects, 1).unwrap_or(0);
+    let ubound = SafeArrayGetUBound(rects, 1).unwrap_or(-1);
+    if ubound - lbound + 1 >= 4 {
+        let mut data_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+        if SafeArrayAccessData(rects, &mut data_ptr).is_ok() {
+            let f64_ptr = data_ptr as *const f64;
+            pos = Some((*f64_ptr as i32, (*f64_ptr.add(1)) as i32));
+            let _ = SafeArrayUnaccessData(rects);
+        }
     }
+    let _ = SafeArrayDestroy(rects);
 
-    None
+    pos
 }
 
 /// Phase 9: show (and focus) the floating Scratchpad window. Created hidden in

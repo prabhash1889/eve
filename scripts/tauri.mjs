@@ -1,12 +1,13 @@
 // Wrapper for the `tauri` CLI invoked via `npm run tauri <subcommand>`.
 //
 // For `npm run tauri build` it runs the real build (forwarding any extra
-// flags) and then copies the produced installers into
+// flags) and then moves the produced installers into
 //   <repo>/build/<version>/{msi,nsis}        (CPU / default)
 //   <repo>/build/<version>/cuda/{msi,nsis}   (CUDA feature builds)
 // via `scripts/release.mjs --copy-only`, so every build lands in a
-// version-named folder at the repo root. Any other subcommand (dev, icon,
-// ...) is passed straight through to tauri.
+// version-named folder at the repo root (and nothing is left in src-tauri).
+// CUDA installers are renamed with a `_cuda` tag. Any other subcommand (dev,
+// icon, ...) is passed straight through to tauri.
 //
 // The signed updater release flow stays `npm run release` (see release.mjs);
 // this wrapper only adds the artifact collection to plain local builds.

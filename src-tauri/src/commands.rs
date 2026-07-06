@@ -1,7 +1,7 @@
 //! Tauri commands invoked from the frontend (Hub settings UI).
 
 use tauri::{AppHandle, State};
-use tauri_plugin_global_shortcut::GlobalShortcutExt;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 use crate::command_mode;
 use crate::config::{self, Settings};
@@ -32,6 +32,19 @@ pub fn update_settings(state: State<AppState>, settings: Settings) -> Result<(),
     config::save(&state.settings_path, &settings).map_err(|e| e.to_string())
 }
 
+/// Swap a registered global shortcut for a new one. The old accelerator is
+/// re-registered when the new one can't be registered (e.g. another app owns
+/// the combo), so a failed rebind never leaves the app without its trigger.
+fn swap_global_shortcut(app: &AppHandle, old: Shortcut, new: Shortcut) -> Result<(), String> {
+    let gs = app.global_shortcut();
+    let _ = gs.unregister(old);
+    if let Err(e) = gs.register(new) {
+        let _ = gs.register(old);
+        return Err(e.to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn set_shortcut(
     app: AppHandle,
@@ -42,13 +55,11 @@ pub fn set_shortcut(
     // unparseable accelerator must surface as an error (not silently fall back
     // to F8 the way the startup path does).
     use std::str::FromStr;
-    let new_shortcut = tauri_plugin_global_shortcut::Shortcut::from_str(&shortcut)
+    let new_shortcut = Shortcut::from_str(&shortcut)
         .map_err(|_| format!("\"{shortcut}\" isn't a supported shortcut"))?;
     let old_shortcut = *state.main_shortcut.lock();
 
-    let gs = app.global_shortcut();
-    let _ = gs.unregister(old_shortcut);
-    gs.register(new_shortcut).map_err(|e| e.to_string())?;
+    swap_global_shortcut(&app, old_shortcut, new_shortcut)?;
 
     *state.main_shortcut.lock() = new_shortcut;
 
@@ -67,9 +78,7 @@ pub fn set_copy_shortcut(
     let new_shortcut = state::parse_shortcut(&shortcut);
     let old_shortcut = *state.copy_shortcut.lock();
 
-    let gs = app.global_shortcut();
-    let _ = gs.unregister(old_shortcut);
-    gs.register(new_shortcut).map_err(|e| e.to_string())?;
+    swap_global_shortcut(&app, old_shortcut, new_shortcut)?;
 
     *state.copy_shortcut.lock() = new_shortcut;
 
@@ -381,9 +390,7 @@ pub fn set_command_shortcut(
     let new_shortcut = state::parse_shortcut(&shortcut);
     let old_shortcut = *state.command_shortcut.lock();
 
-    let gs = app.global_shortcut();
-    let _ = gs.unregister(old_shortcut);
-    gs.register(new_shortcut).map_err(|e| e.to_string())?;
+    swap_global_shortcut(&app, old_shortcut, new_shortcut)?;
 
     *state.command_shortcut.lock() = new_shortcut;
 
@@ -483,9 +490,7 @@ pub fn set_scratchpad_shortcut(
     let new_shortcut = state::parse_shortcut(&shortcut);
     let old_shortcut = *state.scratchpad_shortcut.lock();
 
-    let gs = app.global_shortcut();
-    let _ = gs.unregister(old_shortcut);
-    gs.register(new_shortcut).map_err(|e| e.to_string())?;
+    swap_global_shortcut(&app, old_shortcut, new_shortcut)?;
 
     *state.scratchpad_shortcut.lock() = new_shortcut;
 

@@ -1,6 +1,10 @@
 #!/usr/bin/env node
-// Build signed release bundles, then copy the MSI + NSIS artifacts into
-//   <repo>/build/msi  and  <repo>/build/nsis
+// Build signed release bundles, then MOVE the MSI + NSIS artifacts into
+//   <repo>/build/<version>/{msi,nsis}        (CPU)
+//   <repo>/build/<version>/cuda/{msi,nsis}   (CUDA)
+// (a move, not a copy, so nothing is left behind inside src-tauri).
+// CUDA installers are renamed with a `_cuda` tag because Tauri gives them the
+// same filenames as the CPU build; the tag keeps the variant identifiable.
 // The signing private key is loaded from the file at TAURI_KEY_PATH
 // (default: ~/.tauri/eve.key) so it never has to live in the repo.
 //
@@ -24,6 +28,7 @@ import {
   mkdirSync,
   readdirSync,
   copyFileSync,
+  rmSync,
 } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -69,15 +74,25 @@ if (!copyOnly) {
   if (res.status !== 0) process.exit(res.status ?? 1);
 }
 
-// Copy artifacts out of src-tauri/target/release/bundle into
+// Move artifacts out of src-tauri/target/release/bundle into
 // build/<version>/{msi,nsis} (CPU) or build/<version>/cuda/{msi,nsis} (CUDA).
 // Each app version gets its own folder; rebuilding the same version overwrites
 // its artifacts. The split keeps the two variants from clobbering each other
-// when both are built for one release.
+// when both are built for one release. Nothing is left in src-tauri afterwards.
 const bundleDir = join(root, "src-tauri", "target", "release", "bundle");
 const outDir = cuda ? join(root, "build", version, "cuda") : join(root, "build", version);
 
-for (const target of ["msi", "nsis"]) {
+// Tauri writes each installer into a per-format subfolder of `bundle/`, and
+// which formats exist depends on the host OS. Collect whatever this platform
+// produces: Windows -> MSI + NSIS, macOS -> .app + .dmg, Linux -> deb/rpm/AppImage.
+const BUNDLE_TARGETS = {
+  win32: ["msi", "nsis"],
+  darwin: ["dmg", "macos"],
+  linux: ["deb", "rpm", "appimage"],
+};
+const targets = BUNDLE_TARGETS[process.platform] ?? ["msi", "nsis"];
+
+for (const target of targets) {
   const src = join(bundleDir, target);
   if (!existsSync(src)) {
     console.warn(`No ${target} bundle found at ${src} — skipping.`);
@@ -86,13 +101,25 @@ for (const target of ["msi", "nsis"]) {
   const dest = join(outDir, target);
   mkdirSync(dest, { recursive: true });
   for (const file of readdirSync(src)) {
-    copyFileSync(join(src, file), join(dest, file));
-    console.log(`  ${join(dest, file).slice(root.length + 1).replaceAll("\\", "/")}`);
+    // Tauri names CUDA installers identically to the CPU ones, so tag the CUDA
+    // variant (installer + any .sig/.zip sidecars) with `_cuda` right after the
+    // version to keep it distinguishable once collected.
+    const outName = cuda ? file.replaceAll(`_${version}_`, `_${version}_cuda_`) : file;
+    const from = join(src, file);
+    const to = join(dest, outName);
+    // Move, not copy: copy then remove the source so nothing stays in src-tauri.
+    // copy+rm (rather than renameSync) because on Windows renameSync throws when
+    // the destination already exists, e.g. rebuilding the same version.
+    copyFileSync(from, to);
+    rmSync(from);
+    console.log(`  ${to.slice(root.length + 1).replaceAll("\\", "/")}`);
   }
 }
 
 const rel = cuda ? `build/${version}/cuda` : `build/${version}`;
-console.log(`\nRelease v${version} (${features}) artifacts copied to ${rel}/msi and ${rel}/nsis`);
+console.log(
+  `\nRelease v${version} (${features}) artifacts moved to ${rel}/{${targets.join(",")}}`
+);
 if (cuda) {
   console.log(
     "Reminder: the CUDA build is NOT on the updater feed. Attach it to the GitHub release manually, labelled as the CUDA variant."

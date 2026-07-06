@@ -23,9 +23,6 @@ use crate::state::AppState;
 use crate::transcription::{local_backend_label, Audio, TranscriptionBenchmark};
 use crate::{audio, events, hotkey, injection, llm, polish, window_mgmt};
 
-#[cfg(windows)]
-use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-
 // --- Command Mode push-to-talk ----------------------------------------------
 
 /// Key-down: start capturing the spoken instruction, flagged as Command Mode so
@@ -38,12 +35,11 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
     crate::sound::play_start_sound(&st.settings.lock());
     st.is_command_mode.store(true, Ordering::SeqCst);
 
-    #[cfg(windows)]
-    unsafe {
-        let hwnd = GetForegroundWindow();
-        st.foreground_hwnd.store(hwnd.0 as isize, Ordering::SeqCst);
-        *st.current_context.lock() = Some(crate::context::active_window::resolve(hwnd));
-    }
+    // Remember the focused app (paste target) and its context, mirroring
+    // `hotkey::on_press` but without the privacy-pause gate.
+    let front = crate::platform::frontmost(app);
+    st.foreground_hwnd.store(front.handle, Ordering::SeqCst);
+    *st.current_context.lock() = Some(front.ctx);
 
     let (bubble_scale, bubble_opacity) = {
         let s = st.settings.lock();
@@ -261,10 +257,7 @@ pub fn on_transform(app: &AppHandle, st: &AppState, id: i64) {
         return;
     }
 
-    #[cfg(windows)]
-    let hwnd = unsafe { GetForegroundWindow().0 as isize };
-    #[cfg(not(windows))]
-    let hwnd = 0isize;
+    let hwnd = crate::platform::frontmost(app).handle;
 
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {

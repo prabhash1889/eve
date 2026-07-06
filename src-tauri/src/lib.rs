@@ -13,6 +13,7 @@ mod injection;
 mod llm;
 mod models;
 mod pipeline;
+mod platform;
 mod polish;
 mod secrets;
 mod state;
