@@ -124,10 +124,19 @@ pub fn start_capture(
             return;
         }
 
-        // Push the latest amplitude to the Flow Bar while recording.
+        // Push the latest amplitude to the Flow Bar while recording. Also warn
+        // once when the buffer nears its ceiling - in toggle mode a hands-free
+        // recording can run long enough to hit it.
+        let rate = sample_rate.load(Ordering::SeqCst) as usize;
+        let warn_at = MAX_CAPTURE_SAMPLES.saturating_sub(rate.max(8_000) * 60);
+        let mut warned = false;
         while is_recording.load(Ordering::SeqCst) {
             let level = *amp.lock();
             let _ = app.emit_to(events::FLOWBAR, events::AMPLITUDE, level);
+            if !warned && buffer.lock().len() >= warn_at {
+                warned = true;
+                let _ = app.emit_to(events::FLOWBAR, events::LIMIT, ());
+            }
             thread::sleep(Duration::from_millis(33));
         }
         drop(stream); // releases the device

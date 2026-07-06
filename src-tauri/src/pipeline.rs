@@ -121,7 +121,6 @@ pub async fn process(app: AppHandle) {
         lang_label,
         level,
         strategy,
-        store_audio,
         vibe_coding,
         transcription_backend,
         transcriber_model,
@@ -147,7 +146,6 @@ pub async fn process(app: AppHandle) {
             s.language.clone(),
             s.cleanup_level,
             s.inject_strategy.clone(),
-            s.audio_storage_policy != "never",
             s.vibe_coding,
             s.transcription_backend.clone(),
             model,
@@ -170,8 +168,8 @@ pub async fn process(app: AppHandle) {
         return;
     }
 
-    // Keep a copy of the WAV for storage/replay unless the user opted out.
-    let audio_bytes = if store_audio { Some(wav.clone()) } else { None };
+    // Audio is never persisted — history keeps transcript text only.
+    let audio_bytes: Option<Vec<u8>> = None;
 
     // Phase 4: load dictionary terms to boost recognition (Whisper `prompt`).
     let hints = {

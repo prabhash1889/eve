@@ -5,6 +5,8 @@ mod config;
 mod context;
 mod db;
 mod events;
+#[cfg(windows)]
+mod hooks;
 mod hotkey;
 mod injection;
 mod llm;
@@ -58,7 +60,7 @@ pub fn run() {
                     match event.state() {
                         ShortcutState::Pressed => {
                             if is_main {
-                                hotkey::on_press(app, st);
+                                hotkey::on_main_pressed(app, st);
                             } else if is_command {
                                 command_mode::on_press(app, st);
                             } else if is_escape {
@@ -73,7 +75,7 @@ pub fn run() {
                         }
                         ShortcutState::Released => {
                             if is_main {
-                                hotkey::on_release(app, st);
+                                hotkey::on_main_released(app, st);
                             } else if is_command {
                                 command_mode::on_release(app, st);
                             }
@@ -98,10 +100,22 @@ pub fn run() {
             let models_dir = data_dir.join("models");
             std::fs::create_dir_all(&models_dir).ok();
 
-            // Retention: on launch, prune saved audio past the configured window.
-            prune_audio_on_launch(&db, &settings);
-
             app.manage(AppState::new(settings, settings_path, db, models_dir));
+
+            // Retention: prune saved audio past the configured window. Done AFTER
+            // `manage()` and off the setup thread so it can't delay state
+            // registration — a release-build webview may `invoke("get_settings")`
+            // the instant it loads, and that call rejects if `AppState` isn't
+            // managed yet (which would strand the Hub on default settings and
+            // re-show first-run onboarding every launch).
+            {
+                let st = app.state::<AppState>();
+                let db = st.db.clone();
+                let settings = st.settings.lock().clone();
+                std::thread::spawn(move || {
+                    prune_audio_on_launch(&db, &settings);
+                });
+            }
 
             // Register the push-to-talk shortcut + the copy-last-transcript
             // shortcut. The copy shortcut is best-effort: a bad/duplicate
@@ -119,6 +133,15 @@ pub fn run() {
                 let scratchpad = *state.scratchpad_shortcut.lock();
                 let _ = app.global_shortcut().register(scratchpad);
                 command_mode::register_transform_shortcuts(app.handle(), &state);
+            }
+
+            // Parity A3/A4: low-level keyboard/mouse hooks for bare-modifier and
+            // mouse-button triggers. Installed once; inert unless configured.
+            #[cfg(windows)]
+            {
+                let settings = app.state::<AppState>().settings.lock().clone();
+                hooks::update_triggers(&settings);
+                hooks::init(app.handle().clone());
             }
 
             // Phase 11: reconcile the OS autostart registration with the saved

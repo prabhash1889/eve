@@ -15,6 +15,9 @@ export type ModelBackend = "groq" | "local";
 /** Local transcription performance profile (optimization Phase 4). */
 export type LocalProfile = "fast" | "balanced" | "accurate";
 
+/** Parity A1: how the main trigger starts/stops recording. */
+export type ActivationMode = "hold" | "toggle" | "hybrid";
+
 export interface Settings {
   shortcut: string;
   language: string; // "auto" or an ISO-639-1 code
@@ -45,6 +48,9 @@ export interface Settings {
   contextAwareness: boolean; // Phase 10: resolve/store focused-app context
   onboardingComplete: boolean; // Phase 10: first-run flow finished
   launchAtStartup: boolean; // Phase 11: start Eve at OS login
+  activationMode: ActivationMode; // Parity A1: hold / toggle / hybrid
+  modifierTrigger: string; // Parity A3: bare-modifier trigger id ("" = none)
+  mouseTrigger: string; // Parity A4: mouse-button trigger id ("" = none)
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -77,6 +83,9 @@ export const DEFAULT_SETTINGS: Settings = {
   contextAwareness: true,
   onboardingComplete: false,
   launchAtStartup: false,
+  activationMode: "hold",
+  modifierTrigger: "",
+  mouseTrigger: "",
 };
 
 // ---------------------------------------------------------------------------
@@ -279,6 +288,8 @@ export const EVT = {
   stage: "session://stage",
   // Phase 10: auto-pause suppressed recording in a sensitive app.
   paused: "session://paused",
+  // Parity A1: capture buffer nearing the 15-minute ceiling (toggle mode).
+  limit: "session://limit",
   // Phase 11: tray "Check for updates" → Hub runs the check.
   checkUpdate: "app://check-update",
   // Phase 9: dictated text routed into the focused Scratchpad editor.
@@ -305,6 +316,7 @@ export interface StartPayload {
   bubbleScale: number;
   bubbleOpacity: number;
   mode: "dictation" | "command"; // Phase 7: Command Mode tints the Flow Bar
+  toggleHint: boolean; // Parity A1: toggle/hybrid mode - hint that a tap stops
 }
 
 export function on<T>(event: string, cb: EventCallback<T>): Promise<UnlistenFn> {

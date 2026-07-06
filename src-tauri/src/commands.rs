@@ -25,6 +25,10 @@ pub fn get_settings(state: State<AppState>) -> Settings {
 #[tauri::command]
 pub fn update_settings(state: State<AppState>, settings: Settings) -> Result<(), String> {
     *state.settings.lock() = settings.clone();
+    // Parity A3/A4: bare-modifier / mouse-button triggers live in the low-level
+    // hooks, which read from atomics - republish so edits apply immediately.
+    #[cfg(windows)]
+    crate::hooks::update_triggers(&settings);
     config::save(&state.settings_path, &settings).map_err(|e| e.to_string())
 }
 
@@ -34,7 +38,12 @@ pub fn set_shortcut(
     state: State<AppState>,
     shortcut: String,
 ) -> Result<(), String> {
-    let new_shortcut = state::parse_shortcut(&shortcut);
+    // Parity A2: the UI lets users capture arbitrary key combos, so an
+    // unparseable accelerator must surface as an error (not silently fall back
+    // to F8 the way the startup path does).
+    use std::str::FromStr;
+    let new_shortcut = tauri_plugin_global_shortcut::Shortcut::from_str(&shortcut)
+        .map_err(|_| format!("\"{shortcut}\" isn't a supported shortcut"))?;
     let old_shortcut = *state.main_shortcut.lock();
 
     let gs = app.global_shortcut();

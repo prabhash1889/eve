@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Search, Trash2, RotateCcw, Play, ChevronLeft, ChevronRight } from "lucide-react";
-import { api, audioSrc, type Transcript } from "../lib/api";
+import { useCallback, useEffect, useState } from "react";
+import { Search, Trash2, RotateCcw, Copy, Check, ChevronLeft, ChevronRight } from "lucide-react";
+import { api, type Transcript } from "../lib/api";
 
 const PER_PAGE = 20;
 
@@ -147,9 +147,19 @@ function HistoryCard({ t, onDelete }: { t: Transcript; onDelete: () => void }) {
   // Show polished by default; toggle to raw when they differ.
   const hasBoth = t.rawText.trim() !== t.polishedText.trim();
   const [showRaw, setShowRaw] = useState(false);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const text = showRaw ? t.rawText : t.polishedText;
+
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // Clipboard unavailable — nothing more we can do here.
+    }
+  };
 
   return (
     <div className="rounded-2xl border border-border bg-surface p-4">
@@ -186,20 +196,18 @@ function HistoryCard({ t, onDelete }: { t: Transcript; onDelete: () => void }) {
           </button>
         )}
 
-        {t.audioPath && (
-          <button
-            onClick={() => audioRef.current?.play()}
-            className={
-              "flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-ink-soft hover:bg-surface-2 " +
-              (hasBoth ? "" : "ml-auto")
-            }
-          >
-            <Play size={12} /> Play
-          </button>
-        )}
+        <button
+          onClick={onCopy}
+          title="Copy text"
+          className={
+            "flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-ink-soft hover:bg-surface-2 " +
+            (hasBoth ? "" : "ml-auto")
+          }
+        >
+          {copied ? <Check size={12} /> : <Copy size={12} />}
+          {copied ? "Copied" : "Copy"}
+        </button>
       </div>
-
-      {t.audioPath && <audio ref={audioRef} src={audioSrc(t.audioPath)} preload="none" />}
     </div>
   );
 }

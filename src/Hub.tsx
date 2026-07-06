@@ -2,7 +2,6 @@ import { useEffect, useState, type ReactNode } from "react";
 import {
   Settings as SettingsIcon,
   LayoutDashboard,
-  History,
   BookMarked,
   Zap,
   Sparkles,
@@ -27,7 +26,14 @@ import {
   Power,
 } from "lucide-react";
 import { api, DEFAULT_SETTINGS, effectiveLanguage, on, EVT, type Settings, type CleanupLevel, type Stats } from "./lib/api";
-import { CLEANUP, SHORTCUT_CHOICES } from "./lib/options";
+import {
+  ACTIVATION_MODES,
+  CLEANUP,
+  MODIFIER_TRIGGERS,
+  MOUSE_TRIGGERS,
+  SHORTCUT_CHOICES,
+} from "./lib/options";
+import { ShortcutCapture } from "./components/ShortcutCapture";
 import { Onboarding, LanguageMultiSelect } from "./components/onboarding/Onboarding";
 import { HistoryPage } from "./pages/HistoryPage";
 import { DictionaryPage } from "./pages/DictionaryPage";
@@ -79,12 +85,33 @@ export function Hub() {
   const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
 
   useEffect(() => {
-    api
-      .getSettings()
-      .then(setSettings)
-      .catch(() => {})
-      .finally(() => setLoaded(true));
+    let cancelled = false;
+    // The Rust `AppState` is `.manage()`d partway through the setup hook, after
+    // DB open + audio pruning. In a release build the webview can call
+    // `get_settings` before that runs, so the invoke rejects. Retry until the
+    // backend is ready, and only flip `loaded` (which arms the first-run
+    // onboarding gate) on a *successful* load — never mark loaded on failure, or
+    // `settings` stays at DEFAULT_SETTINGS (onboardingComplete: false) and the
+    // onboarding reappears on every launch that loses this race.
+    const loadSettings = (attempt = 0) => {
+      api
+        .getSettings()
+        .then((s) => {
+          if (cancelled) return;
+          setSettings(s);
+          setLoaded(true);
+        })
+        .catch(() => {
+          if (!cancelled && attempt < 50) {
+            setTimeout(() => loadSettings(attempt + 1), 100);
+          }
+        });
+    };
+    loadSettings();
     api.hasApiKey().then(setHasKey).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Phase 11: the tray "Check for updates" item routes here.
@@ -415,17 +442,51 @@ function SettingsPanel({
         )}
       </Section>
 
-      <Section title="Push-to-talk hotkey">
-        <Select
+      <Section title="Record trigger">
+        <ShortcutCapture
           value={settings.shortcut}
-          onChange={async (v) => {
-            const next = { ...settings, shortcut: v };
-            setSettings(next);
-            await api.setShortcut(v).catch(() => {});
+          suggestions={SHORTCUT_CHOICES}
+          onCommit={async (v) => {
+            await api.setShortcut(v); // throws on unsupported/duplicate keys
+            setSettings({ ...settings, shortcut: v });
           }}
-          options={SHORTCUT_CHOICES.map((s) => ({ value: s, label: s }))}
         />
-        <p className="mt-2 text-xs text-ink-faint">Hold this key to record; release to transcribe.</p>
+
+        <div className="mt-4">
+          <Select
+            value={settings.activationMode}
+            onChange={(v) =>
+              persist({ ...settings, activationMode: v as Settings["activationMode"] })
+            }
+            options={ACTIVATION_MODES.map((m) => ({ value: m.value, label: m.label }))}
+          />
+          <p className="mt-2 text-xs text-ink-faint">
+            {ACTIVATION_MODES.find((m) => m.value === settings.activationMode)?.hint}
+          </p>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          <div>
+            <div className="mb-1.5 text-xs font-medium text-ink-soft">Modifier key trigger</div>
+            <Select
+              value={settings.modifierTrigger}
+              onChange={(v) => persist({ ...settings, modifierTrigger: v })}
+              options={MODIFIER_TRIGGERS}
+            />
+          </div>
+          <div>
+            <div className="mb-1.5 text-xs font-medium text-ink-soft">Mouse button trigger</div>
+            <Select
+              value={settings.mouseTrigger}
+              onChange={(v) => persist({ ...settings, mouseTrigger: v })}
+              options={MOUSE_TRIGGERS}
+            />
+          </div>
+        </div>
+        <p className="mt-2 text-xs text-ink-faint">
+          Extra triggers that work alongside the hotkey. A bound mouse button's normal click is
+          disabled while assigned.
+        </p>
       </Section>
 
       <Section title="Microphone" icon={<Mic size={16} />}>
@@ -569,37 +630,6 @@ function SettingsPanel({
         </div>
         <p className="mt-3 text-xs text-ink-faint">
           Takes effect the next time the Flow Bar appears.
-        </p>
-      </Section>
-
-      <Section title="Audio storage" icon={<History size={16} />}>
-        <Select
-          value={settings.audioStoragePolicy}
-          onChange={(v) =>
-            persist({ ...settings, audioStoragePolicy: v as Settings["audioStoragePolicy"] })
-          }
-          options={[
-            { value: "store", label: "Keep recordings" },
-            { value: "delete24h", label: "Auto-delete after a while" },
-            { value: "never", label: "Don't save audio" },
-          ]}
-        />
-        {settings.audioStoragePolicy === "delete24h" && (
-          <div className="mt-4">
-            <Range
-              label="Keep for"
-              min={1}
-              max={168}
-              step={1}
-              value={settings.audioRetentionHours}
-              format={(v) => `${v} h`}
-              onChange={(v) => persist({ ...settings, audioRetentionHours: Math.round(v) })}
-            />
-          </div>
-        )}
-        <p className="mt-3 text-xs text-ink-faint">
-          Recordings let you replay a dictation from History. They're pruned on launch when
-          auto-delete is on. Transcript text is always kept.
         </p>
       </Section>
 

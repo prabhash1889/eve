@@ -56,9 +56,11 @@ if (!copyOnly) {
   if (res.status !== 0) process.exit(res.status ?? 1);
 }
 
-// Copy artifacts out of src-tauri/target/release/bundle into build/{msi,nsis}.
+// Copy artifacts out of src-tauri/target/release/bundle into
+// build/<version>/{msi,nsis}. Each app version gets its own folder; rebuilding
+// the same version overwrites its artifacts.
 const bundleDir = join(root, "src-tauri", "target", "release", "bundle");
-const outDir = join(root, "build");
+const outDir = join(root, "build", version);
 
 for (const target of ["msi", "nsis"]) {
   const src = join(bundleDir, target);
@@ -70,8 +72,10 @@ for (const target of ["msi", "nsis"]) {
   mkdirSync(dest, { recursive: true });
   for (const file of readdirSync(src)) {
     copyFileSync(join(src, file), join(dest, file));
-    console.log(`  build/${target}/${file}`);
+    console.log(`  build/${version}/${target}/${file}`);
   }
 }
 
-console.log(`\nRelease v${version} artifacts copied to build/msi and build/nsis`);
+console.log(
+  `\nRelease v${version} artifacts copied to build/${version}/msi and build/${version}/nsis`
+);

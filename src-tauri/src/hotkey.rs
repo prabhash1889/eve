@@ -1,7 +1,11 @@
-//! Push-to-talk handlers. Wired from the global-shortcut handler in `lib.rs`:
-//! key down → start capture, key up → run the pipeline, Esc → cancel.
+//! Push-to-talk handlers. Wired from the global-shortcut handler in `lib.rs`
+//! (and, for bare-modifier/mouse triggers, from `hooks`): trigger down/up flows
+//! through `on_main_pressed`/`on_main_released`, which apply the activation
+//! mode (hold / toggle / hybrid) before delegating to the start/stop
+//! primitives `on_press`/`on_release`. Esc → cancel.
 
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -12,6 +16,61 @@ use crate::{audio, events, pipeline, window_mgmt};
 
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+/// Parity A1: in hybrid mode, a press shorter than this is a "tap" that arms a
+/// hands-free toggle; holding past it behaves like push-to-talk.
+const HOLD_THRESHOLD: Duration = Duration::from_millis(300);
+
+/// Trigger went down (key, bare modifier, or mouse button). Applies the
+/// activation mode: when idle, always starts recording; while recording, a
+/// *new* press (not an OS key-repeat) stops it in toggle/hybrid mode.
+pub fn on_main_pressed(app: &AppHandle, st: &AppState) {
+    if st.is_recording.load(Ordering::SeqCst) {
+        // Key-repeat fires `Pressed` continuously while the trigger is held;
+        // only a press that follows a release can mean "stop".
+        if !st.saw_release.load(Ordering::SeqCst) {
+            return;
+        }
+        let mode = st.settings.lock().activation_mode.clone();
+        if mode == "toggle" || mode == "hybrid" {
+            on_release(app, st);
+        }
+        return;
+    }
+    st.saw_release.store(false, Ordering::SeqCst);
+    *st.press_at.lock() = Some(Instant::now());
+    on_press(app, st);
+}
+
+/// Trigger came back up. Hold mode stops immediately; toggle mode just records
+/// that the release happened; hybrid stops only when the press was a genuine
+/// hold (>= [`HOLD_THRESHOLD`]) - a quick tap leaves the recording running.
+pub fn on_main_released(app: &AppHandle, st: &AppState) {
+    if !st.is_recording.load(Ordering::SeqCst) {
+        return;
+    }
+    let mode = st.settings.lock().activation_mode.clone();
+    match mode.as_str() {
+        "toggle" => {
+            st.saw_release.store(true, Ordering::SeqCst);
+        }
+        "hybrid" => {
+            // Only the release of the *starting* press decides tap-vs-hold;
+            // later releases (of the stop-press) are handled via `on_press`.
+            if !st.saw_release.swap(true, Ordering::SeqCst) {
+                let held = st
+                    .press_at
+                    .lock()
+                    .map(|t| t.elapsed())
+                    .unwrap_or(Duration::ZERO);
+                if held >= HOLD_THRESHOLD {
+                    on_release(app, st);
+                }
+            }
+        }
+        _ => on_release(app, st),
+    }
+}
 
 pub fn on_press(app: &AppHandle, st: &AppState) {
     // Refuse to start a new capture while the previous dictation is still being
@@ -71,9 +130,13 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
     }
 
     // Tell the (event-only) Flow Bar how to size/fade itself for this session.
-    let (bubble_scale, bubble_opacity) = {
+    let (bubble_scale, bubble_opacity, toggle_hint) = {
         let s = st.settings.lock();
-        (s.bubble_scale, s.bubble_opacity)
+        (
+            s.bubble_scale,
+            s.bubble_opacity,
+            s.activation_mode != "hold",
+        )
     };
     window_mgmt::show_flowbar(app);
     let _ = app.emit_to(
@@ -83,6 +146,7 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
             bubble_scale,
             bubble_opacity,
             mode: "dictation".into(),
+            toggle_hint,
         },
     );
 

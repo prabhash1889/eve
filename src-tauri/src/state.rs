@@ -24,6 +24,15 @@ pub struct AppState {
     /// set, so a rapid press while the previous dictation is still transcribing
     /// can't spawn a second, overlapping pipeline.
     pub is_processing: Arc<AtomicBool>,
+    /// Parity A1: when the recording started (stamped on the trigger press).
+    /// Hybrid activation compares against this to tell a quick tap (arms a
+    /// toggle) from a genuine push-to-talk hold.
+    pub press_at: Arc<Mutex<Option<std::time::Instant>>>,
+    /// Parity A1: set once the trigger has been released since recording
+    /// started. Toggle/hybrid modes only treat a `Pressed` event as "stop" after
+    /// this is set - the OS auto-repeats `Pressed` while a key is held, and
+    /// those repeats must not stop the recording.
+    pub saw_release: Arc<AtomicBool>,
     pub audio_buffer: Arc<Mutex<Vec<f32>>>,
     pub sample_rate: Arc<AtomicU32>,
     pub current_amplitude: Arc<Mutex<f32>>,
@@ -84,6 +93,8 @@ impl AppState {
         Self {
             is_recording: Arc::new(AtomicBool::new(false)),
             is_processing: Arc::new(AtomicBool::new(false)),
+            press_at: Arc::new(Mutex::new(None)),
+            saw_release: Arc::new(AtomicBool::new(false)),
             audio_buffer: Arc::new(Mutex::new(Vec::new())),
             sample_rate: Arc::new(AtomicU32::new(16_000)),
             current_amplitude: Arc::new(Mutex::new(0.0)),

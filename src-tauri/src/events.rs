@@ -22,6 +22,9 @@ pub const STAGE: &str = "session://stage";
 /// Phase 10 auto-pause: the focused app is on the paused list, so recording was
 /// suppressed. The bar flashes a hint and dismisses.
 pub const PAUSED: &str = "session://paused";
+/// Parity A1: the capture buffer is nearing its 15-minute ceiling (relevant in
+/// toggle mode, where recording runs hands-free). Emitted once per session.
+pub const LIMIT: &str = "session://limit";
 
 /// Local-models: streamed during a model download (emitted to the Hub window).
 pub const MODEL_PROGRESS: &str = "model://progress";
@@ -93,4 +96,7 @@ pub struct StartPayload {
     pub bubble_scale: f32,
     pub bubble_opacity: f32,
     pub mode: String,
+    /// Parity A1: true when the activation mode is toggle/hybrid, so the bar
+    /// can hint that a tap stops the recording.
+    pub toggle_hint: bool,
 }

@@ -45,6 +45,10 @@ function FlowBar() {
   const [opacity, setOpacity] = useState(1);
   // Phase 1: coarse processing stage ("Transcribing"/"Polishing"/"Inserting").
   const [stageLabel, setStageLabel] = useState("Transcribing");
+  // Parity A1: toggle/hybrid activation - hint that a tap stops the recording,
+  // and warn when a hands-free recording nears the 15-minute buffer ceiling.
+  const [toggleHint, setToggleHint] = useState(false);
+  const [nearLimit, setNearLimit] = useState(false);
 
   useEffect(() => {
     const unlisteners: Array<Promise<() => void>> = [
@@ -53,11 +57,13 @@ function FlowBar() {
           setScale(e.payload.bubbleScale || 1);
           setOpacity(e.payload.bubbleOpacity ?? 1);
           setMode(e.payload.mode === "command" ? "command" : "dictation");
+          setToggleHint(!!e.payload.toggleHint);
         }
         setState("listening");
         setTranscript("");
         setPolished(false);
         setStageLabel("Transcribing");
+        setNearLimit(false);
         setLevels(new Array(BARS).fill(0.05));
       }),
       on<number>(EVT.amplitude, (e) => {
@@ -86,6 +92,7 @@ function FlowBar() {
       on(EVT.cancel, () => setState("idle")),
       on(EVT.copied, () => setState("copied")),
       on(EVT.paused, () => setState("paused")),
+      on(EVT.limit, () => setNearLimit(true)),
     ];
     return () => {
       unlisteners.forEach((u) => u.then((fn) => fn()).catch(() => {}));
@@ -118,6 +125,12 @@ function FlowBar() {
           <span className="text-xs font-medium text-violet-500">Command</span>
         )}
         {state === "listening" && <Waveform levels={levels} />}
+        {state === "listening" && nearLimit && (
+          <span className="whitespace-nowrap text-xs text-amber-500">nearing 15 min limit</span>
+        )}
+        {state === "listening" && !nearLimit && toggleHint && mode === "dictation" && (
+          <span className="whitespace-nowrap text-xs text-ink-faint">tap to stop</span>
+        )}
         {state === "processing" && <Dots label={stageLabel} />}
         {state === "preview" && (
           <span className="flex items-center gap-1.5">

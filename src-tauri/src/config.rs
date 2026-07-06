@@ -141,6 +141,23 @@ pub struct Settings {
     /// Phase 11: launch Eve automatically at OS login (via the autostart plugin).
     #[serde(default)]
     pub launch_at_startup: bool,
+    /// Parity A1: how the main trigger starts/stops recording. "hold"
+    /// (push-to-talk, the original behavior), "toggle" (press to start, press
+    /// again to stop), or "hybrid" (a quick tap toggles; holding past ~300 ms
+    /// behaves like push-to-talk).
+    #[serde(default = "default_activation_mode")]
+    pub activation_mode: String,
+    /// Parity A3: a bare modifier key (e.g. "right_alt") as an additional
+    /// record trigger, handled by a low-level keyboard hook because the
+    /// global-shortcut plugin can't express modifier-only accelerators.
+    /// Empty = none.
+    #[serde(default)]
+    pub modifier_trigger: String,
+    /// Parity A4: a mouse button ("middle", "x1", "x2") as an additional record
+    /// trigger. The bound button is consumed so its normal click never reaches
+    /// the app under the cursor. Empty = none.
+    #[serde(default)]
+    pub mouse_trigger: String,
 }
 
 fn default_vibe_coding() -> bool {
@@ -191,6 +208,9 @@ fn default_backend() -> String {
 fn default_local_profile() -> String {
     "balanced".into()
 }
+fn default_activation_mode() -> String {
+    "hold".into()
+}
 fn default_true() -> bool {
     true
 }
@@ -227,6 +247,9 @@ impl Default for Settings {
             context_awareness: default_context_awareness(),
             onboarding_complete: false,
             launch_at_startup: false,
+            activation_mode: default_activation_mode(),
+            modifier_trigger: String::new(),
+            mouse_trigger: String::new(),
         }
     }
 }

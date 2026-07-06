@@ -56,6 +56,7 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
             bubble_scale,
             bubble_opacity,
             mode: "command".into(),
+            toggle_hint: false,
         },
     );
 
@@ -290,6 +291,7 @@ async fn run_transform_shortcut(app: AppHandle, id: i64, hwnd: isize) {
             bubble_scale: bubble.0,
             bubble_opacity: bubble.1,
             mode: "command".into(),
+            toggle_hint: false,
         },
     );
     let _ = app.emit_to(events::FLOWBAR, events::PROCESSING, ());
