@@ -84,7 +84,7 @@ known-good baseline.
   on the Dashboard - window `onDragDropEvent` drop zone + "Transcribe files…"
   picker, per-item stage/cancel card; finished items reload the embedded History
   list and show a source-file badge (`HistoryPage.tsx`).
-- Phase D (translate mode) - **Pending**
+- Phase D (translate mode) - **Done** (build-verified; local and Groq backends support translate and initial prompt settings).
 - Phase E (polish batch) - **Pending**
 
 ## Phase A: Trigger Overhaul

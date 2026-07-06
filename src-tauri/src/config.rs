@@ -158,6 +158,12 @@ pub struct Settings {
     /// the app under the cursor. Empty = none.
     #[serde(default)]
     pub mouse_trigger: String,
+    /// Parity D: Translate all audio to English
+    #[serde(default)]
+    pub translate_to_english: bool,
+    /// Parity D: Initial prompt passed to the Whisper transcriber
+    #[serde(default)]
+    pub whisper_prompt: String,
 }
 
 fn default_vibe_coding() -> bool {
@@ -250,6 +256,8 @@ impl Default for Settings {
             activation_mode: default_activation_mode(),
             modifier_trigger: String::new(),
             mouse_trigger: String::new(),
+            translate_to_english: false,
+            whisper_prompt: String::new(),
         }
     }
 }

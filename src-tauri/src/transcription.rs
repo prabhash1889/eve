@@ -114,10 +114,11 @@ pub trait Transcriber: Send + Sync {
 pub struct GroqTranscriber {
     client: reqwest::Client,
     model: String,
+    settings: Arc<Mutex<Settings>>,
 }
 
 impl GroqTranscriber {
-    pub fn new() -> Self {
+    pub fn new(settings: Arc<Mutex<Settings>>) -> Self {
         // Finite timeouts so a stalled upload/connection can't hang the pipeline
         // forever. Transcription of a long clip can take a while, so the overall
         // timeout is more generous than the chat client's.
@@ -129,6 +130,7 @@ impl GroqTranscriber {
         Self {
             client,
             model: "whisper-large-v3-turbo".into(),
+            settings,
         }
     }
 }
@@ -144,27 +146,51 @@ impl Transcriber for GroqTranscriber {
         let key = secrets::get_api_key()
             .map_err(|_| anyhow::anyhow!("Set your Groq API key in Settings"))?;
 
+        let translate = self.settings.lock().translate_to_english;
+
         let part = reqwest::multipart::Part::bytes(wav)
             .file_name("audio.wav")
             .mime_str("audio/wav")?;
 
+        let model = if translate {
+            "whisper-large-v3".to_string()
+        } else {
+            self.model.clone()
+        };
+
         let mut form = reqwest::multipart::Form::new()
-            .text("model", self.model.clone())
+            .text("model", model)
             .text("response_format", "json")
             .text("temperature", "0")
             .part("file", part);
 
-        if let Some(lang) = language {
-            form = form.text("language", lang);
+        if !translate {
+            if let Some(lang) = language {
+                form = form.text("language", lang);
+            }
         }
-        if !hints.is_empty() {
+
+        let mut final_hints = Vec::new();
+        let whisper_prompt = self.settings.lock().whisper_prompt.clone();
+        if !whisper_prompt.trim().is_empty() {
+            final_hints.push(whisper_prompt);
+        }
+        final_hints.extend(hints);
+
+        if !final_hints.is_empty() {
             // Whisper uses `prompt` as a soft vocabulary hint (dictionary terms).
-            form = form.text("prompt", hints.join(", "));
+            form = form.text("prompt", final_hints.join(", "));
         }
+
+        let endpoint = if translate {
+            "https://api.groq.com/openai/v1/audio/translations"
+        } else {
+            "https://api.groq.com/openai/v1/audio/transcriptions"
+        };
 
         let resp = self
             .client
-            .post("https://api.groq.com/openai/v1/audio/transcriptions")
+            .post(endpoint)
             .bearer_auth(key)
             .multipart(form)
             .send()
@@ -224,6 +250,8 @@ struct Tuning {
     /// regardless; fast always stays greedy.
     beam_search: bool,
     correctness_rescue: bool,
+    translate: bool,
+    whisper_prompt: String,
 }
 
 impl LocalTranscriber {
@@ -372,6 +400,8 @@ impl LocalTranscriber {
             profile: s.local_transcription_profile.clone(),
             beam_search: s.local_beam_search_enabled,
             correctness_rescue: s.local_correctness_rescue,
+            translate: s.translate_to_english,
+            whisper_prompt: s.whisper_prompt.clone(),
         }
     }
 
@@ -419,10 +449,16 @@ fn run_inference(
 ) -> anyhow::Result<String> {
     use whisper_rs::{FullParams, SamplingStrategy};
 
-    let prompt = if hints.is_empty() {
+    let mut final_hints = Vec::new();
+    if !tuning.whisper_prompt.trim().is_empty() {
+        final_hints.push(tuning.whisper_prompt.clone());
+    }
+    final_hints.extend(hints);
+
+    let prompt = if final_hints.is_empty() {
         None
     } else {
-        Some(hints.join(", "))
+        Some(final_hints.join(", "))
     };
 
     // Quality regime: the accurate profile, or correctness rescue for hard clips.
@@ -465,6 +501,9 @@ fn run_inference(
     // `Some`); `None` lets whisper auto-detect.
     if let Some(lang) = language.as_deref() {
         params.set_language(Some(lang));
+    }
+    if tuning.translate {
+        params.set_translate(true);
     }
     if let Some(p) = prompt.as_deref() {
         params.set_initial_prompt(p);
@@ -616,7 +655,7 @@ pub struct RoutingTranscriber {
 impl RoutingTranscriber {
     pub fn new(models_dir: PathBuf, settings: Arc<Mutex<Settings>>) -> Self {
         Self {
-            groq: GroqTranscriber::new(),
+            groq: GroqTranscriber::new(settings.clone()),
             local: LocalTranscriber::new(models_dir, settings.clone()),
             settings,
         }

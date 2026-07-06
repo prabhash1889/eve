@@ -523,9 +523,31 @@ function SettingsPanel({
             persist({ ...settings, languages, language: effectiveLanguage(languages) })
           }
         />
-        <p className="mt-3 text-xs text-ink-faint">
+        <label className="flex items-center justify-between gap-4 mt-3 py-1.5 cursor-pointer">
+          <span className="text-sm text-ink-soft">Translate audio to English</span>
+          <input
+            type="checkbox"
+            checked={settings.translateToEnglish}
+            onChange={(e) => persist({ ...settings, translateToEnglish: e.target.checked })}
+            className="size-4 shrink-0 accent-accent"
+          />
+        </label>
+        <p className="mt-2 text-xs text-ink-faint">
           Pick one language to lock transcription to it, or several (or Auto-detect) to let
           Eve detect per dictation.
+        </p>
+      </Section>
+
+      <Section title="Whisper Prompt" icon={<Sparkles size={16} />}>
+        <input
+          type="text"
+          value={settings.whisperPrompt}
+          onChange={(e) => persist({ ...settings, whisperPrompt: e.target.value })}
+          placeholder="e.g. Transcribe exactly as spoken, with punctuation."
+          className="w-full rounded-xl border border-border bg-surface px-3 py-2 outline-none focus:border-accent text-sm"
+        />
+        <p className="mt-2 text-xs text-ink-faint">
+          Instruction or context to guide the Whisper model. Prepended to your dictionary terms.
         </p>
       </Section>
 

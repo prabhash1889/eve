@@ -51,6 +51,8 @@ export interface Settings {
   activationMode: ActivationMode; // Parity A1: hold / toggle / hybrid
   modifierTrigger: string; // Parity A3: bare-modifier trigger id ("" = none)
   mouseTrigger: string; // Parity A4: mouse-button trigger id ("" = none)
+  translateToEnglish: boolean; // Parity D: Translate all audio to English
+  whisperPrompt: string; // Parity D: Initial prompt passed to the Whisper transcriber
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -86,6 +88,8 @@ export const DEFAULT_SETTINGS: Settings = {
   activationMode: "hold",
   modifierTrigger: "",
   mouseTrigger: "",
+  translateToEnglish: false,
+  whisperPrompt: "",
 };
 
 // ---------------------------------------------------------------------------
