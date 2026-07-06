@@ -157,6 +157,18 @@ pub fn run() {
                 platform::macos::input::update_triggers(&settings);
                 platform::macos::input::init(app.handle().clone());
             }
+            // Phase 3: the Linux/X11 equivalent - an XI2 listener (bare-modifier
+            // raw keys) plus a passive button grab (mouse trigger) on its own
+            // thread, delivering through the same dispatcher entry points. Inert
+            // on Wayland (the portal path lands in Phase 4).
+            #[cfg(target_os = "linux")]
+            {
+                if platform::linux::session() == platform::linux::Session::X11 {
+                    let settings = app.state::<AppState>().settings.lock().clone();
+                    platform::linux::x11::update_triggers(&settings);
+                    platform::linux::x11::init(app.handle().clone());
+                }
+            }
 
             // Phase 11: reconcile the OS autostart registration with the saved
             // setting (best-effort — a failure here shouldn't block launch).

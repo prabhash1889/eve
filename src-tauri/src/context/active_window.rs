@@ -71,6 +71,11 @@ pub fn classify(process: &str, title: &str) -> AppCategory {
         "com.apple.mail",
         "org.mozilla.thunderbird",
         "com.readdle.smartemail-mac",
+        // Linux comm names (/proc/<pid>/comm, truncated to 15 chars).
+        "thunderbird",
+        "evolution",
+        "geary",
+        "mailspring",
     ];
     const WORK_MSG: &[&str] = &[
         // Windows executables.
@@ -82,6 +87,9 @@ pub fn classify(process: &str, title: &str) -> AppCategory {
         "com.tinyspeck.slackmacgap",
         "com.microsoft.teams",
         "com.microsoft.teams2",
+        // Linux comm names.
+        "slack",
+        "teams-for-linux",
     ];
     const PERSONAL_MSG: &[&str] = &[
         // Windows executables.
@@ -96,6 +104,12 @@ pub fn classify(process: &str, title: &str) -> AppCategory {
         "com.hnc.discord",
         "org.whispersystems.signal-desktop",
         "com.facebook.messenger",
+        // Linux comm names (truncated to 15 chars).
+        "discord",
+        "signal-desktop",
+        "telegram-deskto",
+        "whatsapp-for-li",
+        "element-desktop",
     ];
     const CODE: &[&str] = &[
         // Windows executables.
@@ -124,6 +138,16 @@ pub fn classify(process: &str, title: &str) -> AppCategory {
         "com.apple.terminal",
         "dev.warp.warp-stable",
         "com.sublimetext.4",
+        // Linux comm names (terminals included, matching the Windows list).
+        "code",
+        "cursor",
+        "code-insiders",
+        "sublime_text",
+        "gnome-terminal-",
+        "konsole",
+        "alacritty",
+        "kitty",
+        "xterm",
     ];
 
     if EMAIL.iter().any(|p| proc == *p) {
@@ -158,6 +182,14 @@ pub fn classify(process: &str, title: &str) -> AppCategory {
         "com.operasoftware.opera",
         "company.thebrowser.browser", // Arc
         "com.vivaldi.vivaldi",
+        // Linux comm names.
+        "firefox",
+        "chrome",
+        "chromium",
+        "brave",
+        "opera",
+        "vivaldi-bin",
+        "microsoft-edge",
     ];
     if BROWSERS.iter().any(|p| proc == *p) {
         return classify_browser_title(&title_l);
@@ -326,6 +358,25 @@ mod tests {
             AppCategory::Code
         );
         assert_eq!(classify("com.apple.Finder", ""), AppCategory::Other);
+    }
+
+    #[test]
+    fn classifies_linux_comm_names() {
+        // /proc/<pid>/comm names are lowercase and truncated to 15 chars.
+        assert_eq!(classify("thunderbird", ""), AppCategory::Email);
+        assert_eq!(classify("slack", ""), AppCategory::WorkMsg);
+        assert_eq!(classify("teams-for-linux", ""), AppCategory::WorkMsg);
+        assert_eq!(classify("discord", ""), AppCategory::PersonalMsg);
+        assert_eq!(classify("signal-desktop", ""), AppCategory::PersonalMsg);
+        assert_eq!(classify("telegram-deskto", ""), AppCategory::PersonalMsg);
+        assert_eq!(classify("code", "main.rs"), AppCategory::Code);
+        assert_eq!(classify("alacritty", ""), AppCategory::Code);
+        // Browser comm names route through the title heuristics.
+        assert_eq!(
+            classify("firefox", "eve/pipeline.rs at main · me/eve · GitHub"),
+            AppCategory::Code
+        );
+        assert_eq!(classify("nautilus", ""), AppCategory::Other);
     }
 
     #[test]

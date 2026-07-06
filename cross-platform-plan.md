@@ -18,9 +18,11 @@ build must never regress. Linux supports both X11 and Wayland via runtime detect
 Status: Phase 0 complete (compile-everywhere seam + CI gate). Phase 1 code
 complete (macOS core-dictation backend). Phase 2 code complete (macOS parity -
 CGEventTap triggers, selection capture, Accessibility permissions UX, focused-app
-context); all behind the cfg seams, Windows verified green locally, macOS
-compile/E2E finalization pending on CI + Mac hardware. Phases 3-5 not started.
-Phases are ordered and each one is independently shippable.
+context). Phase 3 code complete (Linux/X11 - EWMH focus capture/restore, XI2
+bare-modifier + GrabButton mouse triggers, `_NET_WM_PID`/`_NET_WM_NAME` context,
+X11 paste/selection); all behind the cfg seams, Windows verified green locally,
+macOS + Linux compile/E2E finalization pending on CI + target hardware. Phases
+4-5 not started. Phases are ordered and each one is independently shippable.
 
 ---
 
@@ -371,18 +373,56 @@ early in the phase, add to the permissions UX if needed.
 
 ## Phase 3 - Linux X11
 
-- `platform/linux/mod.rs`: Session detection.
-- `platform/linux/x11.rs` + `context.rs` (x11rb 0.13, features xtest + xinput):
-  focus capture (`_NET_ACTIVE_WINDOW`), context (`_NET_WM_PID` -> `/proc`,
-  `_NET_WM_NAME`), EWMH restore, XI2 raw modifier triggers, XGrabButton mouse
-  trigger - all behind `session() == X11` guards.
-- `injection.rs`: `#[cfg(target_os = "linux")] inject_paste` /
-  `capture_selection` - X11 real; Wayland temporarily falls back to `inject_type`
-  (replaced in Phase 4).
-- `active_window.rs`: Linux comm-name list (`code`, `slack`, `discord`,
-  `keepassxc`, ...); extend `default_paused_apps()` additively.
-- `lib.rs` / `commands.rs`: linux trigger init/update siblings (inert on Wayland).
-- Frontend: paused-apps placeholder per OS.
+**Status: code complete.** Windows verified locally (`cargo check --all-targets`,
+`cargo clippy --all-targets -D warnings`, `cargo test` [28 pass, incl. the new
+Linux comm-name classify test], `npm run build` - all green); `hooks.rs` and
+`sound.rs` diffs are empty and no `#[cfg(windows)]` internals changed. The Linux
+code is gated behind `#[cfg(target_os = "linux")]` / `session() == X11` and
+finalizes on CI (ubuntu-22.04) + Linux hardware per the plan's verification model.
+The x11rb 0.13 request/event ABI was checked against the crate source (0.13.2):
+`xinput::EventMask.mask` is `Vec<XIEventMask>` (not raw u32s), `grab_button` /
+`send_event` take an `EventMask` (not a u16), `ButtonIndex: From<u8>` (so thumb
+buttons 8/9 grab cleanly), and `Event::XinputRawKeyPress`/`RawKeyReleaseEvent`
+carry the keycode in `.detail`. What shipped:
+
+- `platform/linux/mod.rs` (new): `Session::{X11, Wayland, Unknown}` runtime
+  detection (Wayland iff `WAYLAND_DISPLAY`/`XDG_SESSION_TYPE=wayland`, else X11 iff
+  `DISPLAY`), cached in a `OnceLock`. `platform::is_wayland()` now routes through
+  it.
+- `platform/linux/x11.rs` (new; x11rb 0.13, features xinput + xtest): EWMH focus
+  capture (`_NET_ACTIVE_WINDOW`) + restore (root `_NET_ACTIVE_WINDOW` client
+  message, source indication 2, verify-by-reread ~500 ms - same abort contract as
+  the other backends). Triggers on a dedicated thread with its own connection:
+  bare-modifier via XI2 **raw** key events (observed on the root without a grab,
+  so the key still reaches the app; keycode -> keysym via the cached keyboard
+  mapping, with ISO_Level3_Shift accepted for Right Alt), mouse via a passive
+  `GrabButton` (which inherently consumes the click). Same channel-to-dispatcher
+  pattern as `hooks.rs`; `injection::injecting` drops our own synthetic Ctrl+V/C.
+  A short poll loop reconciles the button grab when settings change (grabs are
+  connection-scoped).
+- `platform/linux/context.rs` (new): `resolve(pid, title)` -> `/proc/<pid>/comm`
+  process name + `classify`; no X11 dependency (x11.rs feeds it the raw signals).
+- `platform/linux/keys.rs` (new): enigo Ctrl+V / Ctrl+C under the `INJECTING`
+  guard (the Linux sibling of `macos::keys`).
+- `platform/mod.rs`: linux `frontmost` arm (X11 = real window id + context;
+  Wayland = handle 0 / unknown); the fallback stub narrowed to
+  `not(any(windows, macos, linux))`.
+- `injection.rs`: `#[cfg(target_os = "linux")]` `inject_paste` / `capture_selection`
+  (X11 real via EWMH restore + Ctrl+V/C; Wayland falls back to typing / returns
+  `None` until Phase 4); the catch-all stubs narrowed to exclude linux.
+- `active_window.rs`: additive Linux comm-name lists in `classify` (EMAIL /
+  WORK_MSG / PERSONAL_MSG / CODE / BROWSERS, truncated to 15 chars where relevant,
+  inert on Windows/macOS) + a `classifies_linux_comm_names` unit test.
+  `default_paused_apps()` extended additively with Linux password-manager comm
+  names.
+- `lib.rs` setup + `commands.rs::update_settings`: `#[cfg(target_os = "linux")]`
+  siblings next to the Windows/macOS trigger blocks (init only on X11; update
+  publishes to the atomics, inert on Wayland).
+- `Cargo.toml`: `x11rb 0.13` (features `xinput`, `xtest`) in the linux target
+  table.
+- Frontend: `platform.ts` gains `isLinux` + `pausedAppExample()` (Windows exe /
+  macOS bundle id / Linux comm name); Hub's auto-pause example text + input
+  placeholder are now OS-aware.
 
 ### Verify (Linux box, X11 session)
 

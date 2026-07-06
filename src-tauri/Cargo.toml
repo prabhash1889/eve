@@ -145,3 +145,10 @@ core-foundation = "0.10"
 # Linux Secret Service backend (GNOME Keyring / KWallet) for secure API-key
 # storage. Needs libdbus at build time (provided in CI + on desktop distros).
 keyring = { version = "3", features = ["sync-secret-service"] }
+# Phase 3 (Linux/X11): pure-Rust X11 client. `xinput` gives XI2 raw key events
+# for the bare-modifier trigger (observed without a grab, so the key still
+# reaches the app); `xtest` is pulled per the cross-platform plan. Focus
+# capture/restore uses EWMH (`_NET_ACTIVE_WINDOW`); the mouse trigger uses a
+# core `GrabButton` (a grab inherently consumes the click). Injection stays on
+# the shared `enigo` path. Wayland (Phase 4) is a no-op here.
+x11rb = { version = "0.13", features = ["xinput", "xtest"] }

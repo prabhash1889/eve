@@ -18,6 +18,9 @@ use crate::context::active_window::AppContext;
 #[cfg(target_os = "macos")]
 pub mod macos;
 
+#[cfg(target_os = "linux")]
+pub mod linux;
+
 /// The app that had focus when a capture started: the paste-target `handle`, its
 /// resolved `ctx` (process/title/category for Flow Styles + history), and whether
 /// it is our own Scratchpad window (Phase 9 focus-aware routing).
@@ -76,10 +79,34 @@ pub fn frontmost(app: &AppHandle) -> Frontmost {
     }
 }
 
-/// Fallback backend for platforms without a native focus capture yet (Linux;
-/// lands in Phases 3-4). Reports an unknown app (handle 0, no context) but still
-/// answers Scratchpad routing portably.
-#[cfg(not(any(windows, target_os = "macos")))]
+/// Linux backend. On X11 the handle is the active X window id and the context is
+/// resolved from `_NET_WM_PID`/`_NET_WM_NAME` (Phase 3). On Wayland foreign-window
+/// focus is inaccessible, so the handle is 0 and the context unknown (Phase 4
+/// documents the resulting degradations); Scratchpad routing still works via our
+/// own window.
+#[cfg(target_os = "linux")]
+pub fn frontmost(app: &AppHandle) -> Frontmost {
+    let is_scratchpad = scratchpad_is_focused(app);
+    if linux::session() == linux::Session::X11 {
+        let (handle, ctx) = linux::x11::capture_frontmost();
+        Frontmost {
+            handle,
+            ctx,
+            is_scratchpad,
+        }
+    } else {
+        Frontmost {
+            handle: 0,
+            ctx: AppContext::unknown(),
+            is_scratchpad,
+        }
+    }
+}
+
+/// Fallback backend for any remaining platform without a native focus capture.
+/// Reports an unknown app (handle 0, no context) but still answers Scratchpad
+/// routing portably.
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn frontmost(app: &AppHandle) -> Frontmost {
     Frontmost {
         handle: 0,
@@ -94,7 +121,7 @@ pub fn frontmost(app: &AppHandle) -> Frontmost {
 pub fn is_wayland() -> bool {
     #[cfg(target_os = "linux")]
     {
-        std::env::var_os("WAYLAND_DISPLAY").is_some()
+        linux::session() == linux::Session::Wayland
     }
     #[cfg(not(target_os = "linux"))]
     {

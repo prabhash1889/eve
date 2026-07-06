@@ -83,6 +83,8 @@ pub fn update_settings(state: State<AppState>, settings: Settings) -> Result<(),
     crate::hooks::update_triggers(&settings);
     #[cfg(target_os = "macos")]
     crate::platform::macos::input::update_triggers(&settings);
+    #[cfg(target_os = "linux")]
+    crate::platform::linux::x11::update_triggers(&settings);
     config::save(&state.settings_path, &settings).map_err(|e| e.to_string())
 }
 

@@ -189,10 +189,17 @@ fn default_context_awareness() -> bool {
 /// Settings → Privacy.
 fn default_paused_apps() -> Vec<String> {
     vec![
+        // Windows executables.
         "1password.exe".into(),
         "keepass.exe".into(),
         "keepassxc.exe".into(),
         "bitwarden.exe".into(),
+        // Linux comm names (equality match, so these are inert on Windows and
+        // vice-versa - same additive approach as the `classify` lists).
+        "keepassxc".into(),
+        "keepass2".into(),
+        "bitwarden".into(),
+        "1password".into(),
     ]
 }
 

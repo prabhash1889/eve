@@ -33,6 +33,7 @@ import {
   MOUSE_TRIGGERS,
   SHORTCUT_CHOICES,
 } from "./lib/options";
+import { pausedAppExample } from "./lib/platform";
 import { ShortcutCapture } from "./components/ShortcutCapture";
 import { FileQueue } from "./components/FileQueue";
 import { Onboarding, LanguageMultiSelect } from "./components/onboarding/Onboarding";
@@ -713,8 +714,8 @@ function SettingsPanel({
         <div className="mt-5 border-t border-border pt-4">
           <div className="text-sm font-medium text-ink">Auto-pause apps</div>
           <p className="mb-3 mt-1 text-xs text-ink-faint">
-            Dictation is suppressed when one of these apps is focused. Use the executable name
-            (e.g. <span className="font-mono">1password.exe</span>).
+            Dictation is suppressed when one of these apps is focused. Use the app's process name
+            (e.g. <span className="font-mono">{pausedAppExample()}</span>).
           </p>
           <PausedAppsEditor
             apps={settings.pausedApps}
@@ -813,7 +814,7 @@ function PausedAppsEditor({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && add()}
-          placeholder="app.exe"
+          placeholder={pausedAppExample()}
           className="flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
         />
         <button

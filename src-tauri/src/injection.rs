@@ -152,9 +152,49 @@ fn inject_paste(app: &AppHandle, text: &str, hwnd: isize) -> anyhow::Result<()> 
     Ok(())
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+/// Linux paste (Phase 3, X11): mirrors the Windows/macOS structure - re-focus the
+/// target window via EWMH (bail if it's gone), arm the clipboard-restore guard,
+/// write our text, let the focus switch + clipboard write settle, send Ctrl+V,
+/// then let the app read the clipboard before the guard restores the prior
+/// contents. On Wayland foreign-window focus/paste isn't available yet, so we type
+/// the text out (Phase 4 adds the portal-based path).
+#[cfg(target_os = "linux")]
+fn inject_paste(app: &AppHandle, text: &str, hwnd: isize) -> anyhow::Result<()> {
+    use crate::platform::linux::{self, Session};
+
+    if linux::session() != Session::X11 {
+        return inject_type(text);
+    }
+
+    if !linux::x11::restore_focus(hwnd) {
+        anyhow::bail!("Target window is no longer available — nothing was pasted");
+    }
+
+    let clip = app.clipboard();
+    let _restore = ClipboardGuard {
+        app,
+        previous: clip.read_text().ok(),
+    };
+
+    clip.write_text(text.to_string())
+        .map_err(|e| anyhow::anyhow!("clipboard write failed: {e}"))?;
+
+    // PRE lets the WM-driven focus switch + clipboard write settle before Ctrl+V;
+    // PASTE_SETTLE lets the app read the clipboard before the guard restores it.
+    // Sized like the macOS path (WM activation settles slower than an in-process
+    // Windows focus switch); tune on Linux hardware.
+    const PRE: Duration = Duration::from_millis(90);
+    const PASTE_SETTLE: Duration = Duration::from_millis(120);
+    thread::sleep(PRE);
+    crate::platform::linux::keys::paste()?;
+    thread::sleep(PASTE_SETTLE);
+
+    Ok(())
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 fn inject_paste(_app: &AppHandle, text: &str, _hwnd: isize) -> anyhow::Result<()> {
-    // Linux paste backends land in Phases 3-4; type the text out until then.
+    // No native paste backend on this platform; type the text out.
     inject_type(text)
 }
 
@@ -236,7 +276,48 @@ pub fn capture_selection(app: &AppHandle, hwnd: isize) -> Option<String> {
     selected
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+/// Linux selection capture (Phase 3, X11): re-focus the target window (bail if
+/// it's gone), clear the clipboard so an empty selection is detectable, send
+/// Ctrl+C, then poll for the copied text - mirroring the Windows/macOS structure.
+/// Wayland returns `None` (Command Mode / transforms need focus + a copy path the
+/// portal backend provides in Phase 4).
+#[cfg(target_os = "linux")]
+pub fn capture_selection(app: &AppHandle, hwnd: isize) -> Option<String> {
+    use crate::platform::linux::{self, Session};
+
+    if linux::session() != Session::X11 {
+        return None;
+    }
+    if !linux::x11::restore_focus(hwnd) {
+        return None;
+    }
+
+    let clip = app.clipboard();
+    let _restore = ClipboardGuard {
+        app,
+        previous: clip.read_text().ok(),
+    };
+
+    let _ = clip.write_text(String::new());
+
+    thread::sleep(Duration::from_millis(90));
+    if crate::platform::linux::keys::copy().is_err() {
+        return None;
+    }
+
+    // Poll for the selection to land (heavy apps take longer than a flat wait).
+    let mut selected = None;
+    for _ in 0..30 {
+        thread::sleep(Duration::from_millis(20));
+        if let Some(s) = clip.read_text().ok().filter(|s| !s.is_empty()) {
+            selected = Some(s);
+            break;
+        }
+    }
+    selected
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn capture_selection(_app: &AppHandle, _hwnd: isize) -> Option<String> {
     None
 }
