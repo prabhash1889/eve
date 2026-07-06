@@ -125,7 +125,14 @@ pub fn run() {
             // Register the push-to-talk shortcut + the copy-last-transcript
             // shortcut. The copy shortcut is best-effort: a bad/duplicate
             // accelerator shouldn't stop the app from launching.
-            {
+            //
+            // Phase 4: on a Linux/Wayland session the global-shortcut plugin is a
+            // no-op (Wayland forbids global grabs), so we skip it and let the
+            // GlobalShortcuts portal own the bindings instead (below). `use_portal`
+            // is always false off Wayland, so Windows/macOS/X11 register exactly as
+            // before.
+            let use_portal = platform::is_wayland();
+            if !use_portal {
                 let state = app.state::<AppState>();
                 let main = *state.main_shortcut.lock();
                 app.global_shortcut().register(main)?;
@@ -138,6 +145,13 @@ pub fn run() {
                 let scratchpad = *state.scratchpad_shortcut.lock();
                 let _ = app.global_shortcut().register(scratchpad);
                 command_mode::register_transform_shortcuts(app.handle(), &state);
+            }
+            // Phase 4: the Wayland path - one GlobalShortcuts portal session binds
+            // main/copy/command/scratchpad/transform and dispatches the compositor's
+            // Activated/Deactivated signals into the same handler entry points.
+            #[cfg(target_os = "linux")]
+            if use_portal {
+                platform::linux::wayland::init(app.handle().clone());
             }
 
             // Parity A3/A4: low-level keyboard/mouse hooks for bare-modifier and

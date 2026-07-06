@@ -330,6 +330,15 @@ async fn run_transform_shortcut(app: AppHandle, id: i64, hwnd: isize) {
 /// then register each active transform with a parseable, non-reserved shortcut.
 /// Best-effort — a bad/duplicate accelerator is skipped, not fatal.
 pub fn register_transform_shortcuts(app: &AppHandle, st: &AppState) {
+    // Phase 4: on Wayland the plugin can't register accelerators; the
+    // GlobalShortcuts portal binds transforms alongside the reserved shortcuts,
+    // so just trigger a re-bind (the transform DB rows are already committed).
+    #[cfg(target_os = "linux")]
+    if crate::platform::is_wayland() {
+        crate::platform::linux::wayland::request_rebind();
+        return;
+    }
+
     let gs = app.global_shortcut();
 
     {

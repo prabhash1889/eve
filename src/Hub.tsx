@@ -381,10 +381,16 @@ function SettingsPanel({
   const [savedFlash, setSavedFlash] = useState(false);
   const [keyError, setKeyError] = useState<string | null>(null);
   const [inputDevices, setInputDevices] = useState<string[]>([]);
+  // Phase 4 (Linux/Wayland): the compositor owns global shortcuts via the XDG
+  // portal, which can't express bare-modifier/mouse triggers or an Esc-cancel
+  // bind - so those affordances are hidden, and privacy pause can't match a
+  // (Wayland-hidden) foreground app.
+  const [isWayland, setIsWayland] = useState(false);
 
   // Enumerate capture devices for the microphone picker (best-effort).
   useEffect(() => {
     api.listInputDevices().then(setInputDevices).catch(() => {});
+    api.getPlatformInfo().then((p) => setIsWayland(p.isWayland)).catch(() => {});
   }, []);
 
   const persist = async (next: Settings) => {
@@ -473,28 +479,39 @@ function SettingsPanel({
           </p>
         </div>
 
-        <div className="mt-4 grid grid-cols-2 gap-3">
-          <div>
-            <div className="mb-1.5 text-xs font-medium text-ink-soft">Modifier key trigger</div>
-            <Select
-              value={settings.modifierTrigger}
-              onChange={(v) => persist({ ...settings, modifierTrigger: v })}
-              options={MODIFIER_TRIGGERS}
-            />
-          </div>
-          <div>
-            <div className="mb-1.5 text-xs font-medium text-ink-soft">Mouse button trigger</div>
-            <Select
-              value={settings.mouseTrigger}
-              onChange={(v) => persist({ ...settings, mouseTrigger: v })}
-              options={MOUSE_TRIGGERS}
-            />
-          </div>
-        </div>
-        <p className="mt-2 text-xs text-ink-faint">
-          Extra triggers that work alongside the hotkey. A bound mouse button's normal click is
-          disabled while assigned.
-        </p>
+        {isWayland ? (
+          <p className="mt-4 text-xs text-ink-faint">
+            On Wayland, the desktop's global-shortcut portal owns your triggers: bare-modifier
+            and mouse-button triggers aren't available, and Esc can't cancel a recording (toggle
+            the record trigger again to stop). The portal may prompt you to confirm the binding on
+            first use.
+          </p>
+        ) : (
+          <>
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <div>
+                <div className="mb-1.5 text-xs font-medium text-ink-soft">Modifier key trigger</div>
+                <Select
+                  value={settings.modifierTrigger}
+                  onChange={(v) => persist({ ...settings, modifierTrigger: v })}
+                  options={MODIFIER_TRIGGERS}
+                />
+              </div>
+              <div>
+                <div className="mb-1.5 text-xs font-medium text-ink-soft">Mouse button trigger</div>
+                <Select
+                  value={settings.mouseTrigger}
+                  onChange={(v) => persist({ ...settings, mouseTrigger: v })}
+                  options={MOUSE_TRIGGERS}
+                />
+              </div>
+            </div>
+            <p className="mt-2 text-xs text-ink-faint">
+              Extra triggers that work alongside the hotkey. A bound mouse button's normal click is
+              disabled while assigned.
+            </p>
+          </>
+        )}
       </Section>
 
       <Section title="Microphone" icon={<Mic size={16} />}>
@@ -717,6 +734,12 @@ function SettingsPanel({
             Dictation is suppressed when one of these apps is focused. Use the app's process name
             (e.g. <span className="font-mono">{pausedAppExample()}</span>).
           </p>
+          {isWayland && (
+            <p className="mb-3 -mt-1 text-xs text-danger">
+              On Wayland, Eve can't see which app is focused, so auto-pause can't match. Keep
+              sensitive apps closed while dictating.
+            </p>
+          )}
           <PausedAppsEditor
             apps={settings.pausedApps}
             onChange={(pausedApps) => persist({ ...settings, pausedApps })}

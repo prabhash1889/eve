@@ -20,9 +20,11 @@ complete (macOS core-dictation backend). Phase 2 code complete (macOS parity -
 CGEventTap triggers, selection capture, Accessibility permissions UX, focused-app
 context). Phase 3 code complete (Linux/X11 - EWMH focus capture/restore, XI2
 bare-modifier + GrabButton mouse triggers, `_NET_WM_PID`/`_NET_WM_NAME` context,
-X11 paste/selection); all behind the cfg seams, Windows verified green locally,
-macOS + Linux compile/E2E finalization pending on CI + target hardware. Phases
-4-5 not started. Phases are ordered and each one is independently shippable.
+X11 paste/selection). Phase 4 code complete (Linux/Wayland - GlobalShortcuts
+XDG portal triggers, enigo Wayland virtual-keyboard injection, UI degradations);
+all behind the cfg seams, Windows verified green locally, macOS + Linux
+compile/E2E finalization pending on CI + target hardware. Phase 5 not started.
+Phases are ordered and each one is independently shippable.
 
 ---
 
@@ -441,15 +443,50 @@ mapping at trigger-config time.
 
 ## Phase 4 - Linux Wayland
 
-- `platform/linux/wayland.rs` (ashpd ~0.12, tokio): GlobalShortcuts portal session;
-  translate accelerator strings to portal trigger descriptions;
-  Activated/Deactivated -> existing handler entry points. `lib.rs` `use_portal`
-  branch; Wayland branches in `commands.rs::swap_global_shortcut` +
-  `command_mode::register_transform_shortcuts`.
-- Injection: enigo `wayland` feature where the protocol exists; graceful error +
-  docs link on GNOME (ydotool opt-in); libei follow-up documented.
-- UI degradations wired: hide trigger pickers, privacy-pause info note, Esc-cancel
-  note in shortcut help.
+**Status: code complete.** Windows verified locally (`cargo check --all-targets`,
+`cargo clippy --all-targets -D warnings`, `cargo test` [28 pass], `npm run build`
+- all green); `hooks.rs`/`sound.rs`/`injection.rs`/`window_mgmt.rs`/
+`active_window.rs` diffs are empty and no `#[cfg(windows)]` internals changed. The
+Wayland code is gated behind `#[cfg(target_os = "linux")]` + `session() ==
+Wayland` and finalizes on CI (ubuntu-22.04) + a Wayland session per the plan's
+verification model - in particular the ashpd 0.12 portal round-trip and the
+compositor's Activated/Deactivated semantics. The ashpd 0.12 API was checked
+against the crate source (0.12.3): `GlobalShortcuts::new()`,
+`create_session() -> Session<'a, Self>`, `bind_shortcuts(&session, &[NewShortcut],
+Option<&WindowIdentifier>)`, `NewShortcut::new(id, description)
+.preferred_trigger(Option<&str>)`, and `receive_activated`/`receive_deactivated`
+returning `impl Stream` of `Activated`/`Deactivated` whose `.shortcut_id() ->
+&str`. What shipped:
+
+- `platform/linux/wayland.rs` (new; ashpd 0.12, `default-features = false` +
+  `tokio`): one GlobalShortcuts portal session on a background tokio task binds
+  main/copy/command/scratchpad + each active transform (id `transform:<id>`), and
+  routes the compositor's Activated/Deactivated (push-to-talk's press/release)
+  into the SAME handler entry points as the plugin (`hotkey::on_main_*`,
+  `command_mode::on_press/on_release`, `on_copy`, `open_scratchpad`,
+  `on_transform`). `translate()` maps Tauri accelerators to XDG "shortcuts" spec
+  triggers (lossy -> `None` = compositor lets the user pick), with a unit test.
+  `request_rebind()` (via a `OnceLock` tokio channel) re-binds after a shortcut
+  edit; locks are snapshotted before every `.await` (no guard across await).
+- `lib.rs` setup: the plugin registration is wrapped in `if !use_portal`
+  (`use_portal = platform::is_wayland()`, always false off Wayland, so
+  Windows/macOS/X11 register byte-identically); a `#[cfg(target_os = "linux")]`
+  arm starts `wayland::init` on a Wayland session.
+- `commands.rs::swap_global_shortcut` + `command_mode::register_transform_shortcuts`:
+  `#[cfg(target_os = "linux")]` Wayland arms that call `wayland::request_rebind()`
+  instead of the no-op plugin (the caller commits the setting synchronously before
+  the portal task wakes, so the re-bind reads the new value).
+- Injection: `enigo` gains the `wayland` (+ `x11rb` + `xdo`) features on the Linux
+  target so one binary carries all three backends; the existing Wayland
+  `inject_paste` -> `inject_type` path now types via zwp_virtual_keyboard_v1.
+  `Cargo.toml`: `ashpd 0.12` added to the Linux target table.
+- Frontend (`Hub.tsx` `SettingsPanel`): fetches `getPlatformInfo` and, on Wayland,
+  hides the bare-modifier/mouse trigger pickers (replaced by a portal + Esc-cancel
+  note) and shows a privacy-pause "can't match focused app" note. Deviation from
+  the plan: the GNOME "no virtual-keyboard protocol" one-time Flow Bar error + docs
+  link (ydotool opt-in) is deferred - enigo already returns an error the pipeline
+  surfaces; the friendlier one-shot messaging + libei/RemoteDesktop follow-up want
+  a real GNOME-Wayland render per the pixel-perfection bar.
 
 ### Verify (same Linux box, Wayland session)
 

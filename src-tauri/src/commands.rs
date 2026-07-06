@@ -92,6 +92,16 @@ pub fn update_settings(state: State<AppState>, settings: Settings) -> Result<(),
 /// re-registered when the new one can't be registered (e.g. another app owns
 /// the combo), so a failed rebind never leaves the app without its trigger.
 fn swap_global_shortcut(app: &AppHandle, old: Shortcut, new: Shortcut) -> Result<(), String> {
+    // Phase 4: on Wayland the plugin is a no-op and the GlobalShortcuts portal
+    // owns the bindings, so just ask the portal task to re-bind. It re-reads the
+    // settings, which the caller commits synchronously right after this returns
+    // (before the task wakes), so the new accelerator is picked up.
+    #[cfg(target_os = "linux")]
+    if crate::platform::is_wayland() {
+        crate::platform::linux::wayland::request_rebind();
+        return Ok(());
+    }
+
     let gs = app.global_shortcut();
     let _ = gs.unregister(old);
     if let Err(e) = gs.register(new) {

@@ -10,14 +10,16 @@
 //!   (XI2 raw keys + `GrabButton`) - all in `x11.rs`/`context.rs`.
 //! - **Wayland** (Phase 4): foreign-window focus is inaccessible and the tauri
 //!   global-shortcut plugin is a no-op, so the X11 paths stay dormant and the
-//!   portal-based backend takes over. Until then Wayland degrades to typing the
-//!   text out (see `injection.rs`).
+//!   `GlobalShortcuts` XDG portal (`wayland.rs`) drives the triggers instead.
+//!   Injection degrades to typing the text out via enigo's Wayland virtual
+//!   keyboard (see `injection.rs`).
 //!
 //! The `isize` focus handle carries an **X window id** on X11 (Windows carries an
 //! HWND, macOS a pid); on Wayland it is always 0.
 
 pub mod context;
 pub mod keys;
+pub mod wayland;
 pub mod x11;
 
 use std::sync::OnceLock;
