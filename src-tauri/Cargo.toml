@@ -125,6 +125,15 @@ keyring = { version = "3", features = ["windows-native"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 # macOS Keychain backend for secure API-key storage.
 keyring = { version = "3", features = ["apple-native"] }
+# Phase 1: frontmost-app capture + activate-by-pid focus restore. NSWorkspace
+# gives the frontmost NSRunningApplication (its pid is our `isize` handle on
+# macOS); NSRunningApplication re-activates it before we paste.
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = { version = "0.3", features = [
+    "NSWorkspace",
+    "NSRunningApplication",
+] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Linux Secret Service backend (GNOME Keyring / KWallet) for secure API-key

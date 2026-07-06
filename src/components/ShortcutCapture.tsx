@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Keyboard } from "lucide-react";
+import { isMac, labelAccelerator } from "../lib/platform";
 
 /**
  * Parity A2: free shortcut recorder. Click to arm, press any key combo, and it
@@ -74,7 +75,7 @@ export function ShortcutCapture({
           {armed ? (
             <span className="text-ink-soft">Press a key combination… (Esc to cancel)</span>
           ) : (
-            <kbd className="font-medium">{value}</kbd>
+            <kbd className="font-medium">{labelAccelerator(value)}</kbd>
           )}
         </span>
         {!armed && <span className="text-xs text-ink-faint">Click to change</span>}
@@ -92,7 +93,7 @@ export function ShortcutCapture({
                 : "border-border text-ink-soft hover:bg-surface-2")
             }
           >
-            {s}
+            {labelAccelerator(s)}
           </button>
         ))}
       </div>
@@ -112,7 +113,9 @@ function acceleratorFromEvent(e: KeyboardEvent): string | null {
   if (e.ctrlKey) mods.push("Ctrl");
   if (e.altKey) mods.push("Alt");
   if (e.shiftKey) mods.push("Shift");
-  if (e.metaKey) mods.push("Super");
+  // The Meta/Command key: "Cmd" on macOS, "Super" (Win key) elsewhere. Both are
+  // accepted by the backend's `Shortcut::from_str`.
+  if (e.metaKey) mods.push(isMac ? "Cmd" : "Super");
 
   const code = e.code;
   let key: string | null = null;

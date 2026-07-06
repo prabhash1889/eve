@@ -15,8 +15,11 @@ command mode / transforms, sounds, secure key storage, privacy pause, scratchpad
 routing - added as NEW platform backends behind the existing cfg seams. The Windows
 build must never regress. Linux supports both X11 and Wayland via runtime detection.
 
-Status: Phase 0 complete (compile-everywhere seam + CI gate). Phases 1-5 not
-started. Phases are ordered and each one is independently shippable.
+Status: Phase 0 complete (compile-everywhere seam + CI gate). Phase 1 code
+complete (macOS core-dictation backend landed behind the cfg seams; Windows
+verified green locally, macOS compile/E2E finalization pending on CI + Mac
+hardware). Phases 2-5 not started. Phases are ordered and each one is
+independently shippable.
 
 ---
 
@@ -247,18 +250,48 @@ present on desktop distros).
 
 ## Phase 1 - macOS core dictation (hotkey -> record -> transcribe -> paste -> sound)
 
-- `platform/macos/focus.rs` (crates: objc2 0.6, objc2-foundation, objc2-app-kit 0.3
-  with NSWorkspace + NSRunningApplication): `frontmost()` + `restore_focus(pid)`
-  with activation poll.
-- `platform/macos/keys.rs`: enigo Meta+V / Meta+C wrapped in the `INJECTING` atomic.
-- `injection.rs`: real `#[cfg(target_os = "macos")] inject_paste` mirroring the
-  Windows structure (restore -> guard -> write -> PRE sleep -> combo -> SETTLE
-  sleep); tune PRE for activation latency (~50-150 ms expected).
-- `sound.rs`: cpal-based non-Windows `play_start_sound`.
-- New `src-tauri/Info.plist` with `NSMicrophoneUsageDescription`; confirm
-  `icons/icon.icns` exists.
-- Frontend: tauri-plugin-os + `get_platform_info`; per-OS strings; ShortcutCapture
-  Meta handling.
+**Status: code complete.** Windows verified locally (`cargo check --all-targets`,
+`cargo clippy --all-targets -D warnings`, `npm run build` - all green); the
+`#[cfg(windows)]` OS-integration internals (`hooks.rs`, `sound.rs`'s Windows tone
+path, `injection.rs`'s Windows `SendInput` path) are untouched. The macOS code is
+gated behind `#[cfg(target_os = "macos")]` and finalizes on CI (macos-latest) +
+Mac hardware per the plan's verification model - in particular the exact
+objc2-app-kit method safe/unsafe split and the `NSApplicationActivationOptions`
+const name (hedged with function-level `#[allow(unused_unsafe)]`). What shipped:
+
+- `platform/macos/focus.rs` (new): `frontmost_pid()` (NSWorkspace) +
+  `restore_focus(pid)` (NSRunningApplication `activateWithOptions:` + poll-until-
+  frontmost, ~500 ms cap - same abort contract as Windows `restore_focus`).
+- `platform/macos/keys.rs` (new): enigo Cmd+V wrapped in the `INJECTING` guard.
+- `platform/macos/mod.rs` (new) + `platform/mod.rs`: macOS `frontmost` arm (handle
+  = frontmost pid, ctx unknown until Phase 2 AX context), the Linux/other stub
+  split out to `#[cfg(not(any(windows, target_os = "macos")))]`, shared
+  `scratchpad_is_focused` helper, and `is_wayland()` (false off Linux).
+- `injection.rs`: `#[cfg(not(windows))]` `injecting` module (process-global flag +
+  RAII `Guard` - the non-Windows analogue of Windows' injected-event flag; used by
+  macOS keys now, Linux listeners later); real `#[cfg(target_os = "macos")]`
+  `inject_paste` (restore -> guard -> write -> PRE 90 ms -> Cmd+V -> SETTLE 120 ms);
+  the pre-existing non-Windows `inject_paste` fallback narrowed to non-macOS.
+- `sound.rs`: `#[cfg(not(windows))]` `play_start_sound` synthesizes the same
+  880 Hz decaying-sine chirp as f32 samples and plays it through a cpal default
+  output stream on a short-lived thread (F32/I16/U16 formats). No new crate; the
+  Windows `PlaySoundW` path is byte-identical.
+- New `src-tauri/Info.plist` with `NSMicrophoneUsageDescription` (Tauri merges it);
+  `icons/icon.icns` already present.
+- `commands.rs` + `lib.rs`: new `get_platform_info` command (returns
+  `{ os, isWayland }`); registered in `generate_handler!`.
+- `Cargo.toml`: macOS deps `objc2 0.6`, `objc2-foundation 0.3`, `objc2-app-kit 0.3`
+  (features `NSWorkspace`, `NSRunningApplication`) in the existing macOS target
+  table.
+- Frontend: `api.ts` `PlatformInfo` type + `getPlatformInfo` wrapper; new
+  `src/lib/platform.ts` (`isMac`, `labelAccelerator` -> ⌘/⌥/⇧/⌃ glyphs);
+  `ShortcutCapture.tsx` emits `Cmd` for the Meta key on macOS and renders the
+  glyphs. Deviation from the plan: `get_platform_info` (custom command) supersedes
+  `tauri-plugin-os`, so the plugin was not added - one fewer capability/permission
+  surface for the same result. Broad per-OS string relabels across `Hub.tsx` /
+  `Onboarding.tsx` are deferred to the Mac-hardware pass (they're cosmetic and, per
+  the pixel-perfection bar, want a real macOS render to verify; the Accessibility
+  onboarding step is Phase 2 regardless).
 
 ### Verify (Mac hardware)
 

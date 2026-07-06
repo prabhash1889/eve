@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Shown in the macOS microphone-permission prompt on first dictation.
+	     Tauri merges this into the generated app bundle's Info.plist. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Eve needs microphone access to transcribe your speech into text.</string>
+</dict>
+</plist>

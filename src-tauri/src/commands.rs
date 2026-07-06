@@ -17,6 +17,26 @@ use crate::state::{self, AppState};
 use crate::transcription::{TranscriptionBenchmark, WhisperStatus};
 use crate::window_mgmt;
 
+/// Cross-platform info the frontend can't derive on its own. `os` is the Rust
+/// `std::env::consts::OS` value ("windows" | "macos" | "linux"); `is_wayland`
+/// distinguishes the Linux session type (always false off Linux) since JS can't
+/// see it. Phase 1: lets the UI relabel modifiers (Alt -> Option on macOS) and,
+/// in later phases, hide Wayland-incompatible trigger pickers.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformInfo {
+    pub os: String,
+    pub is_wayland: bool,
+}
+
+#[tauri::command]
+pub fn get_platform_info() -> PlatformInfo {
+    PlatformInfo {
+        os: std::env::consts::OS.to_string(),
+        is_wayland: crate::platform::is_wayland(),
+    }
+}
+
 #[tauri::command]
 pub fn get_settings(state: State<AppState>) -> Settings {
     state.settings.lock().clone()

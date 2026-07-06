@@ -40,6 +40,41 @@ impl Drop for ClipboardGuard<'_> {
     }
 }
 
+/// Process-global "we are synthesizing our own keystrokes" flag for the
+/// non-Windows backends. macOS/Linux input listeners (Cmd/Ctrl+V paste, the
+/// Phase 2 event tap, the Phase 3 XI2 listener) read this and drop
+/// self-generated events instead of mistaking them for a bare-modifier/mouse
+/// trigger - the same role the injected-event flag plays on Windows, where the
+/// OS marks our `SendInput` events for us. `#[allow(dead_code)]` because the
+/// Linux listeners that consume it don't land until later phases.
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub mod injecting {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static INJECTING: AtomicBool = AtomicBool::new(false);
+
+    /// True while Eve is injecting its own keystrokes.
+    pub fn is_injecting() -> bool {
+        INJECTING.load(Ordering::SeqCst)
+    }
+
+    /// RAII guard: sets the flag for its lifetime, clears it on drop (even on an
+    /// early return or panic).
+    pub struct Guard;
+
+    pub fn guard() -> Guard {
+        INJECTING.store(true, Ordering::SeqCst);
+        Guard
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            INJECTING.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
 pub fn inject(app: &AppHandle, text: &str, hwnd: isize, strategy: &str) -> anyhow::Result<()> {
     if text.is_empty() {
         return Ok(());
@@ -85,9 +120,41 @@ fn inject_paste(app: &AppHandle, text: &str, hwnd: isize) -> anyhow::Result<()> 
     Ok(())
 }
 
-#[cfg(not(windows))]
+/// macOS paste (Phase 1): mirrors the Windows structure - re-activate the target
+/// app (bail if it's gone), arm the clipboard-restore guard, write our text, let
+/// the activation + clipboard write settle, send Cmd+V, then let the app read the
+/// clipboard before the guard restores the user's prior contents.
+#[cfg(target_os = "macos")]
+fn inject_paste(app: &AppHandle, text: &str, hwnd: isize) -> anyhow::Result<()> {
+    if !crate::platform::macos::focus::restore_focus(hwnd) {
+        anyhow::bail!("Target app is no longer available — nothing was pasted");
+    }
+
+    let clip = app.clipboard();
+    let _restore = ClipboardGuard {
+        app,
+        previous: clip.read_text().ok(),
+    };
+
+    clip.write_text(text.to_string())
+        .map_err(|e| anyhow::anyhow!("clipboard write failed: {e}"))?;
+
+    // PRE is larger than Windows' 40 ms: app-level activation (bringing another
+    // process to the foreground) takes longer to settle than an in-process HWND
+    // focus switch. Tune on hardware. PASTE_SETTLE matches Windows - enough for
+    // the app to read the clipboard before the guard restores it.
+    const PRE: Duration = Duration::from_millis(90);
+    const PASTE_SETTLE: Duration = Duration::from_millis(120);
+    thread::sleep(PRE);
+    crate::platform::macos::keys::paste()?;
+    thread::sleep(PASTE_SETTLE);
+
+    Ok(())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn inject_paste(_app: &AppHandle, text: &str, _hwnd: isize) -> anyhow::Result<()> {
-    // Non-Windows fallback for now: type the text out.
+    // Linux paste backends land in Phases 3-4; type the text out until then.
     inject_type(text)
 }
 

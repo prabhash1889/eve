@@ -192,6 +192,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::get_platform_info,
             commands::get_settings,
             commands::update_settings,
             commands::set_shortcut,

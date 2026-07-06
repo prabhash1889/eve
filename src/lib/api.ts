@@ -380,7 +380,15 @@ export function effectiveLanguage(languages: string[]): string {
 // Commands (defined in src-tauri/src/commands.rs)
 // ---------------------------------------------------------------------------
 
+/** Mirrors the Rust `PlatformInfo` (commands.rs). `os` is "windows" | "macos" |
+ * "linux"; `isWayland` is only ever true on a Linux Wayland session. */
+export interface PlatformInfo {
+  os: string;
+  isWayland: boolean;
+}
+
 export const api = {
+  getPlatformInfo: () => invoke<PlatformInfo>("get_platform_info"),
   getSettings: () => invoke<Settings>("get_settings"),
   updateSettings: (settings: Settings) => invoke<void>("update_settings", { settings }),
   setShortcut: (shortcut: string) => invoke<void>("set_shortcut", { shortcut }),
