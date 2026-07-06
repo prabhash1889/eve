@@ -53,6 +53,9 @@ export interface Settings {
   mouseTrigger: string; // Parity A4: mouse-button trigger id ("" = none)
   translateToEnglish: boolean; // Parity D: Translate all audio to English
   whisperPrompt: string; // Parity D: Initial prompt passed to the Whisper transcriber
+  soundOnStart: boolean; // Parity E2: Play a sound when recording starts
+  cjkAutocorrect: boolean; // Parity E5: Automatically correct spacing in CJK languages
+  barPosition: "fixed" | "near_caret"; // Parity E6: Flow Bar window position
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -90,6 +93,9 @@ export const DEFAULT_SETTINGS: Settings = {
   mouseTrigger: "",
   translateToEnglish: false,
   whisperPrompt: "",
+  soundOnStart: false,
+  cjkAutocorrect: true,
+  barPosition: "fixed",
 };
 
 // ---------------------------------------------------------------------------
@@ -289,6 +295,7 @@ export const EVT = {
   transcriptRaw: "session://transcript-raw",
   transcriptPolished: "session://transcript-polished",
   copied: "session://copied",
+  ready: "session://ready",
   // Phase 1 (optimization): coarse processing-stage label for the Flow Bar.
   stage: "session://stage",
   // Phase 10: auto-pause suppressed recording in a sensitive app.

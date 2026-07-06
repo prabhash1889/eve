@@ -183,7 +183,7 @@ async fn process_one(app: &AppHandle, item: &QueuedFile) {
     };
 
     // Snapshot the settings we need (guard drops before any await).
-    let (language, lang_label, level, backend) = {
+    let (language, lang_label, level, backend, cjk_autocorrect) = {
         let s = settings.lock();
         let lang = if s.language == "auto" {
             None
@@ -195,6 +195,7 @@ async fn process_one(app: &AppHandle, item: &QueuedFile) {
             s.language.clone(),
             s.cleanup_level,
             s.transcription_backend.clone(),
+            s.cjk_autocorrect,
         )
     };
 
@@ -260,7 +261,7 @@ async fn process_one(app: &AppHandle, item: &QueuedFile) {
             Ok(Err(_)) | Err(_) => fallback,
         }
     };
-    let text = text_processing::finalize(&polished);
+    let text = text_processing::finalize(&polished, cjk_autocorrect, &lang_label);
     if text.trim().is_empty() {
         return fail(app, item, "No speech found in this file");
     }

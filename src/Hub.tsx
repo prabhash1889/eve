@@ -509,6 +509,15 @@ function SettingsPanel({
             ...inputDevices.map((d) => ({ value: d, label: d })),
           ]}
         />
+        <label className="flex items-center justify-between gap-4 mt-3 py-1.5 cursor-pointer">
+          <span className="text-sm text-ink-soft">Play sound when recording starts</span>
+          <input
+            type="checkbox"
+            checked={settings.soundOnStart}
+            onChange={(e) => persist({ ...settings, soundOnStart: e.target.checked })}
+            className="size-4 shrink-0 accent-accent"
+          />
+        </label>
         <p className="mt-2 text-xs text-ink-faint">
           Which microphone to record from. “System default” follows your Windows input device.
           The choice applies to your next dictation; if the selected mic is unavailable, Eve
@@ -532,9 +541,19 @@ function SettingsPanel({
             className="size-4 shrink-0 accent-accent"
           />
         </label>
+        <label className="flex items-center justify-between gap-4 mt-1.5 py-1.5 cursor-pointer">
+          <span className="text-sm text-ink-soft">CJK Autocorrect spacing</span>
+          <input
+            type="checkbox"
+            checked={settings.cjkAutocorrect}
+            onChange={(e) => persist({ ...settings, cjkAutocorrect: e.target.checked })}
+            className="size-4 shrink-0 accent-accent"
+          />
+        </label>
         <p className="mt-2 text-xs text-ink-faint">
           Pick one language to lock transcription to it, or several (or Auto-detect) to let
-          Eve detect per dictation.
+          Eve detect per dictation. CJK Autocorrect formats spacing between Chinese/Japanese/Korean
+          characters and English letters.
         </p>
       </Section>
 
@@ -637,6 +656,17 @@ function SettingsPanel({
       </Section>
 
       <Section title="Flow Bar appearance">
+        <div className="mb-4">
+          <div className="mb-1.5 text-xs font-medium text-ink-soft">Positioning</div>
+          <Select
+            value={settings.barPosition}
+            onChange={(v) => persist({ ...settings, barPosition: v as Settings["barPosition"] })}
+            options={[
+              { value: "fixed", label: "Fixed (Bottom center)" },
+              { value: "near_caret", label: "Near Caret (Anchored)" },
+            ]}
+          />
+        </div>
         <Range
           label="Size"
           min={0.7}

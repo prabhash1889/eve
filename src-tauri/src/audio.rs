@@ -82,13 +82,22 @@ pub fn start_capture(
 
         let err_fn = |e| eprintln!("[audio] stream error: {e}");
 
+        let ready_sent = Arc::new(AtomicBool::new(false));
+
         let stream_result = match sample_format {
             cpal::SampleFormat::F32 => {
                 let b = buffer.clone();
                 let a = amp.clone();
+                let app_handle = app.clone();
+                let ready_sent_clone = ready_sent.clone();
                 device.build_input_stream(
                     &stream_config,
-                    move |data: &[f32], _: &_| ingest_f32(data, channels, &b, &a),
+                    move |data: &[f32], _: &_| {
+                        if !data.is_empty() && !ready_sent_clone.swap(true, Ordering::SeqCst) {
+                            let _ = app_handle.emit_to(events::FLOWBAR, events::READY, ());
+                        }
+                        ingest_f32(data, channels, &b, &a);
+                    },
                     err_fn,
                     None,
                 )
@@ -96,9 +105,16 @@ pub fn start_capture(
             cpal::SampleFormat::I16 => {
                 let b = buffer.clone();
                 let a = amp.clone();
+                let app_handle = app.clone();
+                let ready_sent_clone = ready_sent.clone();
                 device.build_input_stream(
                     &stream_config,
-                    move |data: &[i16], _: &_| ingest_i16(data, channels, &b, &a),
+                    move |data: &[i16], _: &_| {
+                        if !data.is_empty() && !ready_sent_clone.swap(true, Ordering::SeqCst) {
+                            let _ = app_handle.emit_to(events::FLOWBAR, events::READY, ());
+                        }
+                        ingest_i16(data, channels, &b, &a);
+                    },
                     err_fn,
                     None,
                 )

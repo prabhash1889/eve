@@ -164,6 +164,15 @@ pub struct Settings {
     /// Parity D: Initial prompt passed to the Whisper transcriber
     #[serde(default)]
     pub whisper_prompt: String,
+    /// Parity E2: Play a sound when recording starts.
+    #[serde(default)]
+    pub sound_on_start: bool,
+    /// Parity E5: Automatically correct spacing in CJK languages.
+    #[serde(default = "default_true")]
+    pub cjk_autocorrect: bool,
+    /// Parity E6: Flow Bar window position ("fixed" or "near_caret").
+    #[serde(default = "default_bar_position")]
+    pub bar_position: String,
 }
 
 fn default_vibe_coding() -> bool {
@@ -220,6 +229,9 @@ fn default_activation_mode() -> String {
 fn default_true() -> bool {
     true
 }
+fn default_bar_position() -> String {
+    "fixed".into()
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -258,6 +270,9 @@ impl Default for Settings {
             mouse_trigger: String::new(),
             translate_to_english: false,
             whisper_prompt: String::new(),
+            sound_on_start: false,
+            cjk_autocorrect: true,
+            bar_position: "fixed".into(),
         }
     }
 }

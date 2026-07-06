@@ -20,6 +20,7 @@ if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
 
 type State =
   | "idle"
+  | "starting"
   | "listening"
   | "processing"
   | "preview"
@@ -59,12 +60,15 @@ function FlowBar() {
           setMode(e.payload.mode === "command" ? "command" : "dictation");
           setToggleHint(!!e.payload.toggleHint);
         }
-        setState("listening");
+        setState("starting");
         setTranscript("");
         setPolished(false);
         setStageLabel("Transcribing");
         setNearLimit(false);
         setLevels(new Array(BARS).fill(0.05));
+      }),
+      on(EVT.ready, () => {
+        setState("listening");
       }),
       on<number>(EVT.amplitude, (e) => {
         const v = Math.min(1, Math.max(0.04, e.payload * 6));
@@ -121,14 +125,17 @@ function FlowBar() {
         style={{ transform: `scale(${scale})`, opacity, transformOrigin: "center bottom" }}
       >
         <StatusDot state={state} mode={mode} />
-        {mode === "command" && state === "listening" && (
+        {mode === "command" && (state === "listening" || state === "starting") && (
           <span className="text-xs font-medium text-violet-500">Command</span>
         )}
+        {state === "starting" && (
+          <span className="whitespace-nowrap text-xs text-ink-soft">starting mic...</span>
+        )}
         {state === "listening" && <Waveform levels={levels} />}
-        {state === "listening" && nearLimit && (
+        {(state === "listening" || state === "starting") && nearLimit && (
           <span className="whitespace-nowrap text-xs text-amber-500">nearing 15 min limit</span>
         )}
-        {state === "listening" && !nearLimit && toggleHint && mode === "dictation" && (
+        {(state === "listening" || state === "starting") && !nearLimit && toggleHint && mode === "dictation" && (
           <span className="whitespace-nowrap text-xs text-ink-faint">tap to stop</span>
         )}
         {state === "processing" && <Dots label={stageLabel} />}
@@ -169,11 +176,11 @@ function FlowBar() {
 }
 
 function StatusDot({ state, mode }: { state: State; mode: "dictation" | "command" }) {
-  const active = state === "listening" || state === "processing" || state === "preview";
+  const active = state === "listening" || state === "starting" || state === "processing" || state === "preview";
   const color =
     active && mode === "command"
       ? "bg-violet-500"
-      : state === "listening"
+      : state === "listening" || state === "starting"
         ? "bg-accent"
         : state === "processing" || state === "preview"
           ? "bg-accent/70"
@@ -183,7 +190,7 @@ function StatusDot({ state, mode }: { state: State; mode: "dictation" | "command
   return (
     <span
       className={`h-2.5 w-2.5 shrink-0 rounded-full transition-colors duration-300 ${color} ${
-        state === "listening" ? "animate-pulse" : ""
+        state === "listening" || state === "starting" ? "animate-pulse" : ""
       }`}
     />
   );

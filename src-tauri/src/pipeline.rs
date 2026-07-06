@@ -89,14 +89,20 @@ pub async fn process(app: AppHandle) {
     let rate = sample_rate.load(Ordering::SeqCst);
     timings.mark("drain");
 
-    // Reject clips that are too short to be real speech (~125 ms).
-    if samples.len() < (rate as usize / 8).max(800) {
-        window_mgmt::fail(&app, "Didn't catch that — hold the key a little longer");
-        return;
-    }
-
     // Capture length BEFORE `samples` is moved into the encode closure.
     let duration_ms = (samples.len() as i64 * 1000) / (rate.max(1) as i64);
+
+    if duration_ms < 1000 {
+        let _ = app.emit_to(
+            events::FLOWBAR,
+            events::ERROR,
+            events::ErrorPayload {
+                message: "Too short".to_string(),
+            },
+        );
+        window_mgmt::hide_flowbar_after(app, 1200);
+        return;
+    }
 
     // Resample to 16 kHz + WAV-encode (CPU-bound → off the async runtime). We
     // keep BOTH the f32 samples (fed straight to the local backend, no WAV
@@ -128,6 +134,7 @@ pub async fn process(app: AppHandle) {
         correctness_rescue,
         profile,
         debug_timing,
+        cjk_autocorrect,
     ) = {
         let s = settings.lock();
         let lang = if s.language == "auto" {
@@ -153,6 +160,7 @@ pub async fn process(app: AppHandle) {
             s.local_correctness_rescue,
             s.local_transcription_profile.clone(),
             s.debug_timing,
+            s.cjk_autocorrect,
         )
     };
 
@@ -315,9 +323,7 @@ pub async fn process(app: AppHandle) {
     };
     timings.mark("polish");
 
-    // Deterministic spoken-punctuation + list formatting runs AFTER the LLM so
-    // it can't reflow the structure we just inserted.
-    let finalized = text_processing::finalize(&polished);
+    let finalized = text_processing::finalize(&polished, cjk_autocorrect, &lang_label);
 
     // Phase 5: expand snippet triggers ("my email" → the full address) last,
     // just before injection, so the expansion text is injected verbatim.

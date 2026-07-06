@@ -7,17 +7,67 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
 
 use crate::events;
+use crate::state::AppState;
 
 pub fn show_flowbar(app: &AppHandle) {
+    position_flowbar(app);
     if let Some(w) = app.get_webview_window(events::FLOWBAR) {
         let _ = w.show();
     }
 }
 
-/// Pin the Flow Bar to the bottom-center of the primary monitor.
+/// Position the Flow Bar. If settings dictate, anchors it near the caret;
+/// otherwise, centers it near the bottom of the primary monitor.
 pub fn position_flowbar(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(events::FLOWBAR) {
-        if let Ok(Some(monitor)) = w.primary_monitor() {
+        let (bar_position, default_monitor) = {
+            let st = app.state::<AppState>();
+            let s = st.settings.lock();
+            (s.bar_position.clone(), w.primary_monitor().ok().flatten())
+        };
+
+        if bar_position == "near_caret" {
+            if let Some((cx, cy)) = get_caret_position() {
+                // Find the monitor that contains the caret
+                let mut target_monitor = None;
+                if let Ok(monitors) = w.available_monitors() {
+                    for m in monitors {
+                        let pos = m.position();
+                        let size = m.size();
+                        if cx >= pos.x && cx < pos.x + size.width as i32
+                            && cy >= pos.y && cy < pos.y + size.height as i32 {
+                            target_monitor = Some(m);
+                            break;
+                        }
+                    }
+                }
+
+                let monitor = target_monitor.or(default_monitor.clone());
+                if let Some(m) = monitor {
+                    if let Ok(ws) = w.outer_size() {
+                        let work_pos = m.work_area().position;
+                        let work_size = m.work_area().size;
+
+                        let x = cx - (ws.width as i32 / 2);
+                        let y = cy + 24; // 24px below the caret
+
+                        let min_x = work_pos.x;
+                        let max_x = work_pos.x + work_size.width as i32 - ws.width as i32;
+                        let min_y = work_pos.y;
+                        let max_y = work_pos.y + work_size.height as i32 - ws.height as i32;
+
+                        let x = x.clamp(min_x, max_x);
+                        let y = y.clamp(min_y, max_y);
+
+                        let _ = w.set_position(PhysicalPosition::new(x, y));
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Fallback / fixed position at the bottom-center of the primary monitor
+        if let Some(monitor) = default_monitor {
             let ms = monitor.size();
             if let Ok(ws) = w.outer_size() {
                 let x = (ms.width as i32 - ws.width as i32) / 2;
@@ -26,6 +76,96 @@ pub fn position_flowbar(app: &AppHandle) {
             }
         }
     }
+}
+
+#[cfg(windows)]
+fn get_caret_position() -> Option<(i32, i32)> {
+    unsafe {
+        // 1. Try classic Win32 GetGUIThreadInfo
+        if let Some(pos) = get_caret_from_gui_thread_info() {
+            return Some(pos);
+        }
+        // 2. Try modern UI Automation
+        if let Some(pos) = get_caret_from_uia() {
+            return Some(pos);
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn get_caret_position() -> Option<(i32, i32)> {
+    None
+}
+
+#[cfg(windows)]
+unsafe fn get_caret_from_gui_thread_info() -> Option<(i32, i32)> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, GUITHREADINFO};
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    use windows::Win32::Foundation::POINT;
+
+    let mut info = GUITHREADINFO::default();
+    info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+
+    if GetGUIThreadInfo(0, &mut info).is_ok() {
+        if !info.hwndFocus.is_invalid() && info.rcCaret.left != 0 && info.rcCaret.top != 0 {
+            let mut pt = POINT {
+                x: info.rcCaret.left,
+                y: info.rcCaret.top,
+            };
+            if ClientToScreen(info.hwndFocus, &mut pt).as_bool() {
+                return Some((pt.x, pt.y));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+unsafe fn get_caret_from_uia() -> Option<(i32, i32)> {
+    use windows::Win32::UI::Accessibility::{
+        CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTextPattern2,
+        UIA_TextPattern2Id,
+    };
+    use windows::Win32::System::Com::{
+        CoInitializeEx, CoCreateInstance, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::System::Ole::{SafeArrayAccessData, SafeArrayUnaccessData};
+    use windows::core::Interface;
+
+    // Best effort COM initialization
+    let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+
+    let automation: IUIAutomation = CoCreateInstance(
+        &CUIAutomation,
+        None,
+        CLSCTX_INPROC_SERVER,
+    ).ok()?;
+
+    let focused: IUIAutomationElement = automation.GetFocusedElement().ok()?;
+
+    let pattern_ptr = focused.GetCurrentPattern(UIA_TextPattern2Id).ok()?;
+    let text_pattern2: IUIAutomationTextPattern2 = pattern_ptr.cast().ok()?;
+
+    let mut is_active = windows::Win32::Foundation::BOOL::default();
+    let range = text_pattern2.GetCaretRange(&mut is_active).ok()?;
+
+    let rects = range.GetBoundingRectangles().ok()?;
+    if rects.is_null() {
+        return None;
+    }
+
+    let mut data_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+    if SafeArrayAccessData(rects, &mut data_ptr).is_ok() {
+        let f64_ptr = data_ptr as *mut f64;
+        let left = *f64_ptr;
+        let top = *f64_ptr.add(1);
+        let _ = SafeArrayUnaccessData(rects);
+        return Some((left as i32, top as i32));
+    }
+
+    None
 }
 
 /// Phase 9: show (and focus) the floating Scratchpad window. Created hidden in

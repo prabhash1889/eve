@@ -85,6 +85,8 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
         return;
     }
 
+    crate::sound::play_start_sound(&st.settings.lock());
+
     // Remember the app that had focus so we can paste back into it, and resolve
     // its context (process/title/category) for per-app Flow Styles + history.
     // Reset the Scratchpad routing flag each press; set it below if our own

@@ -35,6 +35,7 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
     if st.is_recording.swap(true, Ordering::SeqCst) {
         return;
     }
+    crate::sound::play_start_sound(&st.settings.lock());
     st.is_command_mode.store(true, Ordering::SeqCst);
 
     #[cfg(windows)]
@@ -113,12 +114,19 @@ async fn process_command(app: AppHandle) {
         std::mem::take(&mut *b)
     };
     let rate = sample_rate.load(Ordering::SeqCst);
-    if samples.len() < (rate as usize / 8).max(800) {
-        window_mgmt::fail(&app, "Didn't catch that — hold the key a little longer");
+    let duration_ms = (samples.len() as u64 * 1000) / rate.max(1) as u64;
+
+    if duration_ms < 1000 {
+        let _ = app.emit_to(
+            events::FLOWBAR,
+            events::ERROR,
+            events::ErrorPayload {
+                message: "Too short".to_string(),
+            },
+        );
+        window_mgmt::hide_flowbar_after(app, 1200);
         return;
     }
-
-    let duration_ms = (samples.len() as u64 * 1000) / rate.max(1) as u64;
 
     let (language, strategy, backend, vad_enabled, correctness_rescue, profile, model) = {
         let s = settings.lock();

@@ -85,7 +85,7 @@ known-good baseline.
   picker, per-item stage/cancel card; finished items reload the embedded History
   list and show a source-file badge (`HistoryPage.tsx`).
 - Phase D (translate mode) - **Done** (build-verified; local and Groq backends support translate and initial prompt settings).
-- Phase E (polish batch) - **Pending**
+- Phase E (polish batch) - **Done** (build-verified; includes min-duration guard, start sound, mic ready event, search highlight, CJK autocorrect, and caret-anchored Flow Bar).
 
 ## Phase A: Trigger Overhaul
 

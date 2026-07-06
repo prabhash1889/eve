@@ -21,6 +21,7 @@ mod timing;
 mod transcription;
 mod tray;
 mod window_mgmt;
+mod sound;
 
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};

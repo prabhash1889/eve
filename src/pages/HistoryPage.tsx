@@ -129,7 +129,7 @@ export function HistoryPage({ reloadSignal }: { reloadSignal?: number }) {
         ) : items.length === 0 ? (
           <EmptyState searching={!!query.trim()} />
         ) : (
-          items.map((t) => <HistoryCard key={t.id} t={t} onDelete={() => onDelete(t)} />)
+          items.map((t) => <HistoryCard key={t.id} t={t} onDelete={() => onDelete(t)} query={query} />)
         )}
       </div>
 
@@ -158,7 +158,7 @@ export function HistoryPage({ reloadSignal }: { reloadSignal?: number }) {
   );
 }
 
-function HistoryCard({ t, onDelete }: { t: Transcript; onDelete: () => void }) {
+function HistoryCard({ t, onDelete, query }: { t: Transcript; onDelete: () => void; query: string }) {
   // Show polished by default; toggle to raw when they differ.
   const hasBoth = t.rawText.trim() !== t.polishedText.trim();
   const [showRaw, setShowRaw] = useState(false);
@@ -179,7 +179,9 @@ function HistoryCard({ t, onDelete }: { t: Transcript; onDelete: () => void }) {
   return (
     <div className="rounded-2xl border border-border bg-surface p-4">
       <div className="flex items-start justify-between gap-3">
-        <p className="whitespace-pre-wrap text-ink">{text || <span className="text-ink-faint">(empty)</span>}</p>
+        <p className="whitespace-pre-wrap text-ink">
+          {text ? highlightText(text, query) : <span className="text-ink-faint">(empty)</span>}
+        </p>
         <button
           onClick={onDelete}
           title="Delete"
@@ -277,4 +279,30 @@ function formatDuration(ms: number): string {
   const s = Math.round(ms / 1000);
   if (s < 60) return `${s}s`;
   return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+function escapeRegExp(s: string) {
+  return s.replace(/[/\-\\^$*+?.()|[\]{}]/g, "\\$&");
+}
+
+function highlightText(text: string, query: string): React.ReactNode {
+  if (!text) return "";
+  const terms = query.trim().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return text;
+
+  const regex = new RegExp(`(${terms.map(escapeRegExp).join("|")})`, "gi");
+  const parts = text.split(regex);
+  return (
+    <>
+      {parts.map((part, i) =>
+        regex.test(part) ? (
+          <mark key={i} className="bg-amber-500/20 text-amber-900 dark:text-amber-100 rounded-[2px] px-0.5">
+            {part}
+          </mark>
+        ) : (
+          part
+        )
+      )}
+    </>
+  );
 }

@@ -22,11 +22,31 @@ const RETRACTION_MARKERS: &[&str] = &[
 ];
 
 /// Run the post-LLM deterministic pass: spoken punctuation → list formatting →
-/// whitespace cleanup.
-pub fn finalize(text: &str) -> String {
+/// whitespace cleanup. Optionally applies CJK autocorrect spacing.
+pub fn finalize(text: &str, cjk_autocorrect: bool, language: &str) -> String {
     let punctuated = apply_spoken_punctuation(text);
     let listed = format_lists(&punctuated);
-    normalize_whitespace(&listed)
+    let normalized = normalize_whitespace(&listed);
+
+    if cjk_autocorrect && is_cjk_language(language, &normalized) {
+        autocorrect::format(&normalized)
+    } else {
+        normalized
+    }
+}
+
+fn is_cjk_language(language: &str, text: &str) -> bool {
+    language.starts_with("zh")
+        || language.starts_with("ja")
+        || language.starts_with("ko")
+        || (language == "auto" && has_cjk_chars(text))
+}
+
+fn has_cjk_chars(text: &str) -> bool {
+    text.chars().any(|c| {
+        // CJK Unified Ideographs, Hiragana, Katakana, Hangul Syllables
+        matches!(c, '\u{4e00}'..='\u{9fff}' | '\u{3040}'..='\u{309f}' | '\u{30a0}'..='\u{30ff}' | '\u{ac00}'..='\u{d7af}')
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -766,6 +786,6 @@ mod tests {
 
     #[test]
     fn finalize_combines_passes() {
-        assert_eq!(finalize("hello   world period"), "hello world.");
+        assert_eq!(finalize("hello   world period", false, "en"), "hello world.");
     }
 }

@@ -4,6 +4,7 @@
 use serde::Serialize;
 
 pub const START: &str = "session://start";
+pub const READY: &str = "session://ready";
 pub const PROCESSING: &str = "session://processing";
 pub const AMPLITUDE: &str = "session://amplitude";
 pub const DONE: &str = "session://done";
