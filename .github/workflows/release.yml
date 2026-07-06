@@ -1,17 +1,25 @@
 name: Release
 
-# Build, (optionally) sign, and publish the Windows installers, then emit the
-# `latest.json` feed that the in-app updater (Phase 11) reads.
+# Build, (optionally) sign, and publish the installers for every platform, then
+# emit the multi-platform `latest.json` feed that the in-app updater reads.
 #
-# Build matrix (parity Phase B): this workflow builds ONE variant - the CPU
+# Matrix (cross-platform-plan.md Phase 5): one job per OS, all attaching to the
+# SAME draft release (same tagName). tauri-action merges every platform's
+# updater artifacts into a single `latest.json`, so the existing updater
+# endpoint keeps working unchanged.
+#   - windows-latest : nsis + msi (+ updater); needs libclang for bindgen.
+#   - macos-latest   : universal .app + dmg (+ updater); whisper.cpp builds with
+#                      Metal via the Xcode CLT, so no libclang step.
+#   - ubuntu-22.04   : deb + rpm + appimage (+ updater); same system deps as ci.yml.
+#
+# Variant (parity Phase B): this workflow builds ONE variant - the CPU
 # local-whisper build - and that variant is the updater channel.
 # tauri-plugin-updater has a single `latest.json` per platform, so a second
 # variant cannot share the feed. The CUDA variant (`local-whisper-cuda`) is a
 # power-user artifact built locally with `node scripts/release.mjs --cuda`
 # (it needs a CUDA toolkit the runners don't have) and attached to the GitHub
 # release manually, clearly labelled; it must never be referenced from
-# `latest.json`. Revisit only if maintaining the manual artifact becomes
-# painful.
+# `latest.json`.
 #
 # No model is bundled - the installer stays small; onboarding offers the
 # download (Cloud vs Private fork).
@@ -28,7 +36,19 @@ permissions:
 
 jobs:
   release:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: "--features local-whisper --bundles nsis,msi,updater"
+          - platform: macos-latest
+            target: universal-apple-darwin
+            args: "--features local-whisper --target universal-apple-darwin --bundles app,dmg,updater"
+          - platform: ubuntu-22.04
+            args: "--features local-whisper --bundles deb,rpm,appimage,updater"
+
+    runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
 
@@ -40,16 +60,38 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        # macOS builds a universal binary; add both arches for the target above.
+        with:
+          targets: ${{ matrix.target && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Cache cargo
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
+      # Tauri's Linux build needs system libraries (WebKitGTK, GTK, appindicator,
+      # librsvg), and the platform backends add ALSA, libxkbcommon, and libdbus
+      # (the last for the Secret Service keyring). patchelf is needed for AppImage.
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            libxkbcommon-dev \
+            libdbus-1-dev \
+            patchelf
+
       # On-device speech-to-text (`local-whisper`) builds whisper.cpp from
       # source. CMake + MSVC ship on windows-latest; bindgen additionally needs
-      # libclang, so point it at the runner's preinstalled LLVM.
+      # libclang, so point it at the runner's preinstalled LLVM. macOS/Linux
+      # bindgen finds libclang from the system toolchain, so no step there.
       - name: Locate libclang (for bindgen)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $llvm = if ($env:LLVM_PATH) { "$env:LLVM_PATH\bin" } else { "C:\Program Files\LLVM\bin" }
@@ -67,7 +109,16 @@ jobs:
           # and put the PUBLIC key in tauri.conf.json `plugins.updater.pubkey`.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Optional Authenticode / Azure Trusted Signing of the installer itself.
+          # Optional Apple signing/notarization. Leave unset to ship an unsigned
+          # build; users then right-click-Open or clear the quarantine attribute
+          # (`xattr -d com.apple.quarantine`) - see README distribution notes.
+          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # APPLE_ID: ${{ secrets.APPLE_ID }}
+          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Optional Authenticode / Azure Trusted Signing of the Windows installer.
           # Leave unset to ship an unsigned (SmartScreen-warned) build.
           # AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           # AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -78,7 +129,7 @@ jobs:
           releaseBody: "See the assets below to download and install."
           releaseDraft: true
           prerelease: false
-          # Produce NSIS + MSI installers and the updater artifacts/`latest.json`,
-          # and compile on-device whisper.cpp (`local-whisper`, CPU). This is the
-          # updater-channel build - see the matrix note at the top of this file.
-          args: --features local-whisper --bundles nsis,msi,updater
+          # Per-OS bundles + the updater artifacts/`latest.json`, compiling
+          # on-device whisper.cpp (`local-whisper`, CPU) - the updater-channel
+          # build. Bundle list varies per platform (see the matrix above).
+          args: ${{ matrix.args }}

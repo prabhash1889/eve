@@ -109,6 +109,47 @@ It expects updater signing material to be configured as GitHub Actions secrets:
 Do not commit private signing keys. The updater public key in
 `src-tauri/tauri.conf.json` is safe to publish.
 
+## Platform Support
+
+Windows is the primary, fully featured platform. macOS and Linux (X11 and
+Wayland, via runtime detection) are supported through a cross-platform seam; see
+`cross-platform-plan.md`.
+
+Permissions each platform needs before dictation works:
+
+| Capability | Windows | macOS | Linux (X11) | Linux (Wayland) |
+| --- | --- | --- | --- | --- |
+| Microphone | granted on first use | Microphone (system prompt) | ALSA/PulseAudio | ALSA/PulseAudio |
+| Global triggers | none | Accessibility (onboarding step) | none (XI2 raw) | GlobalShortcuts portal (prompt on first run) |
+| Paste / focus | none | Accessibility | none | virtual-keyboard protocol (KDE, wlroots) |
+| Key storage | Credential Manager | Keychain | Secret Service | Secret Service |
+
+### Known Wayland degradations
+
+The compositor does not expose foreign-window focus, so on Wayland:
+
+- Bare-modifier and mouse-button triggers are hidden (only portal accelerators).
+- Privacy pause cannot match the focused app, Flow Styles use the default style,
+  and history app attribution is blank.
+- Esc-cancel is unavailable; cancel by toggling the main trigger instead.
+- GNOME lacks the virtual-keyboard protocol; paste falls back to typing (an
+  `ydotool` opt-in is documented as a follow-up).
+
+### Installing on macOS
+
+Builds are not yet Apple-notarized. On first launch, right-click the app and
+choose **Open**, or clear the quarantine attribute:
+
+```sh
+xattr -d com.apple.quarantine /Applications/Eve.app
+```
+
+### Installing on Linux
+
+Install the `.deb`, `.rpm`, or AppImage for your distro. The in-app updater only
+updates AppImage installs; `.deb`/`.rpm` users update through their package
+manager or by downloading a new release.
+
 ## Privacy And Secrets
 
 - User API keys are stored in the operating system credential store.

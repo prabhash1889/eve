@@ -23,8 +23,10 @@ bare-modifier + GrabButton mouse triggers, `_NET_WM_PID`/`_NET_WM_NAME` context,
 X11 paste/selection). Phase 4 code complete (Linux/Wayland - GlobalShortcuts
 XDG portal triggers, enigo Wayland virtual-keyboard injection, UI degradations);
 all behind the cfg seams, Windows verified green locally, macOS + Linux
-compile/E2E finalization pending on CI + target hardware. Phase 5 not started.
-Phases are ordered and each one is independently shippable.
+compile/E2E finalization pending on CI + target hardware. Phase 5 code complete
+(release matrix builds all three platforms into one draft release + a single
+multi-platform latest.json; per-platform distribution docs). Phases are ordered
+and each one is independently shippable.
 
 ---
 
@@ -505,6 +507,24 @@ Settings.
 ---
 
 ## Phase 5 - Packaging, release matrix, distribution
+
+**Status: code complete.** `release.yml` is now a `{windows-latest,
+macos-latest, ubuntu-22.04}` matrix; every job attaches to the same draft
+release (same `tagName`), so tauri-action merges all platforms' updater
+artifacts into one multi-platform `latest.json` and the existing updater
+endpoint is unchanged. Each job keeps `--features local-whisper` (the CPU
+updater channel) and produces its native bundles: Windows nsis,msi; macOS a
+universal `app,dmg` (`--target universal-apple-darwin`, both arches added to the
+toolchain, Metal via Xcode CLT so no libclang step); Linux deb,rpm,appimage
+(the ci.yml system deps). The libclang step is now gated to Windows only.
+`release.mjs` was already platform-aware (Phase 0: `process.platform` ->
+per-OS bundle targets), so it collects each host's artifacts into
+`build/<version>/` unchanged. Apple signing/notarization is left as an optional
+follow-up (commented `APPLE_*` env in the workflow); until then the README
+documents right-click-Open / `xattr -d com.apple.quarantine`. README also gains
+a per-platform permission matrix (mic, Accessibility, portal, key store), the
+known Wayland degradations, and the note that the Linux updater only updates
+AppImage installs. What the plan specified:
 
 - `.github/workflows/release.yml` -> matrix: windows-latest (unchanged, incl. the
   libclang step, `--bundles nsis,msi,updater`); macos-latest
