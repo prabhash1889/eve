@@ -134,6 +134,12 @@ objc2-app-kit = { version = "0.3", features = [
     "NSWorkspace",
     "NSRunningApplication",
 ] }
+# Phase 2: CGEventTap for bare-modifier + mouse-button triggers (the macOS
+# analogue of the Windows low-level hooks) on a dedicated CFRunLoop thread, plus
+# the CoreFoundation types used by the tap runloop, the Accessibility trust
+# dictionary (permissions.rs), and the AX focused-window title (context.rs).
+core-graphics = "0.24"
+core-foundation = "0.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Linux Secret Service backend (GNOME Keyring / KWallet) for secure API-key

@@ -27,6 +27,7 @@ import {
   type Settings,
 } from "../../lib/api";
 import { LANGUAGES, CLEANUP, SHORTCUT_CHOICES } from "../../lib/options";
+import { isMac } from "../../lib/platform";
 
 /** Parity Phase B: which transcription path onboarding sets up. */
 type SetupMode = "cloud" | "private";
@@ -63,10 +64,13 @@ export function Onboarding({
 
   // Step 2 forks on the chosen mode; both branches have the same length so the
   // current index stays valid when the user flips the choice and navigates.
-  const steps =
+  const base =
     mode === "private"
       ? ["Welcome", "Transcription", "Local model", "Hotkey", "Languages", "Mic check", "Cleanup"]
       : ["Welcome", "Transcription", "API key", "Hotkey", "Languages", "Mic check", "Cleanup"];
+  // Phase 2: macOS needs Accessibility trust for the triggers + paste; append a
+  // permission step at the end so the fixed step indices above stay unchanged.
+  const steps = isMac ? [...base, "Accessibility"] : base;
   const last = steps.length - 1;
 
   const next = () => setStep((s) => Math.min(last, s + 1));
@@ -162,6 +166,7 @@ export function Onboarding({
               onChange={(cleanupLevel) => setDraft((d) => ({ ...d, cleanupLevel }))}
             />
           )}
+          {isMac && step === 7 && <AccessibilityStep />}
         </div>
 
         {/* Footer nav */}
@@ -687,8 +692,11 @@ function MicCheckStep() {
       />
       {status === "denied" ? (
         <div className="rounded-xl border border-danger/40 bg-danger/5 px-4 py-3 text-sm text-danger">
-          Couldn't access the microphone. Allow mic access in Windows Settings → Privacy →
-          Microphone, then revisit this step. You can still finish setup.
+          Couldn't access the microphone. Allow mic access in{" "}
+          {isMac
+            ? "System Settings → Privacy & Security → Microphone"
+            : "Windows Settings → Privacy → Microphone"}
+          , then revisit this step. You can still finish setup.
         </div>
       ) : (
         <>
@@ -762,6 +770,65 @@ function CleanupStep({
           <ShieldCheck size={13} /> This level needs your Groq API key (add it in
           Settings).
         </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Phase 2 (macOS only): Accessibility permission step. The event tap that powers
+ * bare-modifier / mouse triggers - and reliable pasting into other apps - needs
+ * Eve to be trusted for Accessibility. Polls the trust state so the checkmark
+ * flips the moment the user enables Eve in System Settings.
+ */
+function AccessibilityStep() {
+  const [trusted, setTrusted] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    const poll = () =>
+      api
+        .checkAccessibility()
+        .then((t) => {
+          if (alive) setTrusted(t);
+        })
+        .catch(() => {});
+    poll();
+    const id = setInterval(poll, 1500);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  return (
+    <div>
+      <StepHeader
+        icon={<ShieldCheck size={20} />}
+        title="Accessibility access"
+        subtitle="macOS needs this so Eve can use your modifier and mouse triggers and reliably paste into other apps."
+      />
+      {trusted ? (
+        <div className="flex items-center gap-2 rounded-xl border border-accent/40 bg-accent-soft/40 px-4 py-3 text-sm">
+          <Check size={16} className="text-accent" /> Accessibility access is granted.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div className="rounded-xl border border-danger/40 bg-danger/5 px-4 py-3 text-sm text-ink-soft">
+            Without Accessibility access, bare-modifier and mouse-button triggers won't work and
+            pasting may fail. You can still finish setup and grant it later.
+          </div>
+          <button
+            onClick={() => api.requestAccessibility().catch(() => {})}
+            className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+          >
+            Grant access
+          </button>
+          <p className="text-xs text-ink-faint">
+            Opens System Settings → Privacy & Security → Accessibility. Enable Eve there, then
+            return here - the status updates automatically.
+          </p>
+        </div>
       )}
     </div>
   );

@@ -30,3 +30,10 @@ fn cmd_combo(key: char) -> anyhow::Result<()> {
 pub fn paste() -> anyhow::Result<()> {
     cmd_combo('v')
 }
+
+/// Simulate Cmd+C to copy the focused app's current selection (Phase 2 Command
+/// Mode / transforms). Held inside the same `INJECTING` guard so the event tap
+/// doesn't mistake it for a bare-modifier trigger.
+pub fn copy() -> anyhow::Result<()> {
+    cmd_combo('c')
+}

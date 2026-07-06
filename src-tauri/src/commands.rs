@@ -37,6 +37,37 @@ pub fn get_platform_info() -> PlatformInfo {
     }
 }
 
+/// Phase 2 (macOS): whether Eve is trusted for Accessibility, which the event
+/// tap (bare-modifier + mouse triggers) needs. Always `true` off macOS, where no
+/// such permission exists, so the frontend can gate its banner on `!trusted`
+/// uniformly.
+#[tauri::command]
+pub fn check_accessibility() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        crate::platform::macos::permissions::is_trusted()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// Phase 2 (macOS): open the system Accessibility prompt (deep-links to System
+/// Settings -> Privacy & Security -> Accessibility) and return the trust state
+/// afterward. No-op returning `true` off macOS.
+#[tauri::command]
+pub fn request_accessibility() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        crate::platform::macos::permissions::prompt_trust()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
 #[tauri::command]
 pub fn get_settings(state: State<AppState>) -> Settings {
     state.settings.lock().clone()
@@ -46,9 +77,12 @@ pub fn get_settings(state: State<AppState>) -> Settings {
 pub fn update_settings(state: State<AppState>, settings: Settings) -> Result<(), String> {
     *state.settings.lock() = settings.clone();
     // Parity A3/A4: bare-modifier / mouse-button triggers live in the low-level
-    // hooks, which read from atomics - republish so edits apply immediately.
+    // hooks (Windows) / event tap (macOS), which read from atomics - republish so
+    // edits apply immediately.
     #[cfg(windows)]
     crate::hooks::update_triggers(&settings);
+    #[cfg(target_os = "macos")]
+    crate::platform::macos::input::update_triggers(&settings);
     config::save(&state.settings_path, &settings).map_err(|e| e.to_string())
 }
 

@@ -199,7 +199,44 @@ pub fn capture_selection(app: &AppHandle, hwnd: isize) -> Option<String> {
     selected
 }
 
-#[cfg(not(windows))]
+/// macOS selection capture (Phase 2): re-activate the target app (bail if it's
+/// gone), clear the clipboard so an empty selection is detectable, send Cmd+C,
+/// then poll for the copied text - mirroring the Windows structure. The user's
+/// prior clipboard is restored by the guard on every exit path.
+#[cfg(target_os = "macos")]
+pub fn capture_selection(app: &AppHandle, hwnd: isize) -> Option<String> {
+    if !crate::platform::macos::focus::restore_focus(hwnd) {
+        return None;
+    }
+
+    let clip = app.clipboard();
+    let _restore = ClipboardGuard {
+        app,
+        previous: clip.read_text().ok(),
+    };
+
+    let _ = clip.write_text(String::new());
+
+    // App-level activation settles slower than an in-process focus switch, so the
+    // pre-copy wait matches the paste path's macOS PRE rather than Windows' 40 ms.
+    thread::sleep(Duration::from_millis(90));
+    if crate::platform::macos::keys::copy().is_err() {
+        return None;
+    }
+
+    // Poll for the selection to land (heavy apps take longer than a flat wait).
+    let mut selected = None;
+    for _ in 0..30 {
+        thread::sleep(Duration::from_millis(20));
+        if let Some(s) = clip.read_text().ok().filter(|s| !s.is_empty()) {
+            selected = Some(s);
+            break;
+        }
+    }
+    selected
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn capture_selection(_app: &AppHandle, _hwnd: isize) -> Option<String> {
     None
 }

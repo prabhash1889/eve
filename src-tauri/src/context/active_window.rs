@@ -56,22 +56,49 @@ pub fn classify(process: &str, title: &str) -> AppCategory {
     let proc = process.to_ascii_lowercase();
     let title_l = title.to_ascii_lowercase();
 
-    // Direct desktop-app matches.
+    // Direct desktop-app matches. Entries are matched against the lowercased
+    // process string, so the macOS bundle ids below are given lowercased (the
+    // `.exe` names never collide with a bundle id, so the extra entries are inert
+    // on Windows and vice-versa).
     const EMAIL: &[&str] = &[
+        // Windows executables.
         "outlook.exe",
         "thunderbird.exe",
         "mailspring.exe",
         "em client",
+        // macOS bundle ids.
+        "com.microsoft.outlook",
+        "com.apple.mail",
+        "org.mozilla.thunderbird",
+        "com.readdle.smartemail-mac",
     ];
-    const WORK_MSG: &[&str] = &["slack.exe", "teams.exe", "ms-teams.exe", "msteams.exe"];
+    const WORK_MSG: &[&str] = &[
+        // Windows executables.
+        "slack.exe",
+        "teams.exe",
+        "ms-teams.exe",
+        "msteams.exe",
+        // macOS bundle ids.
+        "com.tinyspeck.slackmacgap",
+        "com.microsoft.teams",
+        "com.microsoft.teams2",
+    ];
     const PERSONAL_MSG: &[&str] = &[
+        // Windows executables.
         "whatsapp.exe",
         "telegram.exe",
         "discord.exe",
         "signal.exe",
         "messenger.exe",
+        // macOS bundle ids.
+        "net.whatsapp.whatsapp",
+        "ru.keepcoder.telegram",
+        "com.hnc.discord",
+        "org.whispersystems.signal-desktop",
+        "com.facebook.messenger",
     ];
     const CODE: &[&str] = &[
+        // Windows executables.
         "code.exe",
         "cursor.exe",
         "devenv.exe",
@@ -87,6 +114,16 @@ pub fn classify(process: &str, title: &str) -> AppCategory {
         "powershell.exe",
         "cmd.exe",
         "alacritty.exe",
+        // macOS bundle ids.
+        "com.microsoft.vscode",
+        "com.todesktop.230313mzl4w4u92", // Cursor
+        "com.apple.dt.xcode",
+        "com.jetbrains.intellij",
+        "com.jetbrains.pycharm",
+        "com.googlecode.iterm2",
+        "com.apple.terminal",
+        "dev.warp.warp-stable",
+        "com.sublimetext.4",
     ];
 
     if EMAIL.iter().any(|p| proc == *p) {
@@ -104,6 +141,7 @@ pub fn classify(process: &str, title: &str) -> AppCategory {
 
     // Browsers: infer from the title (which usually carries the site name/URL).
     const BROWSERS: &[&str] = &[
+        // Windows executables.
         "chrome.exe",
         "msedge.exe",
         "firefox.exe",
@@ -111,6 +149,15 @@ pub fn classify(process: &str, title: &str) -> AppCategory {
         "opera.exe",
         "arc.exe",
         "vivaldi.exe",
+        // macOS bundle ids.
+        "com.apple.safari",
+        "com.google.chrome",
+        "com.microsoft.edgemac",
+        "org.mozilla.firefox",
+        "com.brave.browser",
+        "com.operasoftware.opera",
+        "company.thebrowser.browser", // Arc
+        "com.vivaldi.vivaldi",
     ];
     if BROWSERS.iter().any(|p| proc == *p) {
         return classify_browser_title(&title_l);
@@ -253,6 +300,32 @@ mod tests {
             classify("chrome.exe", "Some Random Blog Post"),
             AppCategory::Other
         );
+    }
+
+    #[test]
+    fn classifies_macos_bundle_ids() {
+        // Bundle ids arrive with mixed case; `classify` lowercases before match.
+        assert_eq!(classify("com.microsoft.Outlook", ""), AppCategory::Email);
+        assert_eq!(classify("com.apple.mail", ""), AppCategory::Email);
+        assert_eq!(classify("com.tinyspeck.slackmacgap", ""), AppCategory::WorkMsg);
+        assert_eq!(
+            classify("net.whatsapp.WhatsApp", ""),
+            AppCategory::PersonalMsg
+        );
+        assert_eq!(classify("com.microsoft.VSCode", ""), AppCategory::Code);
+        assert_eq!(
+            classify("com.todesktop.230313mzl4w4u92", ""),
+            AppCategory::Code
+        );
+        // Browser bundle ids route through the title heuristics.
+        assert_eq!(
+            classify(
+                "com.apple.Safari",
+                "eve/pipeline.rs at main · me/eve · GitHub"
+            ),
+            AppCategory::Code
+        );
+        assert_eq!(classify("com.apple.Finder", ""), AppCategory::Other);
     }
 
     #[test]

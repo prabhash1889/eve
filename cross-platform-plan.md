@@ -16,10 +16,11 @@ routing - added as NEW platform backends behind the existing cfg seams. The Wind
 build must never regress. Linux supports both X11 and Wayland via runtime detection.
 
 Status: Phase 0 complete (compile-everywhere seam + CI gate). Phase 1 code
-complete (macOS core-dictation backend landed behind the cfg seams; Windows
-verified green locally, macOS compile/E2E finalization pending on CI + Mac
-hardware). Phases 2-5 not started. Phases are ordered and each one is
-independently shippable.
+complete (macOS core-dictation backend). Phase 2 code complete (macOS parity -
+CGEventTap triggers, selection capture, Accessibility permissions UX, focused-app
+context); all behind the cfg seams, Windows verified green locally, macOS
+compile/E2E finalization pending on CI + Mac hardware. Phases 3-5 not started.
+Phases are ordered and each one is independently shippable.
 
 ---
 
@@ -310,20 +311,47 @@ deprecation churn across macOS 14/15 - pin behavior on the actual hardware.
 
 ## Phase 2 - macOS parity (triggers, selection/command mode, permissions UX, context)
 
-- `platform/macos/input.rs` (core-graphics 0.24, core-foundation 0.10): CGEventTap
-  on a CFRunLoop thread, `update_triggers(&Settings)` mirroring the `hooks.rs`
-  statics, dispatcher channel, mouse consumption, INJECTING filter, timeout
-  re-enable. `lib.rs` setup + `commands.rs::update_settings` get
-  `#[cfg(target_os = "macos")]` siblings next to the existing `#[cfg(windows)]`
-  blocks (lib.rs:144-149, commands.rs:30-31).
-- `platform/macos/permissions.rs` + `check_accessibility` /
-  `request_accessibility` commands; tap init deferred/retried until trusted.
+**Status: code complete.** Windows verified locally (`cargo check --all-targets`,
+`cargo clippy --all-targets -D warnings`, `cargo test` [27 pass, incl. the new
+macOS bundle-id classify test], `npm run build` - all green); `hooks.rs` and
+`sound.rs` diffs are empty and no `#[cfg(windows)]` internals changed. The macOS
+code is gated behind `#[cfg(target_os = "macos")]` and finalizes on CI
+(macos-latest) + Mac hardware per the plan's verification model - in particular
+the core-graphics CGEventTap callback ABI, the mouse-consume mechanism (re-typing
+the event to `Null`), and the AX focused-window-title FFI. What shipped:
+
+- `platform/macos/input.rs` (new; core-graphics 0.24, core-foundation 0.10):
+  CGEventTap on a dedicated CFRunLoop thread. `update_triggers(&Settings)` mirrors
+  the `hooks.rs` atomics (modifier keycode + device-flag mask for left/right
+  disambiguation; mouse button number). Lean callback -> channel -> dispatcher
+  thread running `hotkey::on_main_pressed/released`; middle/X1/X2 consumed, bare
+  modifiers passed through; `injection::injecting` self-injection filter; re-enable
+  on `TapDisabledByTimeout`/`ByUserInput` via a leaked, thread-owned tap pointer.
+  The tap thread waits for Accessibility trust before creating the tap.
+- `platform/macos/permissions.rs` (new): `is_trusted` / `prompt_trust` over a
+  small `AXIsProcessTrusted(WithOptions)` extern block (no extra crate).
+  `check_accessibility` / `request_accessibility` commands (registered in
+  `generate_handler!`; return `true` off macOS).
+- `platform/macos/context.rs` (new): `resolve(pid)` -> bundle id (NSRunningApplication)
+  + best-effort AX focused-window title, mapped through `classify`. Wired into
+  `platform::frontmost` (macOS arm now resolves real context instead of unknown).
 - `injection.rs`: macOS `capture_selection` (restore -> clear -> Cmd+C -> poll
-  <=600 ms).
-- `platform/macos/context.rs`: AX focused-window title; wire into `frontmost()`.
-- `active_window.rs`: additive macOS lists in `classify` + unit tests (run in CI
-  on macOS).
-- Frontend: Accessibility onboarding step; untrusted banner; Option/Command labels.
+  <=~600 ms); the not-any(windows,macos) stub narrowed to return `None`.
+  `keys.rs` gained `copy()` (Cmd+C under the INJECTING guard).
+- `active_window.rs`: additive macOS bundle-id lists in `classify` (EMAIL /
+  WORK_MSG / PERSONAL_MSG / CODE / BROWSERS) - lowercased, inert on Windows - plus
+  a `classifies_macos_bundle_ids` unit test.
+- `lib.rs` setup + `commands.rs::update_settings`: `#[cfg(target_os = "macos")]`
+  siblings next to the Windows hooks blocks (`input::update_triggers` + `init`).
+- `Cargo.toml`: `core-graphics 0.24` + `core-foundation 0.10` in the macOS target
+  table.
+- Frontend: `api.ts` `checkAccessibility` / `requestAccessibility` wrappers; a
+  macOS-only Accessibility onboarding step (polls trust, opens the prompt) appended
+  after Cleanup so existing step indices are unchanged; the mic-denied help string
+  is now OS-aware. Deviation from the plan: the persistent Settings/Hub untrusted
+  banner and the remaining per-OS Hub relabels are deferred to the Mac-hardware
+  pass (they want a real macOS render per the pixel-perfection bar; the onboarding
+  step already covers the untrusted case at first run).
 
 ### Verify (Mac hardware)
 

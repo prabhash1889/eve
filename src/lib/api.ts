@@ -389,6 +389,11 @@ export interface PlatformInfo {
 
 export const api = {
   getPlatformInfo: () => invoke<PlatformInfo>("get_platform_info"),
+  /** macOS Accessibility trust state for the event tap (bare-modifier + mouse
+   * triggers). Always resolves `true` off macOS. */
+  checkAccessibility: () => invoke<boolean>("check_accessibility"),
+  /** Open the macOS Accessibility prompt; resolves to the trust state after. */
+  requestAccessibility: () => invoke<boolean>("request_accessibility"),
   getSettings: () => invoke<Settings>("get_settings"),
   updateSettings: (settings: Settings) => invoke<void>("update_settings", { settings }),
   setShortcut: (shortcut: string) => invoke<void>("set_shortcut", { shortcut }),

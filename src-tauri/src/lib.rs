@@ -148,6 +148,15 @@ pub fn run() {
                 hooks::update_triggers(&settings);
                 hooks::init(app.handle().clone());
             }
+            // Phase 2: the macOS equivalent - a CGEventTap on its own CFRunLoop
+            // thread that waits for Accessibility trust, then delivers the same
+            // triggers through the same dispatcher entry points.
+            #[cfg(target_os = "macos")]
+            {
+                let settings = app.state::<AppState>().settings.lock().clone();
+                platform::macos::input::update_triggers(&settings);
+                platform::macos::input::init(app.handle().clone());
+            }
 
             // Phase 11: reconcile the OS autostart registration with the saved
             // setting (best-effort — a failure here shouldn't block launch).
@@ -193,6 +202,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_platform_info,
+            commands::check_accessibility,
+            commands::request_accessibility,
             commands::get_settings,
             commands::update_settings,
             commands::set_shortcut,

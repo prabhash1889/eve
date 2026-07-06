@@ -56,16 +56,22 @@ fn scratchpad_is_focused(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-/// macOS backend (Phase 1): the handle is the frontmost app's pid. Focused-window
-/// title / bundle-id context resolution lands in Phase 2, so `ctx` is unknown for
-/// now (Flow Styles + history attribution fall back to their defaults).
+/// macOS backend: the handle is the frontmost app's pid. Phase 2 resolves the
+/// context from that pid - bundle id (for the additive `classify` lists) plus a
+/// best-effort AX focused-window title - so Flow Styles + history attribution
+/// work; it falls back to unknown when no app is frontmost.
 #[cfg(target_os = "macos")]
 pub fn frontmost(app: &AppHandle) -> Frontmost {
     let is_scratchpad = scratchpad_is_focused(app);
-    let handle = macos::focus::frontmost_pid().unwrap_or(0) as isize;
+    let pid = macos::focus::frontmost_pid().unwrap_or(0);
+    let ctx = if pid > 0 {
+        macos::context::resolve(pid)
+    } else {
+        AppContext::unknown()
+    };
     Frontmost {
-        handle,
-        ctx: AppContext::unknown(),
+        handle: pid as isize,
+        ctx,
         is_scratchpad,
     }
 }
