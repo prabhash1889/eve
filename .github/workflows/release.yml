@@ -3,6 +3,19 @@ name: Release
 # Build, (optionally) sign, and publish the Windows installers, then emit the
 # `latest.json` feed that the in-app updater (Phase 11) reads.
 #
+# Build matrix (parity Phase B): this workflow builds ONE variant - the CPU
+# local-whisper build - and that variant is the updater channel.
+# tauri-plugin-updater has a single `latest.json` per platform, so a second
+# variant cannot share the feed. The CUDA variant (`local-whisper-cuda`) is a
+# power-user artifact built locally with `node scripts/release.mjs --cuda`
+# (it needs a CUDA toolkit the runners don't have) and attached to the GitHub
+# release manually, clearly labelled; it must never be referenced from
+# `latest.json`. Revisit only if maintaining the manual artifact becomes
+# painful.
+#
+# No model is bundled - the installer stays small; onboarding offers the
+# download (Cloud vs Private fork).
+#
 # Trigger by pushing a tag like `v0.1.0`, or run it manually.
 on:
   push:
@@ -33,7 +46,7 @@ jobs:
         with:
           workspaces: src-tauri
 
-      # On-device inference (`local-models`) builds whisper.cpp + llama.cpp from
+      # On-device speech-to-text (`local-whisper`) builds whisper.cpp from
       # source. CMake + MSVC ship on windows-latest; bindgen additionally needs
       # libclang, so point it at the runner's preinstalled LLVM.
       - name: Locate libclang (for bindgen)
@@ -66,5 +79,6 @@ jobs:
           releaseDraft: true
           prerelease: false
           # Produce NSIS + MSI installers and the updater artifacts/`latest.json`,
-          # and compile on-device whisper.cpp / llama.cpp (`local-models`).
-          args: --features local-models --bundles nsis,msi,updater
+          # and compile on-device whisper.cpp (`local-whisper`, CPU). This is the
+          # updater-channel build - see the matrix note at the top of this file.
+          args: --features local-whisper --bundles nsis,msi,updater

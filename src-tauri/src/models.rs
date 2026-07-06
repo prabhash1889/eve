@@ -43,62 +43,65 @@ pub struct ModelInfo {
 }
 
 /// The static catalog. Whisper GGML weights come from `ggerganov/whisper.cpp`;
-/// LLM GGUF weights from their respective `*-GGUF` repos. Sizes are approximate.
+/// LLM GGUF weights from their respective `*-GGUF` repos. Sizes and SHA-256
+/// digests come from each repo's Git-LFS pointer file (parity Phase B4) - if a
+/// weight file is ever re-uploaded upstream, refresh both from
+/// `https://huggingface.co/<repo>/raw/main/<file>`.
 pub fn catalog() -> &'static [ModelInfo] {
     &[
         ModelInfo {
             id: "whisper-tiny.en",
             kind: ModelKind::Whisper,
             name: "Whisper Tiny (English)",
-            size_bytes: 77_700_000,
+            size_bytes: 77_704_715,
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
             file_name: "whisper-tiny.en.bin",
-            sha256: None,
+            sha256: Some("921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f"),
         },
         ModelInfo {
             id: "whisper-base.en",
             kind: ModelKind::Whisper,
             name: "Whisper Base (English)",
-            size_bytes: 147_900_000,
+            size_bytes: 147_964_211,
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
             file_name: "whisper-base.en.bin",
-            sha256: None,
+            sha256: Some("a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002"),
         },
         ModelInfo {
             id: "whisper-small.en",
             kind: ModelKind::Whisper,
             name: "Whisper Small (English)",
-            size_bytes: 487_600_000,
+            size_bytes: 487_614_201,
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin",
             file_name: "whisper-small.en.bin",
-            sha256: None,
+            sha256: Some("c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d"),
         },
         ModelInfo {
             id: "whisper-large-v3-turbo",
             kind: ModelKind::Whisper,
             name: "Whisper Large v3 Turbo (multilingual)",
-            size_bytes: 1_624_000_000,
+            size_bytes: 1_624_555_275,
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
             file_name: "whisper-large-v3-turbo.bin",
-            sha256: None,
+            sha256: Some("1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69"),
         },
         ModelInfo {
             id: "qwen2.5-1.5b-instruct",
             kind: ModelKind::Llm,
             name: "Qwen2.5 1.5B Instruct (Q4_K_M)",
-            size_bytes: 1_120_000_000,
+            size_bytes: 1_117_320_736,
             url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
             file_name: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-            sha256: None,
+            sha256: Some("6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e"),
         },
         ModelInfo {
             id: "llama-3.2-1b-instruct",
             kind: ModelKind::Llm,
             name: "Llama 3.2 1B Instruct (Q4_K_M)",
-            size_bytes: 808_000_000,
+            size_bytes: 807_694_464,
             url: "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
             file_name: "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
-            sha256: None,
+            sha256: Some("6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83"),
         },
     ]
 }

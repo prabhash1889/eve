@@ -49,7 +49,21 @@ known-good baseline.
   dispatcher thread; `modifier_trigger` / `mouse_trigger` settings; injected
   events ignored (so paste's Ctrl+V can't retrigger); bound mouse button is
   consumed. Hooks route through the same activation-mode entry points.
-- Phase B (local-by-default) - **Pending**
+- Phase B (local-by-default) - **Done** (build-verified; live onboarding
+  smoke test pending). B1: release builds are CPU `local-whisper`
+  (`release.yml` + `scripts/release.mjs`); `scripts/release.mjs --cuda`
+  produces the `local-whisper-cuda` variant into `build/<version>/cuda/`.
+  B2: the CPU build is the sole updater channel; the CUDA build is a
+  manually-attached power-user artifact kept out of `latest.json`
+  (documented in `release.yml` + `release.mjs` headers). B3: onboarding
+  forks after Welcome into Cloud (Groq key, explicitly skippable) vs
+  Private (`ModeStep` + `LocalModelStep` in `Onboarding.tsx`); the Private
+  branch reuses the `list_models`/`download_model` + `model://*` machinery,
+  auto-selects the downloaded model, sets
+  `transcription_backend = "local"`, and prewarms on finish. B4: all six
+  catalog entries in `models.rs` now carry exact sizes + SHA-256 from the
+  Hugging Face LFS pointers, so downloads are verified. Parakeet second
+  engine stays deferred (see Summary).
 - Phase C (file transcription) - **Pending**
 - Phase D (translate mode) - **Pending**
 - Phase E (polish batch) - **Pending**
