@@ -144,6 +144,35 @@ choose **Open**, or clear the quarantine attribute:
 xattr -d com.apple.quarantine /Applications/Eve.app
 ```
 
+#### Fixing repeated permission prompts
+
+Because the shipped bundles are unsigned, macOS cannot pin a stable code-signing
+identity to the app. TCC stores permission grants (Microphone, Accessibility)
+together with that identity, so with no valid signature the grant is discarded
+and the system prompt reappears on every launch, even after clicking Allow.
+Running the app straight from the DMG or from `~/Downloads` makes it worse:
+Gatekeeper's App Translocation runs a quarantined unsigned app from a randomized
+path each launch, so no grant can ever stick.
+
+To make the grants persist:
+
+```sh
+# 1. Drag Eve.app from the DMG into /Applications with Finder first, then:
+xattr -dr com.apple.quarantine /Applications/Eve.app
+codesign --force --deep -s - /Applications/Eve.app   # stable ad-hoc signature
+tccutil reset Microphone com.eve.dictation           # clear the broken grants
+tccutil reset Accessibility com.eve.dictation
+# 2. Launch Eve and grant Microphone (and Accessibility) once. They now persist.
+```
+
+An ad-hoc signature is keyed to the exact binary, so repeat the `codesign` step
+after installing any new build. The permanent fix is Developer ID signing plus
+notarization in the release workflow: the `APPLE_*` secrets are already
+scaffolded (commented out) in `.github/workflows/release.yml`, and enabling them
+requires an Apple Developer account. Note that notarization forces the hardened
+runtime, which additionally needs a `com.apple.security.device.audio-input`
+entitlement before microphone capture works in signed builds.
+
 ### Installing on Linux
 
 Install the `.deb`, `.rpm`, or AppImage for your distro. The in-app updater only
