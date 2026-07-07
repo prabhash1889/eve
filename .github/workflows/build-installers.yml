@@ -22,12 +22,12 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
-            args: "--bundles nsis,msi"
+            args: "--bundles nsis,msi --config noupd.json"
           - platform: macos-latest
             target: universal-apple-darwin
-            args: "--target universal-apple-darwin --bundles app,dmg"
+            args: "--target universal-apple-darwin --bundles app,dmg --config noupd.json"
           - platform: ubuntu-22.04
-            args: "--bundles deb,appimage"
+            args: "--bundles deb,appimage --config noupd.json"
 
     runs-on: ${{ matrix.platform }}
     env:
@@ -70,16 +70,13 @@ jobs:
         run: npm ci
 
       # tauri.conf.json has a pubkey + createUpdaterArtifacts, so the bundler
-      # demands a private key. Generate a throwaway one (empty password) and hand
-      # it to tauri via env - avoids needing the real secret just to get installers.
-      - name: Generate ephemeral signing key
+      # would demand a signing key. We only want the raw installers, so merge a
+      # config override that turns updater artifacts off - no key needed. A FILE
+      # (not inline JSON) so the Windows shell can't mangle the quotes. Tauri
+      # resolves --config paths from the cwd (repo root).
+      - name: Disable updater artifacts
         shell: bash
-        run: |
-          npx tauri signer generate --write-keys "$RUNNER_TEMP/eve.key" --password ""
-          test -s "$RUNNER_TEMP/eve.key"   # fail loudly if the key wasn't written
-          # Point Tauri at the key FILE (avoids the string/base64 encoding pitfalls).
-          echo "TAURI_SIGNING_PRIVATE_KEY_PATH=$RUNNER_TEMP/eve.key" >> "$GITHUB_ENV"
-          echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
+        run: echo '{"bundle":{"createUpdaterArtifacts":false}}' > noupd.json
 
       - name: Build installers
         uses: tauri-apps/tauri-action@v0
