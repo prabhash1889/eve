@@ -76,7 +76,9 @@ jobs:
         shell: bash
         run: |
           npx tauri signer generate --write-keys "$RUNNER_TEMP/eve.key" --password ""
-          echo "TAURI_SIGNING_PRIVATE_KEY=$(base64 < "$RUNNER_TEMP/eve.key" | tr -d '\n')" >> "$GITHUB_ENV"
+          test -s "$RUNNER_TEMP/eve.key"   # fail loudly if the key wasn't written
+          # Point Tauri at the key FILE (avoids the string/base64 encoding pitfalls).
+          echo "TAURI_SIGNING_PRIVATE_KEY_PATH=$RUNNER_TEMP/eve.key" >> "$GITHUB_ENV"
           echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
 
       - name: Build installers
