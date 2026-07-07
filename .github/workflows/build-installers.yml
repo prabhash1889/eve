@@ -83,6 +83,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          # Call the tauri CLI directly. The default `npm run tauri` goes through
+          # scripts/tauri.mjs, which MOVES the built installers into build/<version>/
+          # after every build - so upload-artifact (and tauri-action's own artifact
+          # scan) would find nothing at the bundle paths.
+          tauriScript: npx tauri
           args: ${{ matrix.args }}
 
       - name: Upload installers

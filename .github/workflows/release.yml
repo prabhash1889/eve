@@ -128,6 +128,11 @@ jobs:
           # AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           # AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         with:
+          # Call the tauri CLI directly. The default `npm run tauri` goes through
+          # scripts/tauri.mjs, which MOVES the built installers into build/<version>/
+          # after every build - tauri-action would then find no artifacts to attach
+          # to the release (and the mover crashed on Linux's deb staging directory).
+          tauriScript: npx tauri
           tagName: ${{ github.ref_name }}
           releaseName: "Eve ${{ github.ref_name }}"
           releaseBody: "See the assets below to download and install."

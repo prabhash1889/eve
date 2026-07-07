@@ -29,6 +29,7 @@ import {
   readdirSync,
   copyFileSync,
   rmSync,
+  statSync,
 } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -101,11 +102,16 @@ for (const target of targets) {
   const dest = join(outDir, target);
   mkdirSync(dest, { recursive: true });
   for (const file of readdirSync(src)) {
+    const from = join(src, file);
+    // Tauri leaves helper DIRECTORIES next to the installers (e.g. the unpacked
+    // `Eve_<version>_amd64/` deb staging tree on Linux, `Eve.app/` on macOS).
+    // Only real files are installers/sidecars; copyFileSync on a directory
+    // throws EISDIR and killed CI builds.
+    if (statSync(from).isDirectory()) continue;
     // Tauri names CUDA installers identically to the CPU ones, so tag the CUDA
     // variant (installer + any .sig/.zip sidecars) with `_cuda` right after the
     // version to keep it distinguishable once collected.
     const outName = cuda ? file.replaceAll(`_${version}_`, `_${version}_cuda_`) : file;
-    const from = join(src, file);
     const to = join(dest, outName);
     // Move, not copy: copy then remove the source so nothing stays in src-tauri.
     // copy+rm (rather than renameSync) because on Windows renameSync throws when
