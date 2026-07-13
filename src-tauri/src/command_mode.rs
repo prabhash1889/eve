@@ -20,7 +20,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 use crate::db::transforms;
 use crate::state::AppState;
-use crate::transcription::{local_backend_label, Audio, TranscriptionBenchmark};
+use crate::transcription::{local_backend_label_for, Audio, TranscriptionBenchmark};
 use crate::{audio, events, hotkey, injection, llm, polish, window_mgmt};
 
 // --- Command Mode push-to-talk ----------------------------------------------
@@ -206,17 +206,17 @@ async fn process_command(app: AppHandle) {
     }
     *last_benchmark.lock() = Some(TranscriptionBenchmark {
         mode: "command".into(),
+        backend: if settings.lock().transcription_backend == "local" {
+            local_backend_label_for(&model).to_string()
+        } else {
+            "Groq".into()
+        },
         model: if model.is_empty() {
             "whisper-large-v3-turbo".into()
         } else {
             model
         },
         profile,
-        backend: if settings.lock().transcription_backend == "local" {
-            local_backend_label().to_string()
-        } else {
-            "Groq".into()
-        },
         clip_duration_ms: duration_ms,
         transcribe_ms,
         words_produced: instruction.split_whitespace().count(),

@@ -74,6 +74,23 @@ pub fn local_backend_label() -> &'static str {
     }
 }
 
+/// Backend label for a specific local model id — Parakeet ids run on the ONNX
+/// backend, everything else on whisper.cpp. Used by the pipeline/command-mode
+/// benchmark rows so they name the engine that actually ran.
+pub fn local_backend_label_for(model_id: &str) -> &'static str {
+    if is_parakeet_id(model_id) {
+        crate::parakeet::backend_label()
+    } else {
+        local_backend_label()
+    }
+}
+
+/// Parakeet catalog ids are the only local speech models not run by
+/// whisper.cpp; the id prefix is the routing key.
+fn is_parakeet_id(model_id: &str) -> bool {
+    model_id.starts_with("parakeet-")
+}
+
 /// A speech-to-text backend. Takes 16 kHz mono WAV bytes, returns raw text.
 #[async_trait]
 pub trait Transcriber: Send + Sync {
@@ -646,9 +663,12 @@ fn decode_wav_f32(wav: &[u8]) -> anyhow::Result<Vec<f32>> {
 
 /// Routes each call to the Groq or local backend per the live `Settings`, with
 /// automatic fallback to Groq when the local backend errors and a key exists.
+/// "Local" covers two engines selected by the model id: whisper.cpp for the
+/// Whisper GGML catalog, Parakeet ONNX for `parakeet-*` ids.
 pub struct RoutingTranscriber {
     groq: GroqTranscriber,
     local: LocalTranscriber,
+    parakeet: crate::parakeet::LocalParakeetTranscriber,
     settings: Arc<Mutex<Settings>>,
 }
 
@@ -656,13 +676,26 @@ impl RoutingTranscriber {
     pub fn new(models_dir: PathBuf, settings: Arc<Mutex<Settings>>) -> Self {
         Self {
             groq: GroqTranscriber::new(settings.clone()),
-            local: LocalTranscriber::new(models_dir, settings.clone()),
+            local: LocalTranscriber::new(models_dir.clone(), settings.clone()),
+            parakeet: crate::parakeet::LocalParakeetTranscriber::new(
+                models_dir,
+                settings.clone(),
+            ),
             settings,
         }
     }
 
     fn use_local(&self) -> bool {
         self.settings.lock().transcription_backend == "local"
+    }
+
+    /// The local engine for the currently selected model id.
+    fn local_engine(&self) -> &dyn Transcriber {
+        if is_parakeet_id(&self.settings.lock().local_whisper_model) {
+            &self.parakeet
+        } else {
+            &self.local
+        }
     }
 }
 
@@ -676,7 +709,7 @@ impl Transcriber for RoutingTranscriber {
     ) -> anyhow::Result<String> {
         if self.use_local() {
             match self
-                .local
+                .local_engine()
                 .transcribe(wav.clone(), language.clone(), hints.clone())
                 .await
             {
@@ -704,7 +737,7 @@ impl Transcriber for RoutingTranscriber {
                 wav: Vec::new(),
             };
             match self
-                .local
+                .local_engine()
                 .transcribe_audio(local_audio, language.clone(), hints.clone())
                 .await
             {
@@ -719,10 +752,10 @@ impl Transcriber for RoutingTranscriber {
     }
 
     async fn prewarm(&self) -> anyhow::Result<()> {
-        self.local.prewarm().await
+        self.local_engine().prewarm().await
     }
 
     fn whisper_status(&self) -> Option<WhisperStatus> {
-        self.local.whisper_status()
+        self.local_engine().whisper_status()
     }
 }

@@ -32,13 +32,13 @@ const PROFILES: { value: LocalProfile; label: string; blurb: string; recommends:
     value: "balanced",
     label: "Balanced",
     blurb: "A good speed/quality tradeoff for everyday dictation.",
-    recommends: ["whisper-small.en"],
+    recommends: ["whisper-small.en", "parakeet-tdt-0.6b-v2"],
   },
   {
     value: "accurate",
     label: "Accurate",
     blurb: "Highest quality. Gentler trimming, largest model.",
-    recommends: ["whisper-large-v3-turbo"],
+    recommends: ["whisper-large-v3-turbo", "parakeet-tdt-0.6b-v2"],
   },
 ];
 

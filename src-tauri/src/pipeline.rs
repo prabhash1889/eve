@@ -13,7 +13,7 @@ use crate::db::{dictionary, flow_styles, queries, snippets, transforms, Db};
 use crate::polish::StyleHint;
 use crate::state::AppState;
 use crate::timing::Timings;
-use crate::transcription::{local_backend_label, Audio, TranscriptionBenchmark};
+use crate::transcription::{local_backend_label_for, Audio, TranscriptionBenchmark};
 use crate::{audio, events, injection, text_processing, window_mgmt};
 
 /// Emit a coarse processing-stage label to the Flow Bar (Phase 1 visibility).
@@ -251,7 +251,7 @@ pub async fn process(app: AppHandle) {
         },
         profile: profile.clone(),
         backend: if transcription_backend == "local" {
-            local_backend_label().to_string()
+            local_backend_label_for(&transcriber_model).to_string()
         } else {
             "Groq".into()
         },

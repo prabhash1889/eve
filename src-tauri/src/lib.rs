@@ -12,6 +12,7 @@ mod hotkey;
 mod injection;
 mod llm;
 mod models;
+mod parakeet;
 mod pipeline;
 mod platform;
 mod polish;

@@ -34,6 +34,12 @@ local-llm = ["dep:llama-cpp-2", "dep:encoding_rs"]
 # with no API key. Build with `--features local-llm` (in its own build) for
 # on-device polish instead.
 local-models = ["local-whisper"]
+# On-device speech-to-text with NVIDIA Parakeet (FastConformer-TDT via ONNX
+# Runtime). Independent of the ggml stacks above, so it combines freely with
+# `local-whisper`/`local-whisper-cuda`. CPU execution by default — Parakeet is
+# fast enough on CPU that no GPU provider is wired up yet.
+# ponytail: CPU-only ort; add parakeet-rs/cuda or /directml features if CPU latency ever matters.
+local-parakeet = ["dep:parakeet-rs"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -83,6 +89,9 @@ futures-util = "0.3"
 # [features]). These compile whisper.cpp / llama.cpp via CMake + a C/C++ toolchain.
 whisper-rs = { version = "0.16", optional = true }
 llama-cpp-2 = { version = "0.1", optional = true }
+# On-device Parakeet ASR (behind `local-parakeet`). Pure Rust over ONNX Runtime;
+# no CMake/C++ toolchain needed (ort downloads prebuilt binaries at build time).
+parakeet-rs = { version = "0.3", optional = true }
 # Decoder for llama.cpp `token_to_piece` (must match llama-cpp-2's encoding_rs).
 encoding_rs = { version = "0.8", optional = true }
 
