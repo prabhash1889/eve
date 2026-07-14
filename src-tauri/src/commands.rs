@@ -663,6 +663,18 @@ pub async fn prewarm_local_model(state: State<'_, AppState>) -> Result<(), Strin
     Ok(())
 }
 
+/// Free any loaded local speech model that isn't the active selection (releasing
+/// its VRAM on the CUDA build) and prewarm the one that is, honoring the
+/// prewarm-enabled setting. Called from the Local Models page after the speech
+/// backend or the selected model changes. Best-effort.
+#[tauri::command]
+pub async fn reconcile_local_models(state: State<'_, AppState>) -> Result<(), String> {
+    let transcriber = state.transcriber.clone();
+    let prewarm = state.settings.lock().local_prewarm_enabled;
+    transcriber.reconcile(prewarm).await;
+    Ok(())
+}
+
 /// Phase 2: readiness of the selected local Whisper model (loaded / loading /
 /// last load time), for the Local Models status panel. `None` when the build has
 /// no local backend.

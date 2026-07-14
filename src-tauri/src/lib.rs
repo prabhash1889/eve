@@ -274,6 +274,7 @@ pub fn run() {
             commands::cancel_model_download,
             commands::delete_model,
             commands::prewarm_local_model,
+            commands::reconcile_local_models,
             commands::get_local_whisper_status,
             commands::get_local_transcription_benchmark,
             commands::transcribe_files,

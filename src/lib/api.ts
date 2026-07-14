@@ -479,6 +479,9 @@ export const api = {
   deleteModel: (id: string) => invoke<void>("delete_model", { id }),
   // Phase 2: prewarm + readiness of the selected local Whisper model.
   prewarmLocalModel: () => invoke<void>("prewarm_local_model"),
+  // Unload any local speech model that isn't the active selection (frees VRAM)
+  // and prewarm the active one. Call after a backend/model change.
+  reconcileLocalModels: () => invoke<void>("reconcile_local_models"),
   getLocalWhisperStatus: () => invoke<WhisperStatus | null>("get_local_whisper_status"),
   getLocalTranscriptionBenchmark: () =>
     invoke<TranscriptionBenchmark | null>("get_local_transcription_benchmark"),

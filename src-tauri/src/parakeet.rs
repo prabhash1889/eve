@@ -69,6 +69,15 @@ impl LocalParakeetTranscriber {
         }
     }
 
+    /// Drop the cached model, freeing its memory. The next use cold-loads again.
+    /// No-op if nothing is loaded or the feature is off.
+    pub fn unload(&self) {
+        #[cfg(feature = "local-parakeet")]
+        {
+            *self.cache.lock() = None;
+        }
+    }
+
     /// Resolve the selected model id to its on-disk directory, erroring with a
     /// user-facing message when it isn't downloaded.
     #[cfg(feature = "local-parakeet")]

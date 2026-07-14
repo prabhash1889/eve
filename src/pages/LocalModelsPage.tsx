@@ -98,14 +98,14 @@ export function LocalModelsPage({
     return () => window.clearInterval(t);
   }, [whisperStatus?.loading, refreshStatus]);
 
-  // Prewarm the selected local model (best-effort), then refresh readiness.
-  // Honors the prewarm-enabled setting so a user who opted out isn't surprised
-  // by a cold load happening on switch.
-  const prewarm = useCallback(async () => {
-    if (!settings.localPrewarmEnabled) return;
-    await api.prewarmLocalModel().catch(() => {});
+  // After a backend/model change: unload any local model that is no longer the
+  // active selection (freeing its memory - VRAM on the CUDA build) and prewarm
+  // the one that is. The backend honors the prewarm-enabled setting, so a user
+  // who opted out still isn't surprised by a cold load on switch.
+  const reconcile = useCallback(async () => {
+    await api.reconcileLocalModels().catch(() => {});
     refreshStatus();
-  }, [refreshStatus, settings.localPrewarmEnabled]);
+  }, [refreshStatus]);
 
   // Live download lifecycle events from Rust.
   useEffect(() => {
@@ -148,9 +148,9 @@ export function LocalModelsPage({
     value: ModelBackend,
   ) => {
     await persist({ ...settings, [key]: value });
-    // Switching speech-to-text to local → prewarm the selected model now so the
-    // first dictation isn't slowed by a cold load.
-    if (key === "transcriptionBackend" && value === "local") prewarm();
+    // Speech backend changed → reconcile: prewarm on switch to local, and free
+    // the local model's memory on switch to Groq.
+    if (key === "transcriptionBackend") reconcile();
   };
 
   const download = async (id: string) => {
@@ -176,8 +176,9 @@ export function LocalModelsPage({
         : { ...settings, localLlmModel: m.id };
     await persist(next);
     load();
-    // Selecting a speech model while local STT is active → prewarm the new pick.
-    if (m.kind === "whisper" && settings.transcriptionBackend === "local") prewarm();
+    // Speech model changed → reconcile: unload the other local engine and
+    // prewarm the newly selected one.
+    if (m.kind === "whisper") reconcile();
   };
 
   // Clear the active selection for this kind (id → ""). The backend treats an
@@ -190,6 +191,8 @@ export function LocalModelsPage({
         : { ...settings, localLlmModel: "" };
     await persist(next);
     load();
+    // Deselecting a speech model → unload it so it stops holding VRAM.
+    if (m.kind === "whisper") reconcile();
   };
 
   const whisper = models.filter((m) => m.kind === "whisper");

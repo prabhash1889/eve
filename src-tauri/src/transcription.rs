@@ -121,6 +121,13 @@ pub trait Transcriber: Send + Sync {
         Ok(())
     }
 
+    /// Free any local model this backend has loaded that isn't the active
+    /// selection (releasing its memory - VRAM on the CUDA build), then prewarm
+    /// the one that is when `prewarm` is set. Called after the speech backend or
+    /// selected model changes so an unused model doesn't keep occupying the GPU.
+    /// No-op for cloud backends.
+    async fn reconcile(&self, _prewarm: bool) {}
+
     /// Phase 2: local Whisper readiness for the UI. `None` for cloud-only backends.
     fn whisper_status(&self) -> Option<WhisperStatus> {
         None
@@ -282,6 +289,17 @@ impl LocalTranscriber {
             load_gate: tokio::sync::Mutex::new(()),
             #[cfg(feature = "local-whisper")]
             load_state: Mutex::new(LoadState::default()),
+        }
+    }
+
+    /// Drop the cached whisper context, freeing its memory (VRAM on the CUDA
+    /// build). The next use cold-loads again. No-op if nothing is loaded or the
+    /// feature is off. An in-flight transcription keeps its own `Arc` clone, so
+    /// this can't cut a running inference short.
+    pub fn unload(&self) {
+        #[cfg(feature = "local-whisper")]
+        {
+            *self.cache.lock() = None;
         }
     }
 
@@ -757,5 +775,28 @@ impl Transcriber for RoutingTranscriber {
 
     fn whisper_status(&self) -> Option<WhisperStatus> {
         self.local_engine().whisper_status()
+    }
+
+    async fn reconcile(&self, prewarm: bool) {
+        let (use_local, id) = {
+            let s = self.settings.lock();
+            (
+                s.transcription_backend == "local",
+                s.local_whisper_model.clone(),
+            )
+        };
+        let whisper_active = use_local && !id.is_empty() && !is_parakeet_id(&id);
+        let parakeet_active = use_local && is_parakeet_id(&id);
+        // Free whichever local engine isn't the current selection so a
+        // deselected / switched-away model stops holding memory.
+        if !whisper_active {
+            self.local.unload();
+        }
+        if !parakeet_active {
+            self.parakeet.unload();
+        }
+        if prewarm && (whisper_active || parakeet_active) {
+            let _ = self.local_engine().prewarm().await;
+        }
     }
 }
