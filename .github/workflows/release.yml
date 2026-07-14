@@ -1,56 +1,59 @@
 name: Release
 
-# Build, (optionally) sign, and publish the installers for every platform, then
-# emit the multi-platform `latest.json` feed that the in-app updater reads.
+# One-click release, run entirely in CI so you never build locally again.
 #
-# Matrix (cross-platform-plan.md Phase 5): one job per OS, all attaching to the
-# SAME draft release (same tagName). tauri-action merges every platform's
-# updater artifacts into a single `latest.json`, so the existing updater
-# endpoint keeps working unchanged.
-#   - windows-latest : nsis + msi (+ updater); needs libclang for bindgen.
-#   - macos-latest   : universal .app + dmg (+ updater); whisper.cpp builds with
-#                      Metal via the Xcode CLT, so no libclang step.
-#   - ubuntu-22.04   : deb + rpm + appimage (+ updater); same system deps as ci.yml.
+# Trigger: Actions tab -> "Release" -> Run workflow, with an optional version.
+#   - version blank        -> bumps the PATCH number (0.1.0 -> 0.1.1)
+#   - version set (x.y.z)  -> uses exactly that version
 #
-# Variant (parity Phase B): this workflow builds ONE variant - the CPU
-# local-whisper build - and that variant is the updater channel.
-# tauri-plugin-updater has a single `latest.json` per platform, so a second
-# variant cannot share the feed. The CUDA variant (`local-whisper-cuda`) is a
-# power-user artifact built locally with `node scripts/release.mjs --cuda`
-# (it needs a CUDA toolkit the runners don't have) and attached to the GitHub
-# release manually, clearly labelled; it must never be referenced from
-# `latest.json`.
+# It then, on the branch you dispatch from:
+#   1. bumps package.json / tauri.conf.json / Cargo.toml (+ Cargo.lock) in lockstep,
+#   2. commits "chore(release): vX.Y.Z" and pushes a matching tag,
+#   3. builds the Windows CUDA + Parakeet installer, and
+#   4. publishes a draft GitHub release with the .exe / .msi attached.
 #
-# No model is bundled - the installer stays small; onboarding offers the
-# download (Cloud vs Private fork).
+# Build variant (per the owner's setup): local-whisper-cuda + local-parakeet.
+# Whisper runs on the GPU, Parakeet on the CPU, polish via Groq. The installer
+# is UNSIGNED and needs no repo secrets - Windows SmartScreen shows
+# "More info -> Run anyway" the first time; in-app auto-update is off (no key).
 #
-# Trigger by pushing a tag like `v0.1.0`, or run it manually.
+# CUDA note: mirrors the machine-local .cargo/config.toml (gitignored, so absent
+# here) - Ninja generator, sm_120 (Blackwell / RTX 50-series), and nvcc's
+# -allow-unsupported-compiler. The CUDA toolkit version below should match what
+# the target machine has installed so the cublas/cudart runtime DLLs resolve.
+
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version x.y.z (leave blank to bump the patch number)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  # Mirror the verified local CUDA build config (normally in the gitignored
+  # src-tauri/.cargo/config.toml). Ninja invokes nvcc directly; sm_120 targets
+  # Blackwell; the prepend flag lets nvcc accept the runner's MSVC.
+  CMAKE_GENERATOR: Ninja
+  CUDAARCHS: "120"
+  NVCC_PREPEND_FLAGS: "-allow-unsupported-compiler"
+
 jobs:
   release:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: windows-latest
-            args: "--features local-whisper --bundles nsis,msi,updater"
-          - platform: macos-latest
-            target: universal-apple-darwin
-            args: "--features local-whisper --target universal-apple-darwin --bundles app,dmg,updater"
-          - platform: ubuntu-22.04
-            args: "--features local-whisper --bundles deb,rpm,appimage,updater"
-
-    runs-on: ${{ matrix.platform }}
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history + write token so the version-bump commit and tag push.
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -60,85 +63,88 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-        # macOS builds a universal binary; add both arches for the target above.
-        with:
-          targets: ${{ matrix.target && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Cache cargo
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
-      # Tauri's Linux build needs system libraries (WebKitGTK, GTK, appindicator,
-      # librsvg), and the platform backends add ALSA, libxkbcommon, and libdbus
-      # (the last for the Secret Service keyring). patchelf is needed for AppImage.
-      - name: Install Linux system deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libasound2-dev \
-            libxkbcommon-dev \
-            libdbus-1-dev \
-            patchelf
+      # x64 MSVC env so Ninja/nvcc find cl.exe (the CUDA build needs it).
+      - name: Setup MSVC dev environment
+        uses: ilammy/msvc-dev-cmd@v1
 
-      # On-device speech-to-text (`local-whisper`) builds whisper.cpp from
-      # source. CMake + MSVC ship on windows-latest; bindgen additionally needs
-      # libclang, so point it at the runner's preinstalled LLVM. macOS/Linux
-      # bindgen finds libclang from the system toolchain, so no step there.
+      - name: Setup Ninja
+        shell: pwsh
+        run: choco install ninja -y
+
+      # No GPU is needed to BUILD CUDA code, only the toolkit (nvcc + cublas).
+      # Version should match the target machine's installed CUDA so the runtime
+      # DLLs (cublas64_*, cudart64_*) resolve at launch.
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.24
+        id: cuda
+        with:
+          cuda: "13.0.0"
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust"]'
+
+      # whisper.cpp builds from source (local-whisper-cuda); bindgen needs
+      # libclang. windows-latest ships LLVM at C:\Program Files\LLVM.
       - name: Locate libclang (for bindgen)
-        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $llvm = if ($env:LLVM_PATH) { "$env:LLVM_PATH\bin" } else { "C:\Program Files\LLVM\bin" }
           echo "LIBCLANG_PATH=$llvm" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: Bump version, commit & tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          node scripts/bump-version.mjs "${VERSION:-patch}"
+          NEW=$(node -e "process.stdout.write(require('./package.json').version)")
+          # Keep Cargo.lock's own package version in step (no dep upgrades).
+          cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1 >/dev/null
+          git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
+          git commit -m "chore(release): v$NEW"
+          git tag "v$NEW"
+          # Push the bump commit back to the dispatched branch (checkout may be a
+          # detached HEAD, so name the branch explicitly) plus the new tag.
+          git push origin "HEAD:$GITHUB_REF_NAME" "refs/tags/v$NEW"
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          echo "tag=v$NEW" >> "$GITHUB_OUTPUT"
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+
       - name: Install frontend deps
         run: npm ci
 
-      - name: Build, sign & publish
+      # tauri.conf.json enables updater artifacts (which demand a signing key).
+      # We ship unsigned, so override that off via a --config file - no key,
+      # no secrets. A file (not inline JSON) so the shell can't mangle quotes.
+      - name: Disable updater artifacts (unsigned build)
+        shell: bash
+        run: echo '{"bundle":{"createUpdaterArtifacts":false}}' > noupd.json
+
+      - name: Build & publish release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # AppImage's linuxdeploy tooling normally mounts via FUSE, which GitHub
-          # runners don't provide - extract-and-run instead so bundling doesn't
-          # hang/crash. No-op on Windows/macOS.
-          APPIMAGE_EXTRACT_AND_RUN: "1"
-          # Updater artifact signing (required so `latest.json` is signed and the
-          # in-app updater trusts the bundle). Generate with `tauri signer generate`
-          # and put the PUBLIC key in tauri.conf.json `plugins.updater.pubkey`.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Optional Apple signing/notarization. Leave unset to ship an unsigned
-          # build; users then right-click-Open or clear the quarantine attribute
-          # (`xattr -d com.apple.quarantine`) - see README distribution notes.
-          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          # APPLE_ID: ${{ secrets.APPLE_ID }}
-          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Optional Authenticode / Azure Trusted Signing of the Windows installer.
-          # Leave unset to ship an unsigned (SmartScreen-warned) build.
-          # AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          # AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          # AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         with:
           # Call the tauri CLI directly. The default `npm run tauri` goes through
-          # scripts/tauri.mjs, which MOVES the built installers into build/<version>/
-          # after every build - tauri-action would then find no artifacts to attach
-          # to the release (and the mover crashed on Linux's deb staging directory).
+          # scripts/tauri.mjs, which MOVES installers into build/<version>/ after
+          # the build - tauri-action would then find nothing to attach.
           tauriScript: npx tauri
-          tagName: ${{ github.ref_name }}
-          releaseName: "Eve ${{ github.ref_name }}"
-          releaseBody: "See the assets below to download and install."
+          tagName: ${{ steps.version.outputs.tag }}
+          releaseName: "Eve ${{ steps.version.outputs.tag }}"
+          releaseBody: |
+            Windows CUDA + Parakeet build (unsigned).
+
+            Install: download the `.exe`, run it, and on the SmartScreen prompt
+            choose "More info -> Run anyway". Requires an NVIDIA GPU with the
+            matching CUDA runtime for GPU Whisper; Parakeet and Groq work without it.
           releaseDraft: true
           prerelease: false
-          # Per-OS bundles + the updater artifacts/`latest.json`, compiling
-          # on-device whisper.cpp (`local-whisper`, CPU) - the updater-channel
-          # build. Bundle list varies per platform (see the matrix above).
-          args: ${{ matrix.args }}
+          args: "--features local-whisper-cuda,local-parakeet --bundles nsis,msi --config noupd.json"
