@@ -5,6 +5,7 @@
 //! happen after the user releases the key (see `pipeline`).
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -46,117 +47,227 @@ fn select_input_device(host: &cpal::Host, name: &str) -> Option<cpal::Device> {
     host.default_input_device()
 }
 
-/// Spawn the capture thread. Runs until `is_recording` is set to false.
-/// `device_name` selects the capture device by name (empty = system default).
-pub fn start_capture(
+/// A command to the persistent capture thread.
+enum CaptureCmd {
+    /// Begin capturing from `device_name` (empty = system default). Any stream
+    /// already open is torn down first.
+    Start { device_name: String },
+    /// Stop capturing and release the device.
+    Stop,
+}
+
+/// Owns the single capture thread. Recording is driven by `start`/`stop`
+/// commands rather than by spawning a fresh thread (and cpal stream) per press.
+///
+/// One thread processing commands *serially* is the whole point: a `Start`
+/// always fully drops the previous stream before building the next, so two
+/// streams never hold the same device at once. That overlap - a stale
+/// slow-starting thread plus a new one, both racing to open the mic - was the
+/// source of the rapid-tap failures where the next press intermittently died
+/// with a device-busy error or hijacked the wrong session.
+pub struct CaptureHandle {
+    tx: Mutex<Option<Sender<CaptureCmd>>>,
+}
+
+impl Default for CaptureHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CaptureHandle {
+    pub fn new() -> Self {
+        Self {
+            tx: Mutex::new(None),
+        }
+    }
+
+    /// Start recording. Spawns the capture thread on first use (binding the app
+    /// handle and shared buffers), then reuses it for every later session.
+    pub fn start(
+        &self,
+        app: AppHandle,
+        is_recording: Arc<AtomicBool>,
+        buffer: Arc<Mutex<Vec<f32>>>,
+        sample_rate: Arc<AtomicU32>,
+        amp: Arc<Mutex<f32>>,
+        device_name: String,
+    ) {
+        let mut guard = self.tx.lock();
+        let tx = guard.get_or_insert_with(|| {
+            spawn_capture_thread(app, is_recording, buffer, sample_rate, amp)
+        });
+        let _ = tx.send(CaptureCmd::Start { device_name });
+    }
+
+    /// Stop the current recording and release the device. No-op if the thread
+    /// was never started.
+    pub fn stop(&self) {
+        if let Some(tx) = self.tx.lock().as_ref() {
+            let _ = tx.send(CaptureCmd::Stop);
+        }
+    }
+}
+
+/// The capture thread: owns the (non-`Send`) cpal stream for its whole life and
+/// serves `Start`/`Stop` commands. While recording it wakes every 33 ms to push
+/// amplitude to the Flow Bar and warn as the buffer nears its ceiling.
+fn spawn_capture_thread(
     app: AppHandle,
     is_recording: Arc<AtomicBool>,
     buffer: Arc<Mutex<Vec<f32>>>,
     sample_rate: Arc<AtomicU32>,
     amp: Arc<Mutex<f32>>,
-    device_name: String,
-) {
+) -> Sender<CaptureCmd> {
+    let (tx, rx): (Sender<CaptureCmd>, Receiver<CaptureCmd>) = std::sync::mpsc::channel();
     thread::spawn(move || {
-        buffer.lock().clear();
-        *amp.lock() = 0.0;
-
         let host = cpal::default_host();
-        let Some(device) = select_input_device(&host, &device_name) else {
-            is_recording.store(false, Ordering::SeqCst);
-            window_mgmt::fail(&app, "No microphone found");
-            return;
-        };
-        let config = match device.default_input_config() {
-            Ok(c) => c,
-            Err(e) => {
-                is_recording.store(false, Ordering::SeqCst);
-                window_mgmt::fail(&app, &format!("Audio config error: {e}"));
-                return;
-            }
-        };
-
-        let sample_format = config.sample_format();
-        let stream_config: cpal::StreamConfig = config.into();
-        let channels = stream_config.channels as usize;
-        sample_rate.store(stream_config.sample_rate.0, Ordering::SeqCst);
-
-        let err_fn = |e| eprintln!("[audio] stream error: {e}");
-
         let ready_sent = Arc::new(AtomicBool::new(false));
-
-        let stream_result = match sample_format {
-            cpal::SampleFormat::F32 => {
-                let b = buffer.clone();
-                let a = amp.clone();
-                let app_handle = app.clone();
-                let ready_sent_clone = ready_sent.clone();
-                device.build_input_stream(
-                    &stream_config,
-                    move |data: &[f32], _: &_| {
-                        if !data.is_empty() && !ready_sent_clone.swap(true, Ordering::SeqCst) {
-                            let _ = app_handle.emit_to(events::FLOWBAR, events::READY, ());
-                        }
-                        ingest_f32(data, channels, &b, &a);
-                    },
-                    err_fn,
-                    None,
-                )
-            }
-            cpal::SampleFormat::I16 => {
-                let b = buffer.clone();
-                let a = amp.clone();
-                let app_handle = app.clone();
-                let ready_sent_clone = ready_sent.clone();
-                device.build_input_stream(
-                    &stream_config,
-                    move |data: &[i16], _: &_| {
-                        if !data.is_empty() && !ready_sent_clone.swap(true, Ordering::SeqCst) {
-                            let _ = app_handle.emit_to(events::FLOWBAR, events::READY, ());
-                        }
-                        ingest_i16(data, channels, &b, &a);
-                    },
-                    err_fn,
-                    None,
-                )
-            }
-            other => {
-                is_recording.store(false, Ordering::SeqCst);
-                window_mgmt::fail(&app, &format!("Unsupported audio format: {other:?}"));
-                return;
-            }
-        };
-
-        let stream = match stream_result {
-            Ok(s) => s,
-            Err(e) => {
-                is_recording.store(false, Ordering::SeqCst);
-                window_mgmt::fail(&app, &format!("Audio stream error: {e}"));
-                return;
-            }
-        };
-        if let Err(e) = stream.play() {
-            is_recording.store(false, Ordering::SeqCst);
-            window_mgmt::fail(&app, &format!("Could not start microphone: {e}"));
-            return;
-        }
-
-        // Push the latest amplitude to the Flow Bar while recording. Also warn
-        // once when the buffer nears its ceiling - in toggle mode a hands-free
-        // recording can run long enough to hit it.
-        let rate = sample_rate.load(Ordering::SeqCst) as usize;
-        let warn_at = MAX_CAPTURE_SAMPLES.saturating_sub(rate.max(8_000) * 60);
+        // Holding the stream keeps the mic open; `Some` == recording. Dropping it
+        // (via `take`) is what stops capture and releases the device.
+        let mut stream: Option<cpal::Stream> = None;
         let mut warned = false;
-        while is_recording.load(Ordering::SeqCst) {
-            let level = *amp.lock();
-            let _ = app.emit_to(events::FLOWBAR, events::AMPLITUDE, level);
-            if !warned && buffer.lock().len() >= warn_at {
-                warned = true;
-                let _ = app.emit_to(events::FLOWBAR, events::LIMIT, ());
+        let mut warn_at = usize::MAX;
+
+        loop {
+            // While recording, tick every 33 ms for the waveform; while idle,
+            // block until the next command so we don't spin.
+            let cmd = if stream.is_some() {
+                match rx.recv_timeout(Duration::from_millis(33)) {
+                    Ok(c) => Some(c),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            } else {
+                match rx.recv() {
+                    Ok(c) => Some(c),
+                    Err(_) => break,
+                }
+            };
+
+            match cmd {
+                Some(CaptureCmd::Start { device_name }) => {
+                    // Serialized teardown: fully drop any prior stream before
+                    // opening a new one so the device is never held by two
+                    // streams at once.
+                    drop(stream.take());
+                    buffer.lock().clear();
+                    *amp.lock() = 0.0;
+                    ready_sent.store(false, Ordering::SeqCst);
+                    warned = false;
+
+                    match build_stream(
+                        &host,
+                        &device_name,
+                        &buffer,
+                        &amp,
+                        &sample_rate,
+                        &app,
+                        &ready_sent,
+                    ) {
+                        Ok(s) => {
+                            if let Err(e) = s.play() {
+                                is_recording.store(false, Ordering::SeqCst);
+                                window_mgmt::fail(
+                                    &app,
+                                    &format!("Could not start microphone: {e}"),
+                                );
+                            } else {
+                                let rate = sample_rate.load(Ordering::SeqCst) as usize;
+                                warn_at =
+                                    MAX_CAPTURE_SAMPLES.saturating_sub(rate.max(8_000) * 60);
+                                stream = Some(s);
+                            }
+                        }
+                        Err(e) => {
+                            is_recording.store(false, Ordering::SeqCst);
+                            window_mgmt::fail(&app, &e);
+                        }
+                    }
+                }
+                Some(CaptureCmd::Stop) => {
+                    drop(stream.take()); // releases the device
+                    *amp.lock() = 0.0;
+                }
+                None => {
+                    let level = *amp.lock();
+                    let _ = app.emit_to(events::FLOWBAR, events::AMPLITUDE, level);
+                    if !warned && buffer.lock().len() >= warn_at {
+                        warned = true;
+                        let _ = app.emit_to(events::FLOWBAR, events::LIMIT, ());
+                    }
+                }
             }
-            thread::sleep(Duration::from_millis(33));
         }
-        drop(stream); // releases the device
     });
+    tx
+}
+
+/// Open a cpal input stream on the selected device, wiring its callback to
+/// append samples to `buffer`, track peak amplitude, and emit `READY` on the
+/// first non-empty block. Stores the negotiated sample rate. The returned
+/// stream is not yet playing.
+fn build_stream(
+    host: &cpal::Host,
+    device_name: &str,
+    buffer: &Arc<Mutex<Vec<f32>>>,
+    amp: &Arc<Mutex<f32>>,
+    sample_rate: &Arc<AtomicU32>,
+    app: &AppHandle,
+    ready_sent: &Arc<AtomicBool>,
+) -> Result<cpal::Stream, String> {
+    let device =
+        select_input_device(host, device_name).ok_or_else(|| "No microphone found".to_string())?;
+    let config = device
+        .default_input_config()
+        .map_err(|e| format!("Audio config error: {e}"))?;
+
+    let sample_format = config.sample_format();
+    let stream_config: cpal::StreamConfig = config.into();
+    let channels = stream_config.channels as usize;
+    sample_rate.store(stream_config.sample_rate.0, Ordering::SeqCst);
+
+    let err_fn = |e| eprintln!("[audio] stream error: {e}");
+
+    let stream_result = match sample_format {
+        cpal::SampleFormat::F32 => {
+            let b = buffer.clone();
+            let a = amp.clone();
+            let app_handle = app.clone();
+            let ready_sent_clone = ready_sent.clone();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[f32], _: &_| {
+                    if !data.is_empty() && !ready_sent_clone.swap(true, Ordering::SeqCst) {
+                        let _ = app_handle.emit_to(events::FLOWBAR, events::READY, ());
+                    }
+                    ingest_f32(data, channels, &b, &a);
+                },
+                err_fn,
+                None,
+            )
+        }
+        cpal::SampleFormat::I16 => {
+            let b = buffer.clone();
+            let a = amp.clone();
+            let app_handle = app.clone();
+            let ready_sent_clone = ready_sent.clone();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[i16], _: &_| {
+                    if !data.is_empty() && !ready_sent_clone.swap(true, Ordering::SeqCst) {
+                        let _ = app_handle.emit_to(events::FLOWBAR, events::READY, ());
+                    }
+                    ingest_i16(data, channels, &b, &a);
+                },
+                err_fn,
+                None,
+            )
+        }
+        other => return Err(format!("Unsupported audio format: {other:?}")),
+    };
+
+    stream_result.map_err(|e| format!("Audio stream error: {e}"))
 }
 
 fn ingest_f32(data: &[f32], channels: usize, buffer: &Mutex<Vec<f32>>, amp: &Mutex<f32>) {

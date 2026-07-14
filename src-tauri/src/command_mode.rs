@@ -60,7 +60,7 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
     hotkey::register_escape(app, st);
 
     let device_name = st.settings.lock().input_device.clone();
-    audio::start_capture(
+    st.capture.start(
         app.clone(),
         st.is_recording.clone(),
         st.audio_buffer.clone(),
@@ -76,6 +76,7 @@ pub fn on_release(app: &AppHandle, st: &AppState) {
         return;
     }
     st.is_command_mode.store(false, Ordering::SeqCst);
+    st.capture.stop();
     hotkey::unregister_escape(app, st);
     let _ = app.emit_to(events::FLOWBAR, events::PROCESSING, ());
 

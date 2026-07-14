@@ -12,7 +12,7 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 use crate::state::AppState;
-use crate::{audio, events, pipeline, window_mgmt};
+use crate::{events, pipeline, window_mgmt};
 
 /// Parity A1: in hybrid mode, a press shorter than this is a "tap" that arms a
 /// hands-free toggle; holding past it behaves like push-to-talk.
@@ -173,7 +173,7 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
     register_escape(app, st);
 
     let device_name = st.settings.lock().input_device.clone();
-    audio::start_capture(
+    st.capture.start(
         app.clone(),
         st.is_recording.clone(),
         st.audio_buffer.clone(),
@@ -191,6 +191,7 @@ pub fn on_release(app: &AppHandle, st: &AppState) {
     // Mark the pipeline in-flight; `process` clears it via a drop guard on every
     // exit path (success, error, or early return).
     st.is_processing.store(true, Ordering::SeqCst);
+    st.capture.stop();
     unregister_escape(app, st);
     let _ = app.emit_to(events::FLOWBAR, events::PROCESSING, ());
 
@@ -206,6 +207,7 @@ pub fn on_cancel(app: &AppHandle, st: &AppState) {
     }
     // Reset Command Mode too — Esc cancels either capture.
     st.is_command_mode.store(false, Ordering::SeqCst);
+    st.capture.stop();
     unregister_escape(app, st);
     st.audio_buffer.lock().clear();
     let _ = app.emit_to(events::FLOWBAR, events::CANCEL, ());

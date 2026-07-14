@@ -43,6 +43,10 @@ pub struct AppState {
     pub audio_buffer: Arc<Mutex<Vec<f32>>>,
     pub sample_rate: Arc<AtomicU32>,
     pub current_amplitude: Arc<Mutex<f32>>,
+    /// Owns the single microphone capture thread. Recording is driven by
+    /// `capture.start()`/`capture.stop()`; the thread serializes stream
+    /// create/destroy so rapid taps can't open two streams on one device.
+    pub capture: crate::audio::CaptureHandle,
     /// Foreground window (HWND as isize) captured when recording starts, so we
     /// can restore focus to it before pasting.
     pub foreground_hwnd: Arc<AtomicIsize>,
@@ -117,6 +121,7 @@ impl AppState {
             audio_buffer: Arc::new(Mutex::new(Vec::new())),
             sample_rate: Arc::new(AtomicU32::new(16_000)),
             current_amplitude: Arc::new(Mutex::new(0.0)),
+            capture: crate::audio::CaptureHandle::new(),
             foreground_hwnd: Arc::new(AtomicIsize::new(0)),
             current_context: Arc::new(Mutex::new(None)),
             main_shortcut: Arc::new(Mutex::new(main)),
