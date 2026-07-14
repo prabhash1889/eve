@@ -180,6 +180,18 @@ export function LocalModelsPage({
     if (m.kind === "whisper" && settings.transcriptionBackend === "local") prewarm();
   };
 
+  // Clear the active selection for this kind (id → ""). The backend treats an
+  // empty id as "no model selected"; if the matching backend is still Local,
+  // the "Select a downloaded model" warning surfaces until one is re-picked.
+  const deselectModel = async (m: ModelStatus) => {
+    const next: Settings =
+      m.kind === "whisper"
+        ? { ...settings, localWhisperModel: "" }
+        : { ...settings, localLlmModel: "" };
+    await persist(next);
+    load();
+  };
+
   const whisper = models.filter((m) => m.kind === "whisper");
   const llm = models.filter((m) => m.kind === "llm");
 
@@ -333,6 +345,7 @@ export function LocalModelsPage({
         onCancel={cancel}
         onDelete={remove}
         onSelect={selectModel}
+        onDeselect={deselectModel}
         recommended={recommended}
         status={
           settings.transcriptionBackend === "local" ? (
@@ -351,6 +364,7 @@ export function LocalModelsPage({
         onCancel={cancel}
         onDelete={remove}
         onSelect={selectModel}
+        onDeselect={deselectModel}
       />
     </div>
   );
@@ -525,6 +539,7 @@ function ModelSection({
   onCancel,
   onDelete,
   onSelect,
+  onDeselect,
   status,
   recommended,
 }: {
@@ -538,6 +553,7 @@ function ModelSection({
   onCancel: (id: string) => void;
   onDelete: (id: string) => void;
   onSelect: (m: ModelStatus) => void;
+  onDeselect: (m: ModelStatus) => void;
   status?: React.ReactNode;
   recommended?: Set<string>;
 }) {
@@ -562,6 +578,7 @@ function ModelSection({
               onCancel={() => onCancel(m.id)}
               onDelete={() => onDelete(m.id)}
               onSelect={() => onSelect(m)}
+              onDeselect={() => onDeselect(m)}
               recommended={!!recommended?.has(m.id)}
             />
           ))
@@ -579,6 +596,7 @@ function ModelCard({
   onCancel,
   onDelete,
   onSelect,
+  onDeselect,
   recommended,
 }: {
   model: ModelStatus;
@@ -588,6 +606,7 @@ function ModelCard({
   onCancel: () => void;
   onDelete: () => void;
   onSelect: () => void;
+  onDeselect: () => void;
   recommended?: boolean;
 }) {
   const downloading = model.downloading || !!progress;
@@ -625,10 +644,15 @@ function ModelCard({
           ) : model.installed ? (
             <>
               {model.active ? (
-                <span className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-accent">
-                  <Check size={14} />
+                <button
+                  onClick={onDeselect}
+                  title="Stop using this model"
+                  className="group/use flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-accent transition-colors hover:bg-canvas hover:text-ink-soft"
+                >
+                  <Check size={14} className="group-hover/use:hidden" />
+                  <X size={14} className="hidden group-hover/use:block" />
                   In use
-                </span>
+                </button>
               ) : (
                 <button
                   onClick={onSelect}
