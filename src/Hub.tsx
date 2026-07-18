@@ -168,8 +168,14 @@ export function Hub() {
         <NavItem icon={<BarChart3 size={18} />} label="Insights" active={nav === "insights"} onClick={() => setNav("insights")} />
         <NavItem icon={<BookMarked size={18} />} label="Dictionary" active={nav === "dictionary"} onClick={() => setNav("dictionary")} />
         <NavItem icon={<Zap size={18} />} label="Snippets" active={nav === "snippets"} onClick={() => setNav("snippets")} />
-        <NavItem icon={<Sparkles size={18} />} label="Styles" active={nav === "styles"} onClick={() => setNav("styles")} />
-        <NavItem icon={<Wand2 size={18} />} label="Transforms" active={nav === "transforms"} onClick={() => setNav("transforms")} />
+        {/* Styles + Transforms are LLM-polish features; the offline Store build
+            has no polish model, so they are hidden there. */}
+        {!isStore && (
+          <>
+            <NavItem icon={<Sparkles size={18} />} label="Styles" active={nav === "styles"} onClick={() => setNav("styles")} />
+            <NavItem icon={<Wand2 size={18} />} label="Transforms" active={nav === "transforms"} onClick={() => setNav("transforms")} />
+          </>
+        )}
         <NavItem icon={<NotebookPen size={18} />} label="Scratchpad" onClick={() => api.openScratchpad().catch(() => {})} />
         {/* Store edition runs offline on the bundled Parakeet model - there is
             no cloud/whisper choice to configure, so the catalog is hidden. */}
@@ -642,17 +648,21 @@ function SettingsPanel({
         </p>
       </Section>
 
-      <Section title="Cleanup level">
-        <Select
-          value={settings.cleanupLevel}
-          onChange={(v) => persist({ ...settings, cleanupLevel: v as CleanupLevel })}
-          options={CLEANUP.map((c) => ({ value: c.value, label: c.label }))}
-        />
-        <p className="mt-2 text-xs text-ink-faint">
-          {CLEANUP.find((c) => c.value === settings.cleanupLevel)?.hint}
-          {!isStore && settings.cleanupLevel !== "none" && " · uses Groq Llama (needs your API key)"}
-        </p>
-      </Section>
+      {/* Cleanup level is LLM polish; the offline Store build has no polish
+          model, so it stays on deterministic cleanup and the selector is hidden. */}
+      {!isStore && (
+        <Section title="Cleanup level">
+          <Select
+            value={settings.cleanupLevel}
+            onChange={(v) => persist({ ...settings, cleanupLevel: v as CleanupLevel })}
+            options={CLEANUP.map((c) => ({ value: c.value, label: c.label }))}
+          />
+          <p className="mt-2 text-xs text-ink-faint">
+            {CLEANUP.find((c) => c.value === settings.cleanupLevel)?.hint}
+            {settings.cleanupLevel !== "none" && " · uses Groq Llama (needs your API key)"}
+          </p>
+        </Section>
+      )}
 
       <Section title="Copy last transcript" icon={<Sparkles size={16} />}>
         <Select
@@ -669,22 +679,26 @@ function SettingsPanel({
         </p>
       </Section>
 
-      <Section title="Command Mode" icon={<Wand2 size={16} />}>
-        <Select
-          value={settings.commandShortcut}
-          onChange={async (v) => {
-            const next = { ...settings, commandShortcut: v };
-            setSettings(next);
-            await api.setCommandShortcut(v).catch(() => {});
-          }}
-          options={COMMAND_SHORTCUT_CHOICES.map((s) => ({ value: s, label: s }))}
-        />
-        <p className="mt-2 text-xs text-ink-faint">
-          Hold this and speak an instruction. With text selected, Eve rewrites it; with
-          nothing selected, it generates text at your cursor.
-          {!isStore && " Uses Groq Llama (needs your API key)."}
-        </p>
-      </Section>
+      {/* Command Mode rewrites/generates via an LLM; hidden in the offline
+          Store build, which has no polish model. */}
+      {!isStore && (
+        <Section title="Command Mode" icon={<Wand2 size={16} />}>
+          <Select
+            value={settings.commandShortcut}
+            onChange={async (v) => {
+              const next = { ...settings, commandShortcut: v };
+              setSettings(next);
+              await api.setCommandShortcut(v).catch(() => {});
+            }}
+            options={COMMAND_SHORTCUT_CHOICES.map((s) => ({ value: s, label: s }))}
+          />
+          <p className="mt-2 text-xs text-ink-faint">
+            Hold this and speak an instruction. With text selected, Eve rewrites it; with
+            nothing selected, it generates text at your cursor. Uses Groq Llama (needs your
+            API key).
+          </p>
+        </Section>
+      )}
 
       <Section title="Scratchpad" icon={<NotebookPen size={16} />}>
         <Select

@@ -247,7 +247,8 @@ function Welcome() {
       </div>
       <p className="text-ink-soft">
         Eve turns your voice into text anywhere on your computer. Hold a hotkey, speak, and
-        release — Eve transcribes, cleans up, and types it into whatever app you're using.
+        release — Eve transcribes{isStore ? "" : ", cleans up,"} and types it into whatever app
+        you're using.
       </p>
       <ul className="mt-4 space-y-2 text-sm text-ink-soft">
         {(isStore

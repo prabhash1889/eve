@@ -156,12 +156,17 @@ pub fn run() {
                 let copy = *state.copy_shortcut.lock();
                 let _ = app.global_shortcut().register(copy);
                 // Phase 7: Command Mode + any transform accelerators (best-effort).
-                let command = *state.command_shortcut.lock();
-                let _ = app.global_shortcut().register(command);
+                // Both rewrite/generate via an LLM, so the offline Store edition
+                // (no polish model) skips them - it is dictation-only.
+                #[cfg(not(feature = "store-edition"))]
+                {
+                    let command = *state.command_shortcut.lock();
+                    let _ = app.global_shortcut().register(command);
+                    command_mode::register_transform_shortcuts(app.handle(), &state);
+                }
                 // Phase 9: Scratchpad open shortcut (best-effort).
                 let scratchpad = *state.scratchpad_shortcut.lock();
                 let _ = app.global_shortcut().register(scratchpad);
-                command_mode::register_transform_shortcuts(app.handle(), &state);
             }
             // Phase 4: the Wayland path - one GlobalShortcuts portal session binds
             // main/copy/command/scratchpad/transform and dispatches the compositor's
