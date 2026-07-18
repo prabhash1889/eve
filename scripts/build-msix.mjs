@@ -118,10 +118,14 @@ const manifest = readFileSync(
   join(root, "packaging", "AppxManifest.xml.template"),
   "utf8"
 )
-  .replace("{NAME}", NAME)
-  .replace("{PUBLISHER}", PUBLISHER)
-  .replace("{PUBLISHER_DISPLAY}", PUBLISHER_DISPLAY)
-  .replace("{VERSION}", version);
+  // replaceAll: the tokens also appear in the manifest's header comment, so a
+  // first-occurrence replace would substitute the comment and leave the real
+  // Identity attributes untouched. Order PUBLISHER_DISPLAY before PUBLISHER so
+  // the shorter token doesn't partially match the longer one.
+  .replaceAll("{PUBLISHER_DISPLAY}", PUBLISHER_DISPLAY)
+  .replaceAll("{PUBLISHER}", PUBLISHER)
+  .replaceAll("{NAME}", NAME)
+  .replaceAll("{VERSION}", version);
 writeFileSync(join(layout, "AppxManifest.xml"), manifest);
 
 // 5. Pack.

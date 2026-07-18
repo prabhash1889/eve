@@ -10,6 +10,7 @@ import {
   type QueueDonePayload,
   type QueueErrorPayload,
 } from "../lib/api";
+import { isStore } from "../lib/edition";
 
 /** Audio containers symphonia can decode on the backend. */
 const AUDIO_EXTS = ["wav", "mp3", "m4a", "mp4", "flac", "ogg", "oga", "aac"];
@@ -122,7 +123,7 @@ export function FileQueue({ hasKey, onItemDone }: { hasKey: boolean; onItemDone:
           </div>
           <div className="mt-1 text-xs text-ink-faint">
             Drop files here or pick them — wav, mp3, m4a, flac, ogg. Results appear in History.
-            {!hasKey && " Needs a Groq API key, or a local model."}
+            {!hasKey && !isStore && " Needs a Groq API key, or a local model."}
           </div>
         </div>
         <button

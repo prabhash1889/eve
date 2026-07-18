@@ -650,7 +650,7 @@ function SettingsPanel({
         />
         <p className="mt-2 text-xs text-ink-faint">
           {CLEANUP.find((c) => c.value === settings.cleanupLevel)?.hint}
-          {settings.cleanupLevel !== "none" && " · uses Groq Llama (needs your API key)"}
+          {!isStore && settings.cleanupLevel !== "none" && " · uses Groq Llama (needs your API key)"}
         </p>
       </Section>
 
@@ -681,8 +681,8 @@ function SettingsPanel({
         />
         <p className="mt-2 text-xs text-ink-faint">
           Hold this and speak an instruction. With text selected, Eve rewrites it; with
-          nothing selected, it generates text at your cursor. Uses Groq Llama (needs your
-          API key).
+          nothing selected, it generates text at your cursor.
+          {!isStore && " Uses Groq Llama (needs your API key)."}
         </p>
       </Section>
 
