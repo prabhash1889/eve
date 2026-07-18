@@ -11,11 +11,10 @@ import "@fontsource/fraunces/500.css";
 import "@fontsource/fraunces/600.css";
 import "./styles/globals.css";
 import { api, on, EVT, type ScratchpadTab, type TranscriptPayload } from "./lib/api";
+import { initTheme } from "./lib/theme";
 
-// Respect the system theme (the Scratchpad has no toggle of its own).
-if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
-  document.documentElement.classList.add("dark");
-}
+// Apply the saved theme (Scratchpad follows the Hub's choice, no toggle of its own).
+initTheme();
 
 /** Escape HTML and turn a plain-text dictation into paragraph/line-break HTML. */
 function textToHtml(text: string): string {

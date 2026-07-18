@@ -109,6 +109,33 @@ It expects updater signing material to be configured as GitHub Actions secrets:
 Do not commit private signing keys. The updater public key in
 `src-tauri/tauri.conf.json` is safe to publish.
 
+## Reclaiming Disk Space
+
+Rust build output grows fast: multiple feature variants (CPU, CUDA, local LLM)
+plus incremental-compile cache and debug symbols can push `src-tauri/target/`
+past 25 GB. It is all regenerable and gitignored, so it is safe to delete
+whenever you need the space back.
+
+```sh
+cd src-tauri
+cargo clean          # remove all of target/ (debug + release)
+```
+
+Or delete just the debug tree, which is usually the bulk, and keep release
+artifacts:
+
+```sh
+rm -rf src-tauri/target/debug   # PowerShell: Remove-Item src-tauri\target\debug -Recurse -Force
+rm -rf build                    # old release installers, from `npm run release`
+```
+
+The next `cargo check` / `npm run tauri dev` rebuilds from scratch (slower once,
+then incremental again).
+
+Downloaded local models are **not** affected. They live in the OS app-data dir,
+`%APPDATA%\com.eve.dictation\models` on Windows, entirely outside the project,
+so cleaning build output never re-downloads them.
+
 ## Platform Support
 
 Windows is the primary, fully featured platform. macOS and Linux (X11 and

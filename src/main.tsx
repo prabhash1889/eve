@@ -7,11 +7,10 @@ import "@fontsource/fraunces/500.css";
 import "@fontsource/fraunces/600.css";
 import "./styles/globals.css";
 import { Hub } from "./Hub";
+import { initTheme } from "./lib/theme";
 
-// Respect system theme on first paint (a manual toggle lives in the Hub).
-if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
-  document.documentElement.classList.add("dark");
-}
+// Apply the saved theme on first paint (the picker lives in the Hub).
+initTheme();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

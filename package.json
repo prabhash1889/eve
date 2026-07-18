@@ -1,7 +1,7 @@
 {
   "name": "eve",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,8 +10,9 @@
     "tauri": "node scripts/tauri.mjs",
     "tauri:dev:local-cuda": "tauri dev --features local-whisper-cuda,local-parakeet",
     "tauri:dev:local-cpu": "tauri dev --features local-whisper,local-parakeet",
+    "build:all": "node scripts/build.mjs",
     "build:cuda": "node scripts/build.mjs --cuda",
-    "build:cpu": "node scripts/build.mjs",
+    "build:cpu": "node scripts/build.mjs --cpu",
     "release": "node scripts/release.mjs",
     "release:copy": "node scripts/release.mjs --copy-only",
     "version:patch": "node scripts/bump-version.mjs patch",

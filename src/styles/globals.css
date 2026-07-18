@@ -54,6 +54,110 @@
   --c-danger: #e07a62;
 }
 
+/*
+  Named themes. Each sets the full palette; the matching `.dark` class is
+  toggled by src/lib/theme.ts. Placed after `:root`/`.dark` so equal-specificity
+  `[data-theme]` selectors win for the palette variables.
+*/
+
+/* Paper — warm editorial light (same family as the default). */
+[data-theme="paper"] {
+  --c-canvas: #f6f4ef;
+  --c-surface: #fffdf9;
+  --c-surface-2: #efece4;
+  --c-border: #e2ded4;
+  --c-ink: #1f1d1a;
+  --c-ink-soft: #4a463f;
+  --c-ink-faint: #8a857a;
+  --c-accent: #3f9b6e;
+  --c-accent-soft: #d8ebe1;
+  --c-danger: #c0573f;
+}
+
+/* Ink — warm dark (same family as the default dark). */
+[data-theme="ink"] {
+  --c-canvas: #16150f;
+  --c-surface: #1f1e17;
+  --c-surface-2: #272620;
+  --c-border: #34322a;
+  --c-ink: #f3f0e8;
+  --c-ink-soft: #c3bfb3;
+  --c-ink-faint: #8c887d;
+  --c-accent: #5cc591;
+  --c-accent-soft: #1f3a2c;
+  --c-danger: #e07a62;
+}
+
+/* Slate — cool neutral dark with a soft blue accent. */
+[data-theme="slate"] {
+  --c-canvas: #0b0e14;
+  --c-surface: #12161f;
+  --c-surface-2: #1a1f2b;
+  --c-border: #262c3a;
+  --c-ink: #e7ebf3;
+  --c-ink-soft: #b0b7c6;
+  --c-ink-faint: #6b7386;
+  --c-accent: #6ea8fe;
+  --c-accent-soft: #16233d;
+  --c-danger: #f0746a;
+}
+
+/* Midnight — deep indigo dark with a violet accent. */
+[data-theme="midnight"] {
+  --c-canvas: #0f0f1a;
+  --c-surface: #17172a;
+  --c-surface-2: #1f1f38;
+  --c-border: #2b2b4a;
+  --c-ink: #ecebff;
+  --c-ink-soft: #b8b6df;
+  --c-ink-faint: #706e9b;
+  --c-accent: #8b7cff;
+  --c-accent-soft: #241f47;
+  --c-danger: #ff7a8a;
+}
+
+/* Nord — arctic slate with a frost-blue accent. */
+[data-theme="nord"] {
+  --c-canvas: #2e3440;
+  --c-surface: #343b48;
+  --c-surface-2: #3b4252;
+  --c-border: #434c5e;
+  --c-ink: #eceff4;
+  --c-ink-soft: #d8dee9;
+  --c-ink-faint: #8892a5;
+  --c-accent: #88c0d0;
+  --c-accent-soft: #3b4a52;
+  --c-danger: #bf616a;
+}
+
+/* Rosé — soft warm light with a rose accent. */
+[data-theme="rose"] {
+  --c-canvas: #fbf3f2;
+  --c-surface: #fffafa;
+  --c-surface-2: #f5e6e5;
+  --c-border: #ecd8d7;
+  --c-ink: #2b1f22;
+  --c-ink-soft: #5c4a4e;
+  --c-ink-faint: #9a8589;
+  --c-accent: #c4547e;
+  --c-accent-soft: #f5dce6;
+  --c-danger: #c0573f;
+}
+
+/* Sky — clean cool light with a blue accent. */
+[data-theme="sky"] {
+  --c-canvas: #f2f6fb;
+  --c-surface: #ffffff;
+  --c-surface-2: #e6eef7;
+  --c-border: #d5e0ee;
+  --c-ink: #14202e;
+  --c-ink-soft: #43566a;
+  --c-ink-faint: #8496aa;
+  --c-accent: #2f7fd6;
+  --c-accent-soft: #d6e6f7;
+  --c-danger: #c0573f;
+}
+
 html,
 body {
   margin: 0;

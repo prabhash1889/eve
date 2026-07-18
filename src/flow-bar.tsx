@@ -12,11 +12,10 @@ import {
   type StagePayload,
   type StartPayload,
 } from "./lib/api";
+import { initTheme } from "./lib/theme";
 
 document.body.classList.add("flowbar");
-if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
-  document.documentElement.classList.add("dark");
-}
+initTheme();
 
 type State =
   | "idle"

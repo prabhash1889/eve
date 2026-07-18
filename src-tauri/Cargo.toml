@@ -1,6 +1,6 @@
 [package]
 name = "eve"
-version = "0.1.0"
+version = "0.1.4"
 description = "Eve — system-wide AI voice dictation"
 authors = ["you"]
 edition = "2021"
