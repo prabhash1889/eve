@@ -102,7 +102,11 @@ if (existsSync(resSrc)) {
 //    before Store submission (the Store checks tile dimensions).
 const assets = join(layout, "Assets");
 mkdirSync(assets, { recursive: true });
-const iconSrc = join(root, "src-tauri", "icons", "128x128.png");
+// Prefer the correctly-sized tiles in packaging/assets; fall back to the app
+// icon only if one is missing (dimension-wrong, but keeps packing from failing).
+const assetSrc = join(root, "packaging", "assets");
+const iconFallback = join(root, "src-tauri", "icons", "128x128.png");
+let usedIconFallback = false;
 for (const name of [
   "StoreLogo.png",
   "Square150x150Logo.png",
@@ -110,7 +114,10 @@ for (const name of [
   "Wide310x150Logo.png",
   "SplashScreen.png",
 ]) {
-  copyFileSync(iconSrc, join(assets, name));
+  const from = join(assetSrc, name);
+  const ok = existsSync(from);
+  if (!ok) usedIconFallback = true;
+  copyFileSync(ok ? from : iconFallback, join(assets, name));
 }
 
 // 4. Manifest from the template.
@@ -144,4 +151,9 @@ if (NAME.startsWith("REPLACE") || PUBLISHER.includes("REPLACE")) {
       "      MSIX_PUBLISHER_DISPLAY to your Partner Center values before submitting."
   );
 }
-console.log("Replace Assets/* with real sized tiles before Store submission.");
+if (usedIconFallback) {
+  console.log(
+    "Some tiles fell back to the app icon (wrong dimensions). Add sized tiles to\n" +
+      "      packaging/assets/ before Store submission."
+  );
+}
