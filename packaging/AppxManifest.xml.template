@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX manifest for the Microsoft Store build of Eve.
+
+  Tokens ({NAME}, {PUBLISHER}, {PUBLISHER_DISPLAY}, {VERSION}) are filled in by
+  scripts/build-msix.mjs. Identity Name + Publisher MUST match what you reserve
+  in Partner Center (Product > Product identity), otherwise the Store rejects the
+  package. Set them via env vars (see packaging/README.md) - do not hardcode a
+  real identity here.
+
+  runFullTrust is a RESTRICTED capability: Eve installs global keyboard/mouse
+  hooks and injects keystrokes into other apps, which an AppContainer forbids.
+  You must justify it during Store submission (it is trigger-detection only, not
+  keylogging - see the privacy policy). The microphone device capability covers
+  voice capture.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  IgnorableNamespaces="uap rescap desktop">
+
+  <Identity
+    Name="{NAME}"
+    Publisher="{PUBLISHER}"
+    Version="{VERSION}"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Eve</DisplayName>
+    <PublisherDisplayName>{PUBLISHER_DISPLAY}</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>System-wide AI voice dictation. Hold a key, speak, and Eve types it into any app - fully offline.</Description>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="Eve" Executable="Eve.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Eve"
+        Description="System-wide AI voice dictation"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+        <uap:SplashScreen Image="Assets\SplashScreen.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <DeviceCapability Name="microphone" />
+  </Capabilities>
+</Package>

@@ -101,7 +101,13 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(settings: Settings, settings_path: PathBuf, db: Db, models_dir: PathBuf) -> Self {
+    pub fn new(
+        settings: Settings,
+        settings_path: PathBuf,
+        db: Db,
+        models_dir: PathBuf,
+        bundled_models_dir: Option<PathBuf>,
+    ) -> Self {
         let main = parse_shortcut(&settings.shortcut);
         let copy = parse_shortcut(&settings.copy_shortcut);
         let command = parse_shortcut(&settings.command_shortcut);
@@ -136,6 +142,7 @@ impl AppState {
             last_transcription_benchmark: Arc::new(Mutex::new(None)),
             transcriber: Arc::new(RoutingTranscriber::new(
                 models_dir.clone(),
+                bundled_models_dir,
                 settings.clone(),
             )),
             polisher: Arc::new(RoutingPolisher::new(models_dir, settings.clone())),

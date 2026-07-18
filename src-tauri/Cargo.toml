@@ -40,6 +40,11 @@ local-models = ["local-whisper"]
 # fast enough on CPU that no GPU provider is wired up yet.
 # ponytail: CPU-only ort; add parakeet-rs/cuda or /directml features if CPU latency ever matters.
 local-parakeet = ["dep:parakeet-rs"]
+# Microsoft Store edition: offline-first defaults (local Parakeet STT, no cloud
+# key needed) plus a trimmed UI (the frontend reads VITE_EVE_EDITION=store). Pairs
+# with `local-parakeet`; the Parakeet weights ship as bundled app resources and
+# are loaded from the read-only resource dir when not present in app data.
+store-edition = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

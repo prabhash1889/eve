@@ -28,6 +28,7 @@ import {
 } from "../../lib/api";
 import { LANGUAGES, CLEANUP, SHORTCUT_CHOICES } from "../../lib/options";
 import { isMac } from "../../lib/platform";
+import { isStore } from "../../lib/edition";
 
 /** Parity Phase B: which transcription path onboarding sets up. */
 type SetupMode = "cloud" | "private";
@@ -64,14 +65,19 @@ export function Onboarding({
 
   // Step 2 forks on the chosen mode; both branches have the same length so the
   // current index stays valid when the user flips the choice and navigates.
-  const base =
-    mode === "private"
+  // The Store edition is offline-first (bundled English Parakeet, no cloud key
+  // and no polish config), so it drops the transcription / key / language /
+  // cleanup steps entirely - just welcome, hotkey, and a mic check.
+  const base = isStore
+    ? ["Welcome", "Hotkey", "Mic check"]
+    : mode === "private"
       ? ["Welcome", "Transcription", "Local model", "Hotkey", "Languages", "Mic check", "Cleanup"]
       : ["Welcome", "Transcription", "API key", "Hotkey", "Languages", "Mic check", "Cleanup"];
   // Phase 2: macOS needs Accessibility trust for the triggers + paste; append a
-  // permission step at the end so the fixed step indices above stay unchanged.
+  // permission step at the end.
   const steps = isMac ? [...base, "Accessibility"] : base;
   const last = steps.length - 1;
+  const stepName = steps[step];
 
   const next = () => setStep((s) => Math.min(last, s + 1));
   const back = () => setStep((s) => Math.max(0, s - 1));
@@ -128,9 +134,9 @@ export function Onboarding({
         </div>
 
         <div className="flex-1 overflow-y-auto px-8 py-7">
-          {step === 0 && <Welcome />}
-          {step === 1 && <ModeStep mode={mode} onPick={pickMode} />}
-          {step === 2 && mode === "cloud" && (
+          {stepName === "Welcome" && <Welcome />}
+          {stepName === "Transcription" && <ModeStep mode={mode} onPick={pickMode} />}
+          {stepName === "API key" && (
             <ApiKeyStep
               hasKey={hasKey}
               apiKey={apiKey}
@@ -138,7 +144,7 @@ export function Onboarding({
               onSaved={() => setHasKey(true)}
             />
           )}
-          {step === 2 && mode === "private" && (
+          {stepName === "Local model" && (
             <LocalModelStep
               selected={draft.localWhisperModel}
               onSelect={(localWhisperModel) =>
@@ -146,27 +152,27 @@ export function Onboarding({
               }
             />
           )}
-          {step === 3 && (
+          {stepName === "Hotkey" && (
             <HotkeyStep
               value={draft.shortcut}
               onChange={(shortcut) => setDraft((d) => ({ ...d, shortcut }))}
             />
           )}
-          {step === 4 && (
+          {stepName === "Languages" && (
             <LanguageStep
               value={draft.languages}
               onChange={(languages) => setDraft((d) => ({ ...d, languages }))}
             />
           )}
-          {step === 5 && <MicCheckStep />}
-          {step === 6 && (
+          {stepName === "Mic check" && <MicCheckStep />}
+          {stepName === "Cleanup" && (
             <CleanupStep
               value={draft.cleanupLevel}
               hasKey={hasKey}
               onChange={(cleanupLevel) => setDraft((d) => ({ ...d, cleanupLevel }))}
             />
           )}
-          {isMac && step === 7 && <AccessibilityStep />}
+          {stepName === "Accessibility" && <AccessibilityStep />}
         </div>
 
         {/* Footer nav */}
@@ -244,12 +250,15 @@ function Welcome() {
         release — Eve transcribes, cleans up, and types it into whatever app you're using.
       </p>
       <ul className="mt-4 space-y-2 text-sm text-ink-soft">
-        {[
-          "Choose cloud or private transcription",
-          "Pick a push-to-talk hotkey",
-          "Choose your languages",
-          "Test your microphone",
-        ].map((t) => (
+        {(isStore
+          ? ["Pick a push-to-talk hotkey", "Test your microphone", "Start dictating anywhere"]
+          : [
+              "Choose cloud or private transcription",
+              "Pick a push-to-talk hotkey",
+              "Choose your languages",
+              "Test your microphone",
+            ]
+        ).map((t) => (
           <li key={t} className="flex items-center gap-2">
             <Check size={15} className="text-accent" /> {t}
           </li>

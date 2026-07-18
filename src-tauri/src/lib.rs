@@ -106,7 +106,23 @@ pub fn run() {
             let models_dir = data_dir.join("models");
             std::fs::create_dir_all(&models_dir).ok();
 
-            app.manage(AppState::new(settings, settings_path, db, models_dir));
+            // Store edition ships Parakeet as a bundled resource; expose its
+            // read-only `models` dir as a fallback so it loads with no download.
+            // Resolves inside the app package at runtime; absent (None) in builds
+            // that don't bundle it, so those keep the download-only behavior.
+            let bundled_models_dir = app
+                .path()
+                .resolve("resources/models", tauri::path::BaseDirectory::Resource)
+                .ok()
+                .filter(|d| d.exists());
+
+            app.manage(AppState::new(
+                settings,
+                settings_path,
+                db,
+                models_dir,
+                bundled_models_dir,
+            ));
 
             // Retention: prune saved audio past the configured window. Done AFTER
             // `manage()` and off the setup thread so it can't delay state

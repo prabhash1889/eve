@@ -691,12 +691,17 @@ pub struct RoutingTranscriber {
 }
 
 impl RoutingTranscriber {
-    pub fn new(models_dir: PathBuf, settings: Arc<Mutex<Settings>>) -> Self {
+    pub fn new(
+        models_dir: PathBuf,
+        bundled_models_dir: Option<PathBuf>,
+        settings: Arc<Mutex<Settings>>,
+    ) -> Self {
         Self {
             groq: GroqTranscriber::new(settings.clone()),
             local: LocalTranscriber::new(models_dir.clone(), settings.clone()),
             parakeet: crate::parakeet::LocalParakeetTranscriber::new(
                 models_dir,
+                bundled_models_dir,
                 settings.clone(),
             ),
             settings,

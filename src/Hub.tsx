@@ -7,8 +7,7 @@ import {
   Sparkles,
   KeyRound,
   Check,
-  Moon,
-  Sun,
+  Palette,
   Type,
   Gauge,
   AudioLines,
@@ -34,6 +33,7 @@ import {
   SHORTCUT_CHOICES,
 } from "./lib/options";
 import { pausedAppExample } from "./lib/platform";
+import { THEMES, loadTheme, setTheme, type ThemeId } from "./lib/theme";
 import { ShortcutCapture } from "./components/ShortcutCapture";
 import { FileQueue } from "./components/FileQueue";
 import { Onboarding, LanguageMultiSelect } from "./components/onboarding/Onboarding";
@@ -44,6 +44,7 @@ import { StylesPage } from "./pages/StylesPage";
 import { TransformsPage } from "./pages/TransformsPage";
 import { LocalModelsPage } from "./pages/LocalModelsPage";
 import { InsightsPage } from "./pages/InsightsPage";
+import { isStore } from "./lib/edition";
 
 const COPY_SHORTCUT_CHOICES = [
   "CmdOrCtrl+Shift+C",
@@ -84,7 +85,7 @@ export function Hub() {
   // Bumped when the tray "Check for updates" item fires, so the Settings panel
   // can auto-run the check.
   const [updateNonce, setUpdateNonce] = useState(0);
-  const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
+  const [theme, setThemeState] = useState<ThemeId>(() => loadTheme());
 
   useEffect(() => {
     let cancelled = false;
@@ -127,10 +128,9 @@ export function Hub() {
     };
   }, []);
 
-  const toggleTheme = () => {
-    const next = !dark;
-    setDark(next);
-    document.documentElement.classList.toggle("dark", next);
+  const pickTheme = (id: ThemeId) => {
+    setThemeState(id);
+    setTheme(id);
   };
 
   // Phase 10: gate the app behind first-run onboarding.
@@ -171,17 +171,15 @@ export function Hub() {
         <NavItem icon={<Sparkles size={18} />} label="Styles" active={nav === "styles"} onClick={() => setNav("styles")} />
         <NavItem icon={<Wand2 size={18} />} label="Transforms" active={nav === "transforms"} onClick={() => setNav("transforms")} />
         <NavItem icon={<NotebookPen size={18} />} label="Scratchpad" onClick={() => api.openScratchpad().catch(() => {})} />
-        <NavItem icon={<Cpu size={18} />} label="Local models" active={nav === "models"} onClick={() => setNav("models")} />
+        {/* Store edition runs offline on the bundled Parakeet model - there is
+            no cloud/whisper choice to configure, so the catalog is hidden. */}
+        {!isStore && (
+          <NavItem icon={<Cpu size={18} />} label="Local models" active={nav === "models"} onClick={() => setNav("models")} />
+        )}
         <NavItem icon={<SettingsIcon size={18} />} label="Settings" active={nav === "settings"} onClick={() => setNav("settings")} />
 
         <div className="mt-auto">
-          <button
-            onClick={toggleTheme}
-            className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-ink-soft hover:bg-surface-2"
-          >
-            {dark ? <Sun size={16} /> : <Moon size={16} />}
-            {dark ? "Light mode" : "Dark mode"}
-          </button>
+          <ThemePicker value={theme} onChange={pickTheme} />
         </div>
       </aside>
 
@@ -249,6 +247,58 @@ function NavItem({
   );
 }
 
+function ThemePicker({ value, onChange }: { value: ThemeId; onChange: (id: ThemeId) => void }) {
+  const [open, setOpen] = useState(false);
+  const current = THEMES.find((t) => t.id === value) ?? THEMES[0];
+
+  // Close when clicking outside the picker.
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement).closest("[data-theme-picker]")) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  return (
+    <div className="relative" data-theme-picker>
+      {open && (
+        <div className="absolute bottom-full left-0 mb-2 w-full rounded-xl border border-border bg-surface p-1 shadow-lg">
+          {THEMES.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => {
+                onChange(t.id);
+                setOpen(false);
+              }}
+              className={
+                "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm " +
+                (t.id === value ? "bg-surface-2 text-ink font-medium" : "text-ink-soft hover:bg-surface-2")
+              }
+            >
+              <span
+                className="h-4 w-4 shrink-0 rounded-full border border-border"
+                style={{ background: `linear-gradient(135deg, ${t.swatch[0]} 50%, ${t.swatch[1]} 50%)` }}
+              />
+              <span className="flex-1 text-left">{t.label}</span>
+              {t.id === value && <Check size={14} className="text-accent" />}
+            </button>
+          ))}
+        </div>
+      )}
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-ink-soft hover:bg-surface-2"
+      >
+        <Palette size={16} />
+        <span className="flex-1 text-left">Theme</span>
+        <span className="text-ink-faint">{current.label}</span>
+      </button>
+    </div>
+  );
+}
+
 function Dashboard({
   settings,
   hasKey,
@@ -281,31 +331,33 @@ function Dashboard({
           </div>
         </div>
 
-        <div className="rounded-2xl border border-border bg-surface p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm text-ink-faint">Groq API key</div>
-              <div className="mt-1 flex items-center gap-2">
-                {hasKey ? (
-                  <>
-                    <Check size={18} className="text-accent" />
-                    <span>Configured</span>
-                  </>
-                ) : (
-                  <span className="text-danger">Not set — required to transcribe</span>
-                )}
+        {!isStore && (
+          <div className="rounded-2xl border border-border bg-surface p-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm text-ink-faint">Groq API key</div>
+                <div className="mt-1 flex items-center gap-2">
+                  {hasKey ? (
+                    <>
+                      <Check size={18} className="text-accent" />
+                      <span>Configured</span>
+                    </>
+                  ) : (
+                    <span className="text-danger">Not set — required to transcribe</span>
+                  )}
+                </div>
               </div>
+              {!hasKey && (
+                <button
+                  onClick={onConfigure}
+                  className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+                >
+                  Add key
+                </button>
+              )}
             </div>
-            {!hasKey && (
-              <button
-                onClick={onConfigure}
-                className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90"
-              >
-                Add key
-              </button>
-            )}
           </div>
-        </div>
+        )}
       </div>
 
       <div className="mt-6">
@@ -418,43 +470,45 @@ function SettingsPanel({
     <div>
       <h1 className="font-serif text-3xl">Settings</h1>
 
-      <Section title="Groq API key" icon={<KeyRound size={16} />}>
-        <p className="mb-3 text-sm text-ink-soft">
-          Stored securely in the Windows Credential Manager — never written to disk in plain text.
-        </p>
-        <div className="flex gap-2">
-          <input
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder={hasKey ? "•••••••••••• (configured)" : "gsk_..."}
-            className="flex-1 rounded-xl border border-border bg-surface px-3 py-2 outline-none focus:border-accent"
-          />
-          <button
-            onClick={saveKey}
-            className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90"
-          >
-            {savedFlash ? "Saved ✓" : "Save"}
-          </button>
-        </div>
-        {keyError && <p className="mt-2 text-xs text-danger">{keyError}</p>}
-        {hasKey && (
-          <button
-            onClick={async () => {
-              try {
-                await api.clearApiKey();
-                setHasKey(false);
-                setKeyError(null);
-              } catch {
-                setKeyError("Couldn't remove the key. Please try again.");
-              }
-            }}
-            className="mt-2 text-xs text-ink-faint underline hover:text-danger"
-          >
-            Remove key
-          </button>
-        )}
-      </Section>
+      {!isStore && (
+        <Section title="Groq API key" icon={<KeyRound size={16} />}>
+          <p className="mb-3 text-sm text-ink-soft">
+            Stored securely in the Windows Credential Manager — never written to disk in plain text.
+          </p>
+          <div className="flex gap-2">
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={hasKey ? "•••••••••••• (configured)" : "gsk_..."}
+              className="flex-1 rounded-xl border border-border bg-surface px-3 py-2 outline-none focus:border-accent"
+            />
+            <button
+              onClick={saveKey}
+              className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+            >
+              {savedFlash ? "Saved ✓" : "Save"}
+            </button>
+          </div>
+          {keyError && <p className="mt-2 text-xs text-danger">{keyError}</p>}
+          {hasKey && (
+            <button
+              onClick={async () => {
+                try {
+                  await api.clearApiKey();
+                  setHasKey(false);
+                  setKeyError(null);
+                } catch {
+                  setKeyError("Couldn't remove the key. Please try again.");
+                }
+              }}
+              className="mt-2 text-xs text-ink-faint underline hover:text-danger"
+            >
+              Remove key
+            </button>
+          )}
+        </Section>
+      )}
 
       <Section title="Record trigger">
         <ShortcutCapture

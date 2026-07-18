@@ -36,6 +36,10 @@ pub fn backend_label() -> &'static str {
 /// compiled only with the `local-parakeet` feature.
 pub struct LocalParakeetTranscriber {
     models_dir: PathBuf,
+    /// Read-only fallback root (the app's bundled `resources/models` dir in the
+    /// Store edition). Used only when the model isn't present under `models_dir`,
+    /// so a bundled Parakeet works offline with no download and no disk copy.
+    bundled_dir: Option<PathBuf>,
     settings: Arc<Mutex<Settings>>,
     /// (catalog id, loaded model). `parakeet_rs` needs `&mut` to transcribe, so
     /// the model sits behind its own Mutex, locked only inside `spawn_blocking`.
@@ -56,9 +60,14 @@ struct LoadState {
 }
 
 impl LocalParakeetTranscriber {
-    pub fn new(models_dir: PathBuf, settings: Arc<Mutex<Settings>>) -> Self {
+    pub fn new(
+        models_dir: PathBuf,
+        bundled_dir: Option<PathBuf>,
+        settings: Arc<Mutex<Settings>>,
+    ) -> Self {
         Self {
             models_dir,
+            bundled_dir,
             settings,
             #[cfg(feature = "local-parakeet")]
             cache: Mutex::new(None),
@@ -85,13 +94,17 @@ impl LocalParakeetTranscriber {
         let id = self.settings.lock().local_whisper_model.clone();
         let info = crate::models::find(&id)
             .ok_or_else(|| anyhow::anyhow!("Unknown local model: {id}"))?;
-        let dir = self.models_dir.join(&id);
         // The primary file is enough as an existence probe; the downloader only
-        // renames files into place after the full set completes.
-        if !self.models_dir.join(info.file_name).exists() {
-            anyhow::bail!("Model '{}' is not downloaded yet", info.name);
+        // renames files into place after the full set completes. Prefer the
+        // downloaded copy under `models_dir`; fall back to the bundled resource
+        // dir (Store edition) so a shipped Parakeet loads with no download.
+        for root in std::iter::once(&self.models_dir).chain(self.bundled_dir.iter()) {
+            if root.join(info.file_name).exists() {
+                let dir = root.join(&id);
+                return Ok((id, dir));
+            }
         }
-        Ok((id, dir))
+        anyhow::bail!("Model '{}' is not downloaded yet", info.name);
     }
 
     /// Return the cached model for the selected id, cold-loading it off the
@@ -189,7 +202,7 @@ impl Transcriber for LocalParakeetTranscriber {
         _hints: Vec<String>,
     ) -> anyhow::Result<String> {
         // Touch fields so they don't read as dead when the feature is off.
-        let _ = (&self.models_dir, &self.settings);
+        let _ = (&self.models_dir, &self.bundled_dir, &self.settings);
         anyhow::bail!(
             "Local Parakeet was not built in (enable the `local-parakeet` feature)"
         )

@@ -73,9 +73,10 @@ pub struct Settings {
     /// llama.cpp). Falls back to Groq on local failure.
     #[serde(default = "default_backend")]
     pub polish_backend: String,
-    /// Catalog id of the local Whisper model to use (e.g. "whisper-base.en").
-    /// Empty until the user downloads and selects one.
-    #[serde(default)]
+    /// Catalog id of the local speech model to use (whisper `whisper-*.bin` or
+    /// `parakeet-*`). Empty until the user downloads and selects one, except in
+    /// the Store edition where it defaults to the bundled Parakeet model.
+    #[serde(default = "default_stt_model")]
     pub local_whisper_model: String,
     /// Catalog id of the local polish LLM to use (e.g. "qwen2.5-1.5b-instruct").
     #[serde(default)]
@@ -225,7 +226,23 @@ fn default_audio_retention_hours() -> u32 {
     24
 }
 fn default_backend() -> String {
-    "groq".into()
+    // Store edition is offline-first: default both backends to the on-device
+    // path so a fresh install works with no Groq key. Other builds default to
+    // Groq (fast cloud) as before.
+    if cfg!(feature = "store-edition") {
+        "local".into()
+    } else {
+        "groq".into()
+    }
+}
+/// Default speech-to-text model id. The Store edition ships Parakeet bundled and
+/// selected by default; other builds start unset until the user downloads one.
+fn default_stt_model() -> String {
+    if cfg!(feature = "store-edition") {
+        "parakeet-tdt-0.6b-v2".into()
+    } else {
+        String::new()
+    }
 }
 fn default_local_profile() -> String {
     "balanced".into()
@@ -257,7 +274,7 @@ impl Default for Settings {
             audio_retention_hours: default_audio_retention_hours(),
             transcription_backend: default_backend(),
             polish_backend: default_backend(),
-            local_whisper_model: String::new(),
+            local_whisper_model: default_stt_model(),
             local_llm_model: String::new(),
             local_transcription_profile: default_local_profile(),
             local_whisper_threads: None,
