@@ -42,33 +42,33 @@ Productivity
 
 ## Privacy policy (host this at a public URL, e.g. your site /eve/privacy)
 
-**Eve Privacy Policy**
+  **Eve Privacy Policy**
 
-Eve is an offline, on-device voice dictation application. We designed it so your
-data stays on your computer.
+  Eve is an offline, on-device voice dictation application. We designed it so your
+  data stays on your computer.
 
-**What Eve accesses**
-- **Microphone:** Eve records audio only while you hold the push-to-talk hotkey.
-  Audio is transcribed to text locally on your device.
-- **Keyboard/mouse:** Eve uses a system-wide input hook solely to detect your
-  configured push-to-talk trigger, and it types the transcribed text into the
-  app you're using. Eve does not log, store, or transmit your keystrokes.
+  **What Eve accesses**
+  - **Microphone:** Eve records audio only while you hold the push-to-talk hotkey.
+    Audio is transcribed to text locally on your device.
+  - **Keyboard/mouse:** Eve uses a system-wide input hook solely to detect your
+    configured push-to-talk trigger, and it types the transcribed text into the
+    app you're using. Eve does not log, store, or transmit your keystrokes.
 
-**What Eve stores**
-- Your dictation transcripts and settings are stored locally on your PC (in a
-  local database in your user profile). You can clear history at any time.
-- Audio clips are stored locally only if you enable that in settings, and are
-  pruned per your chosen retention setting.
+  **What Eve stores**
+  - Your dictation transcripts and settings are stored locally on your PC (in a
+    local database in your user profile). You can clear history at any time.
+  - Audio clips are stored locally only if you enable that in settings, and are
+    pruned per your chosen retention setting.
 
-**What Eve does NOT do**
-- Eve does not send your audio, transcripts, or any personal data to us or any
-  third party. Transcription runs entirely on your device.
-- Eve has no account, no sign-in, and no analytics/telemetry.
+  **What Eve does NOT do**
+  - Eve does not send your audio, transcripts, or any personal data to us or any
+    third party. Transcription runs entirely on your device.
+  - Eve has no account, no sign-in, and no analytics/telemetry.
 
-**Contact**
-[your support email / contact link]
+  **Contact**
+  [your support email / contact link]
 
-*Last updated: [date]*
+  *Last updated: [date]*
 
 ---
 
