@@ -28,7 +28,7 @@
     ProcessorArchitecture="x64" />
 
   <Properties>
-    <DisplayName>Eve</DisplayName>
+    <DisplayName>{DISPLAY_NAME}</DisplayName>
     <PublisherDisplayName>{PUBLISHER_DISPLAY}</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
     <Description>System-wide AI voice dictation. Hold a key, speak, and Eve types it into any app - fully offline.</Description>
@@ -45,7 +45,7 @@
   <Applications>
     <Application Id="Eve" Executable="Eve.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
-        DisplayName="Eve"
+        DisplayName="{DISPLAY_NAME}"
         Description="System-wide AI voice dictation"
         BackgroundColor="transparent"
         Square150x150Logo="Assets\Square150x150Logo.png"

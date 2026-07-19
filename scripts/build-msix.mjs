@@ -38,6 +38,9 @@ const NAME = process.env.MSIX_IDENTITY_NAME || "REPLACE.WithYourReservedName";
 const PUBLISHER =
   process.env.MSIX_PUBLISHER || "CN=REPLACE-WITH-PARTNER-CENTER-PUBLISHER-ID";
 const PUBLISHER_DISPLAY = process.env.MSIX_PUBLISHER_DISPLAY || "Your Publisher Name";
+// The app display name shown in the Store/tile. MUST be a name you have reserved
+// in Partner Center (Product > Product name), or the upload is rejected.
+const DISPLAY_NAME = process.env.MSIX_DISPLAY_NAME || "Eve";
 
 const releaseDir = join(root, "src-tauri", "target", "release");
 const exe = join(releaseDir, "Eve.exe");
@@ -131,6 +134,7 @@ const manifest = readFileSync(
   // the shorter token doesn't partially match the longer one.
   .replaceAll("{PUBLISHER_DISPLAY}", PUBLISHER_DISPLAY)
   .replaceAll("{PUBLISHER}", PUBLISHER)
+  .replaceAll("{DISPLAY_NAME}", DISPLAY_NAME)
   .replaceAll("{NAME}", NAME)
   .replaceAll("{VERSION}", version);
 writeFileSync(join(layout, "AppxManifest.xml"), manifest);
