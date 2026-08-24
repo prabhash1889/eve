@@ -13,7 +13,6 @@
 
 use std::str::FromStr;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
@@ -125,9 +124,17 @@ async fn process_command(app: AppHandle) {
         )
     };
 
-    // Let the capture thread flush its final samples.
-    let _ = tauri::async_runtime::spawn_blocking(|| std::thread::sleep(Duration::from_millis(60)))
-        .await;
+    // Deterministic stop handshake (mirrors `pipeline::process`): wait for the
+    // capture thread to ack the stream drop + final sample flush instead of
+    // sleeping a fixed 60 ms. Timeout fallback = exactly the old behavior.
+    let app_for_handshake = app.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        app_for_handshake
+            .state::<AppState>()
+            .capture
+            .stop_and_wait(crate::audio::STOP_ACK_TIMEOUT);
+    })
+    .await;
 
     let samples = {
         let mut b = buffer.lock();

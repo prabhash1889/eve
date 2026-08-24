@@ -87,12 +87,6 @@ pub fn inject(app: &AppHandle, text: &str, hwnd: isize, strategy: &str) -> anyho
 
 #[cfg(windows)]
 fn inject_paste(app: &AppHandle, text: &str, hwnd: isize) -> anyhow::Result<()> {
-    // Abort before touching the clipboard if we can't restore focus to the
-    // original target — otherwise Ctrl+V would fire into whatever now has focus.
-    if !restore_focus(hwnd) {
-        anyhow::bail!("Target window is no longer available — nothing was pasted");
-    }
-
     let clip = app.clipboard();
     // Capture the prior clipboard and arm a drop guard so it is restored on every
     // exit path — including an early `?` return or a panic during the paste.
@@ -101,17 +95,27 @@ fn inject_paste(app: &AppHandle, text: &str, hwnd: isize) -> anyhow::Result<()> 
         previous: clip.read_text().ok(),
     };
 
+    // Write our payload first so the PRE sleep below can overlap the focus
+    // switch instead of paying for both sequentially.
     clip.write_text(text.to_string())
         .map_err(|e| anyhow::anyhow!("clipboard write failed: {e}"))?;
 
+    // Abort before sending any keystrokes if we can't restore focus to the
+    // original target — otherwise Ctrl+V would fire into whatever now has
+    // focus. On this path `_restore` still puts the user's prior clipboard back.
+    if !restore_focus(hwnd) {
+        anyhow::bail!("Target window is no longer available — nothing was pasted");
+    }
+
     // Phase 5: fixed injection delays, reviewed to trim latency while preserving
-    // reliability. PRE lets the focus switch + clipboard write settle before we
-    // send Ctrl+V; PASTE_SETTLE lets the target app actually read the clipboard
-    // before the guard restores the prior contents. Cutting PASTE_SETTLE too far
-    // risks the app pasting the *restored* clipboard, so it stays comfortably
-    // above typical clipboard-read latency (trimmed 150 → 120 ms).
+    // reliability. PRE lets the focus switch settle before we send Ctrl+V (the
+    // clipboard write has already happened above); PASTE_SETTLE lets the target
+    // app actually read the clipboard before the guard restores the prior
+    // contents. Cutting PASTE_SETTLE too far risks the app pasting the
+    // *restored* clipboard, so it stays comfortably above typical clipboard-read
+    // latency (trimmed 150 → 120 → 100 ms).
     const PRE: Duration = Duration::from_millis(40);
-    const PASTE_SETTLE: Duration = Duration::from_millis(120);
+    const PASTE_SETTLE: Duration = Duration::from_millis(100);
     thread::sleep(PRE);
     send_ctrl_v();
     thread::sleep(PASTE_SETTLE);

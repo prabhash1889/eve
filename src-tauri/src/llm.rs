@@ -11,19 +11,41 @@ use crate::secrets;
 /// Default chat model — Groq Llama, matching the polisher.
 pub const DEFAULT_MODEL: &str = "llama-3.1-8b-instant";
 
-/// Shared HTTP client for Groq API calls. Built once with finite timeouts
-/// (10s to connect, 60s overall) so a dead connection can never hang the
-/// pipeline forever, and reused across calls so we don't churn the connection
-/// pool / leak TIME_WAIT sockets.
+/// Scheme + host for every Groq API call (chat, transcription uploads). The
+/// connection pre-warm targets this host so the TCP+TLS handshake overlaps the
+/// recording window instead of delaying the first post-release request.
+pub const GROQ_API_BASE: &str = "https://api.groq.com";
+
+/// Shared HTTP client for all Groq API calls (chat completions and multipart
+/// audio uploads). Built once with finite timeouts (10s to connect, 120s
+/// overall) so a dead connection can never hang the pipeline forever, and
+/// reused everywhere so there is exactly one warm connection pool: a pre-warm
+/// handshake on shortcut-down is then reused by both transcription and polish.
 pub fn groq_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(60))
+            // Generous enough for long-clip transcription uploads; only raises
+            // the ceiling vs the previous chat-only client (was 60s).
+            .timeout(Duration::from_secs(120))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
     })
+}
+
+/// Fire-and-forget connection pre-warm to the Groq host (1.P3). Called on
+/// trigger-down so TCP+TLS (~100-300ms after an idle period) overlaps the
+/// recording instead of adding to release-to-transcript latency. Never blocks
+/// or fails the caller: network errors are discarded and the key check is
+/// best-effort (local-only users skip the pointless dial-out).
+pub fn prewarm_connection() {
+    if !secrets::has_api_key() {
+        return;
+    }
+    tauri::async_runtime::spawn(async {
+        let _ = groq_client().get(GROQ_API_BASE).send().await;
+    });
 }
 
 /// One-shot system+user chat completion at the default model/temperature.
@@ -52,7 +74,7 @@ pub async fn chat_with(
     });
 
     let resp = groq_client()
-        .post("https://api.groq.com/openai/v1/chat/completions")
+        .post(format!("{GROQ_API_BASE}/openai/v1/chat/completions"))
         .bearer_auth(key)
         .json(&body)
         .send()

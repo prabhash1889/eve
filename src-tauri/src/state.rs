@@ -13,9 +13,133 @@ use tauri_plugin_global_shortcut::Shortcut;
 
 use crate::config::Settings;
 use crate::context::AppContext;
-use crate::db::Db;
+use crate::db::flow_styles::FlowStyle;
+use crate::db::transforms::Transform;
+use crate::db::{dictionary, flow_styles, snippets, transforms, Db};
 use crate::polish::{Polisher, RoutingPolisher};
 use crate::transcription::{RoutingTranscriber, Transcriber, TranscriptionBenchmark};
+
+/// Hint-prompt cap used by the pipeline's former direct read
+/// (`dictionary::hints(conn, 100)`); kept here so the cached path stays
+/// byte-identical to it.
+const PIPELINE_HINTS_LIMIT: i64 = 100;
+
+/// 1.P5: in-process cache of the dictionary / snippet / Flow Style / transform
+/// lookups the dictation pipeline reads on every session. Populated lazily on
+/// first read (the three global lookups are warmed at startup) and cleared by
+/// `invalidate` from every command that writes one of those tables, so a
+/// session never touches the DB connection lock for these reads and can't
+/// contend with history writes.
+///
+/// Lock discipline mirrors the rest of the app: the inner guard is never held
+/// while acquiring the `Db` lock (each method drops it before querying), so a
+/// concurrent writer holding the DB lock can't deadlock against a reader.
+#[derive(Default)]
+struct HotPathCacheInner {
+    hints: Option<Vec<String>>,
+    corrections: Option<Vec<(String, String)>>,
+    expansions: Option<Vec<(String, String)>>,
+    /// Active style per focused-app category (at most one style per category).
+    styles: HashMap<String, Option<FlowStyle>>,
+    /// Auto-apply transforms per focused-app category.
+    auto_transforms: HashMap<String, Vec<Transform>>,
+}
+
+/// Cheap-clonable handle sharing the cache internals (see `AppState::hot_cache`).
+#[derive(Clone, Default)]
+pub struct HotPathCache {
+    inner: Arc<Mutex<HotPathCacheInner>>,
+}
+
+impl HotPathCache {
+    /// Create the cache and warm the category-independent lookups so the first
+    /// dictation after launch doesn't pay the miss. Category-keyed entries fill
+    /// lazily on their first session.
+    pub fn new(db: &Db) -> Self {
+        let cache = Self::default();
+        let _ = cache.hints(db);
+        let _ = cache.corrections(db);
+        let _ = cache.snippet_expansions(db);
+        cache
+    }
+
+    /// Whisper vocabulary hints: starred terms first, then most-recently
+    /// updated, capped (mirrors the pipeline's former `hints(conn, 100)`).
+    pub fn hints(&self, db: &Db) -> Vec<String> {
+        if let Some(cached) = self.inner.lock().hints.clone() {
+            return cached;
+        }
+        let fresh = {
+            let conn = db.lock();
+            dictionary::hints(&conn, PIPELINE_HINTS_LIMIT).unwrap_or_default()
+        };
+        self.inner.lock().hints.get_or_insert(fresh).clone()
+    }
+
+    /// Misspelling→correction pairs, longest word first.
+    pub fn corrections(&self, db: &Db) -> Vec<(String, String)> {
+        if let Some(cached) = self.inner.lock().corrections.clone() {
+            return cached;
+        }
+        let fresh = {
+            let conn = db.lock();
+            dictionary::corrections(&conn).unwrap_or_default()
+        };
+        self.inner.lock().corrections.get_or_insert(fresh).clone()
+    }
+
+    /// Active trigger→expansion pairs, longest trigger first.
+    pub fn snippet_expansions(&self, db: &Db) -> Vec<(String, String)> {
+        if let Some(cached) = self.inner.lock().expansions.clone() {
+            return cached;
+        }
+        let fresh = {
+            let conn = db.lock();
+            snippets::active_expansions(&conn).unwrap_or_default()
+        };
+        self.inner.lock().expansions.get_or_insert(fresh).clone()
+    }
+
+    /// The active Flow Style for a category, or `None` (same fallback shape as
+    /// the pipeline's former direct read: a query error yielded no style).
+    pub fn active_style(&self, db: &Db, category: &str) -> Option<FlowStyle> {
+        if let Some(cached) = self.inner.lock().styles.get(category) {
+            return cached.clone();
+        }
+        let fresh = {
+            let conn = db.lock();
+            flow_styles::active_for(&conn, category).ok().flatten()
+        };
+        self.inner
+            .lock()
+            .styles
+            .insert(category.to_string(), fresh.clone());
+        fresh
+    }
+
+    /// Auto-apply transforms scoped to a category (or to all apps).
+    pub fn auto_transforms(&self, db: &Db, category: &str) -> Vec<Transform> {
+        if let Some(cached) = self.inner.lock().auto_transforms.get(category) {
+            return cached.clone();
+        }
+        let fresh = {
+            let conn = db.lock();
+            transforms::auto_apply_for(&conn, category).unwrap_or_default()
+        };
+        self.inner
+            .lock()
+            .auto_transforms
+            .insert(category.to_string(), fresh.clone());
+        fresh
+    }
+
+    /// Drop every cached entry. Must be called after any successful write to
+    /// the dictionary, snippets, flow_styles, or transforms tables so the next
+    /// session re-reads current data.
+    pub fn invalidate(&self) {
+        *self.inner.lock() = HotPathCacheInner::default();
+    }
+}
 
 pub struct AppState {
     pub is_recording: Arc<AtomicBool>,
@@ -95,6 +219,11 @@ pub struct AppState {
     /// Phase 3: history/stats store (SQLite), shared with the audio thread-free
     /// pipeline and the history commands.
     pub db: Db,
+    /// 1.P5: cache of the hot-path DB reads the dictation pipeline performs per
+    /// session (dictionary hints/corrections, snippet expansions, Flow Styles,
+    /// auto-apply transforms). Invalidated by every command that writes those
+    /// tables; see `HotPathCache`.
+    pub hot_cache: HotPathCache,
     /// Local-models: in-flight downloads keyed by model id; the bool is a
     /// cancel-requested flag the download task observes.
     pub model_downloads: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
@@ -129,6 +258,9 @@ impl AppState {
         // Build the shared settings Arc first so the routers can read live
         // backend selections from the same source the commands write to.
         let settings = Arc::new(Mutex::new(settings));
+        // Warm the hot-path read cache off the connection before the app (and
+        // its history writes) start contending for it.
+        let hot_cache = HotPathCache::new(&db);
         Self {
             is_recording: Arc::new(AtomicBool::new(false)),
             is_processing: Arc::new(AtomicBool::new(false)),
@@ -162,6 +294,7 @@ impl AppState {
             settings,
             settings_path,
             db,
+            hot_cache,
             model_downloads: Arc::new(Mutex::new(HashMap::new())),
             file_queue: Arc::new(Mutex::new(VecDeque::new())),
             queue_next_id: Arc::new(AtomicU64::new(1)),

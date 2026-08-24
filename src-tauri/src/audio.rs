@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use parking_lot::Mutex;
@@ -22,6 +22,11 @@ use crate::window_mgmt;
 /// (so the waveform stays live) but stop appending; the pipeline then encodes
 /// what we have and surfaces an over-length error for the cloud transcriber.
 const MAX_CAPTURE_SAMPLES: usize = 48_000 * 60 * 15;
+
+/// Minimum spacing between Flow Bar amplitude events (1.P9). The capture tick
+/// runs every 33 ms, so this throttles the IPC + waveform re-render from ~30 Hz
+/// down to ~15 Hz - still smooth for a 28-bar display at half the event cost.
+const AMP_EMIT_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Names of available capture devices, for the Settings picker. The empty-string
 /// choice ("system default") is added by the UI, not here. Best-effort: returns
@@ -52,9 +57,16 @@ enum CaptureCmd {
     /// Begin capturing from `device_name` (empty = system default). Any stream
     /// already open is torn down first.
     Start { device_name: String },
-    /// Stop capturing and release the device.
-    Stop,
+    /// Stop capturing and release the device. When `ack` is present, the
+    /// capture thread sends on it after the stream is fully dropped and the
+    /// final samples are visible in the shared buffer (the deterministic stop
+    /// handshake, see `CaptureHandle::stop_and_wait`).
+    Stop { ack: Option<Sender<()>> },
 }
+
+/// Upper bound for the stop handshake: matches the previous fixed 60 ms sleep
+/// so the timeout fallback path waits exactly as long as the old behavior.
+pub const STOP_ACK_TIMEOUT: Duration = Duration::from_millis(60);
 
 /// Owns the single capture thread. Recording is driven by `start`/`stop`
 /// commands rather than by spawning a fresh thread (and cpal stream) per press.
@@ -101,11 +113,34 @@ impl CaptureHandle {
     }
 
     /// Stop the current recording and release the device. No-op if the thread
-    /// was never started.
+    /// was never started. Fire-and-forget: safe to call from the
+    /// global-shortcut callback thread without blocking it.
     pub fn stop(&self) {
         if let Some(tx) = self.tx.lock().as_ref() {
-            let _ = tx.send(CaptureCmd::Stop);
+            let _ = tx.send(CaptureCmd::Stop { ack: None });
         }
+    }
+
+    /// Deterministic stop handshake: send `Stop` and block until the capture
+    /// thread confirms the stream is dropped and the final samples are flushed
+    /// into the shared buffer, or until `timeout` elapses. Returns `true` when
+    /// acknowledged, `false` on timeout or if no capture thread exists.
+    ///
+    /// Because cpal joins the stream's callback thread when the stream is
+    /// dropped, an ack guarantees no further samples can be appended - so a
+    /// buffer drained after this point cannot clip the recording's tail.
+    pub fn stop_and_wait(&self, timeout: Duration) -> bool {
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        {
+            let guard = self.tx.lock();
+            let Some(tx) = guard.as_ref() else {
+                return false;
+            };
+            if tx.send(CaptureCmd::Stop { ack: Some(ack_tx) }).is_err() {
+                return false;
+            }
+        }
+        ack_rx.recv_timeout(timeout).is_ok()
     }
 }
 
@@ -128,6 +163,8 @@ fn spawn_capture_thread(
         let mut stream: Option<cpal::Stream> = None;
         let mut warned = false;
         let mut warn_at = usize::MAX;
+        // Last time an amplitude event was emitted (throttled, see 1.P9).
+        let mut last_amp_emit = Instant::now();
 
         loop {
             // While recording, tick every 33 ms for the waveform; while idle,
@@ -155,6 +192,8 @@ fn spawn_capture_thread(
                     *amp.lock() = 0.0;
                     ready_sent.store(false, Ordering::SeqCst);
                     warned = false;
+                    // Emit the first amplitude of the new session immediately.
+                    last_amp_emit = Instant::now();
 
                     match build_stream(
                         &host,
@@ -185,13 +224,23 @@ fn spawn_capture_thread(
                         }
                     }
                 }
-                Some(CaptureCmd::Stop) => {
-                    drop(stream.take()); // releases the device
+                Some(CaptureCmd::Stop { ack }) => {
+                    drop(stream.take()); // releases the device (joins the callback)
                     *amp.lock() = 0.0;
+                    if let Some(ack) = ack {
+                        let _ = ack.send(());
+                    }
                 }
                 None => {
-                    let level = *amp.lock();
-                    let _ = app.emit_to(events::FLOWBAR, events::AMPLITUDE, level);
+                    // Throttle the waveform feed (1.P9): each amplitude event
+                    // crosses IPC and re-renders the whole bar in React, so cap
+                    // it at ~15 Hz. The near-limit warning stays on every tick.
+                    let now = Instant::now();
+                    if now.duration_since(last_amp_emit) >= AMP_EMIT_INTERVAL {
+                        last_amp_emit = now;
+                        let level = *amp.lock();
+                        let _ = app.emit_to(events::FLOWBAR, events::AMPLITUDE, level);
+                    }
                     if !warned && buffer.lock().len() >= warn_at {
                         warned = true;
                         let _ = app.emit_to(events::FLOWBAR, events::LIMIT, ());
@@ -473,15 +522,56 @@ pub fn encode_wav(samples: &[f32]) -> anyhow::Result<Vec<u8>> {
     {
         let mut writer = hound::WavWriter::new(&mut cursor, spec)
             .map_err(|e| anyhow::anyhow!("create wav writer: {e}"))?;
-        for &s in samples {
-            let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
-            writer
-                .write_sample(v)
-                .map_err(|e| anyhow::anyhow!("write wav sample: {e}"))?;
+        // Bulk path (1.P7): convert the whole clip to i16 first, then use
+        // hound's dedicated 16-bit writer. Its `write_sample` only fills an
+        // in-memory buffer (no per-sample I/O or error plumbing); one
+        // `write_all` happens at `flush`. Conversion math matches the old
+        // per-sample path exactly, so the encoded bytes are bit-identical.
+        let pcm: Vec<i16> = samples
+            .iter()
+            .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
+            .collect();
+        {
+            let mut w16 = writer.get_i16_writer(pcm.len() as u32);
+            for &v in &pcm {
+                w16.write_sample(v);
+            }
+            w16.flush()
+                .map_err(|e| anyhow::anyhow!("write wav samples: {e}"))?;
         }
         writer
             .finalize()
             .map_err(|e| anyhow::anyhow!("finalize wav: {e}"))?;
     }
     Ok(cursor.into_inner())
+}
+
+/// Prepare post-capture audio in one step (1.P7a + 1.P7b): resample to 16 kHz
+/// mono and, only when `need_wav`, encode the WAV (see
+/// `transcription::wav_needed` for when the encoded WAV is actually consumed).
+/// When the source rate is already 16 kHz the input vector is returned as-is -
+/// no resample pass and no copy - otherwise it is consumed and replaced by the
+/// resampled buffer. With `need_wav == false` encoding is skipped entirely and
+/// the returned WAV is empty; the caller must not upload it.
+pub fn prepare_16k(
+    samples: Vec<f32>,
+    src_rate: u32,
+    need_wav: bool,
+) -> anyhow::Result<(Vec<f32>, Vec<u8>)> {
+    if src_rate == 16_000 || samples.is_empty() {
+        let wav = if need_wav {
+            encode_wav(&samples)?
+        } else {
+            Vec::new()
+        };
+        return Ok((samples, wav));
+    }
+    let resampled = resample_to_16k(&samples, src_rate);
+    drop(samples); // free the raw capture buffer before encoding
+    let wav = if need_wav {
+        encode_wav(&resampled)?
+    } else {
+        Vec::new()
+    };
+    Ok((resampled, wav))
 }

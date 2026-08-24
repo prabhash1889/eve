@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 
 use crate::config::Settings;
-use crate::secrets;
+use crate::{llm, secrets};
 
 /// Resampled 16 kHz mono audio in both forms the backends need: raw f32 samples
 /// (the local path feeds these straight into whisper.cpp, avoiding a WAV
@@ -72,6 +72,16 @@ pub fn local_backend_label() -> &'static str {
     } else {
         "local whisper unavailable"
     }
+}
+
+/// True when the encoded WAV will actually be consumed for a session with these
+/// settings (1.P7a). `RoutingTranscriber::transcribe_audio` uploads it directly
+/// for a cloud backend; a local backend receives an empty WAV and only needs the
+/// real bytes when falling back to Groq - which requires a key. When this
+/// returns false the router discards the WAV, so callers can skip
+/// `audio::encode_wav` entirely.
+pub fn wav_needed(settings: &Settings) -> bool {
+    settings.transcription_backend != "local" || secrets::has_api_key_fail_open()
 }
 
 /// Backend label for a specific local model id — Parakeet ids run on the ONNX
@@ -136,23 +146,13 @@ pub trait Transcriber: Send + Sync {
 
 /// Groq Whisper (`whisper-large-v3-turbo`) over the OpenAI-compatible API.
 pub struct GroqTranscriber {
-    client: reqwest::Client,
     model: String,
     settings: Arc<Mutex<Settings>>,
 }
 
 impl GroqTranscriber {
     pub fn new(settings: Arc<Mutex<Settings>>) -> Self {
-        // Finite timeouts so a stalled upload/connection can't hang the pipeline
-        // forever. Transcription of a long clip can take a while, so the overall
-        // timeout is more generous than the chat client's.
-        let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(120))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
-            client,
             model: "whisper-large-v3-turbo".into(),
             settings,
         }
@@ -207,13 +207,14 @@ impl Transcriber for GroqTranscriber {
         }
 
         let endpoint = if translate {
-            "https://api.groq.com/openai/v1/audio/translations"
+            format!("{}/openai/v1/audio/translations", llm::GROQ_API_BASE)
         } else {
-            "https://api.groq.com/openai/v1/audio/transcriptions"
+            format!("{}/openai/v1/audio/transcriptions", llm::GROQ_API_BASE)
         };
 
-        let resp = self
-            .client
+        // Shared static client (see `llm::groq_client`) so the pre-warm
+        // handshake fired on trigger-down is reused by this upload.
+        let resp = llm::groq_client()
             .post(endpoint)
             .bearer_auth(key)
             .multipart(form)

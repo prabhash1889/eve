@@ -250,7 +250,7 @@ pub fn upsert_dictionary_entry(
         .map(|r| r.trim().to_string())
         .filter(|r| !r.is_empty());
     let now = chrono::Utc::now().timestamp_millis();
-    dictionary::upsert(
+    let id = dictionary::upsert(
         &state.db.lock(),
         word,
         replacement.as_deref(),
@@ -258,12 +258,16 @@ pub fn upsert_dictionary_entry(
         "user",
         now,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    state.hot_cache.invalidate();
+    Ok(id)
 }
 
 #[tauri::command]
 pub fn delete_dictionary_entry(state: State<AppState>, id: i64) -> Result<(), String> {
-    dictionary::delete(&state.db.lock(), id).map_err(|e| e.to_string())
+    dictionary::delete(&state.db.lock(), id).map_err(|e| e.to_string())?;
+    state.hot_cache.invalidate();
+    Ok(())
 }
 
 /// Import `word,replacement,starred` rows. The header line is optional; blank
@@ -305,6 +309,7 @@ pub fn import_dictionary_csv(state: State<AppState>, csv: String) -> Result<i64,
             count += 1;
         }
     }
+    state.hot_cache.invalidate();
     Ok(count)
 }
 
@@ -347,13 +352,17 @@ pub fn upsert_snippet(
         return Err("Expansion cannot be empty".into());
     }
     let now = chrono::Utc::now().timestamp_millis();
-    snippets::upsert(&state.db.lock(), trigger, expansion, is_active, now)
-        .map_err(|e| e.to_string())
+    let id = snippets::upsert(&state.db.lock(), trigger, expansion, is_active, now)
+        .map_err(|e| e.to_string())?;
+    state.hot_cache.invalidate();
+    Ok(id)
 }
 
 #[tauri::command]
 pub fn delete_snippet(state: State<AppState>, id: i64) -> Result<(), String> {
-    snippets::delete(&state.db.lock(), id).map_err(|e| e.to_string())
+    snippets::delete(&state.db.lock(), id).map_err(|e| e.to_string())?;
+    state.hot_cache.invalidate();
+    Ok(())
 }
 
 /// Import a JSON array of `{ triggerPhrase, expansion, isActive? }` objects.
@@ -375,6 +384,7 @@ pub fn import_snippets_json(state: State<AppState>, json: String) -> Result<i64,
             count += 1;
         }
     }
+    state.hot_cache.invalidate();
     Ok(count)
 }
 
@@ -426,7 +436,7 @@ pub fn upsert_flow_style(
         }
     };
     let now = chrono::Utc::now().timestamp_millis();
-    flow_styles::upsert(
+    let id = flow_styles::upsert(
         &state.db.lock(),
         name,
         category,
@@ -436,12 +446,16 @@ pub fn upsert_flow_style(
         is_active,
         now,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    state.hot_cache.invalidate();
+    Ok(id)
 }
 
 #[tauri::command]
 pub fn delete_flow_style(state: State<AppState>, id: i64) -> Result<(), String> {
-    flow_styles::delete(&state.db.lock(), id).map_err(|e| e.to_string())
+    flow_styles::delete(&state.db.lock(), id).map_err(|e| e.to_string())?;
+    state.hot_cache.invalidate();
+    Ok(())
 }
 
 // --- Phase 7: Command Mode + Transforms --------------------------------------
@@ -516,6 +530,7 @@ pub fn upsert_transform(
         now,
     )
     .map_err(|e| e.to_string())?;
+    state.hot_cache.invalidate();
     command_mode::register_transform_shortcuts(&app, &state);
     Ok(new_id)
 }
@@ -523,6 +538,7 @@ pub fn upsert_transform(
 #[tauri::command]
 pub fn delete_transform(app: AppHandle, state: State<AppState>, id: i64) -> Result<(), String> {
     transforms::delete(&state.db.lock(), id).map_err(|e| e.to_string())?;
+    state.hot_cache.invalidate();
     command_mode::register_transform_shortcuts(&app, &state);
     Ok(())
 }

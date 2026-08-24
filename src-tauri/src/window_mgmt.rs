@@ -1,10 +1,11 @@
 //! Show / hide / position the floating Flow Bar window, plus a shared failure
 //! helper that surfaces an error in the bar and then dismisses it.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
+use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, WebviewWindow};
 
 use crate::events;
 use crate::state::AppState;
@@ -14,6 +15,58 @@ pub fn show_flowbar(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(events::FLOWBAR) {
         let _ = w.show();
     }
+}
+
+/// Hot-path variant used by `hotkey::on_press`: shows the Flow Bar at its
+/// default position *without* the caret lookup, whose UIA COM fallback can
+/// cost tens of milliseconds on the shortcut-callback thread. The bar is
+/// moved next to the caret afterwards by
+/// [`position_flowbar_near_caret_async`].
+pub fn show_flowbar_default(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window(events::FLOWBAR) {
+        let default_monitor = w.primary_monitor().ok().flatten();
+        position_at_default(&w, default_monitor);
+        let _ = w.show();
+    }
+}
+
+/// Bumped once per press so a stale caret lookup from a previous session
+/// (fast re-trigger while an old spawn_blocking lookup is still pending) can
+/// never reposition the newer session's bar.
+static CARET_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Resolve the caret position off the shortcut-callback thread (blocking
+/// Win32/UIA COM) and move the Flow Bar next to it. Applies the result only
+/// while the same recording session is still active; otherwise the bar has
+/// already been hidden or belongs to a newer session and must not be moved.
+pub fn position_flowbar_near_caret_async(app: AppHandle) {
+    // Cheap settings check first: skip the COM/UIA lookup entirely when the
+    // bar is not anchored to the caret.
+    let bar_position = app
+        .state::<AppState>()
+        .settings
+        .lock()
+        .bar_position
+        .clone();
+    if bar_position != "near_caret" {
+        return;
+    }
+    let generation = CARET_GENERATION.fetch_add(1, Ordering::SeqCst);
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some((cx, cy)) = get_caret_position() else {
+            return;
+        };
+        let Some(w) = app.get_webview_window(events::FLOWBAR) else {
+            return;
+        };
+        if !app.state::<AppState>().is_recording.load(Ordering::SeqCst)
+            || CARET_GENERATION.load(Ordering::SeqCst) != generation
+        {
+            return;
+        }
+        let default_monitor = w.primary_monitor().ok().flatten();
+        position_near_caret(&w, cx, cy, default_monitor);
+    });
 }
 
 /// Position the Flow Bar. If settings dictate, anchors it near the caret;
@@ -26,54 +79,72 @@ pub fn position_flowbar(app: &AppHandle) {
             (s.bar_position.clone(), w.primary_monitor().ok().flatten())
         };
 
-        if bar_position == "near_caret" {
-            if let Some((cx, cy)) = get_caret_position() {
-                // Find the monitor that contains the caret
-                let mut target_monitor = None;
-                if let Ok(monitors) = w.available_monitors() {
-                    for m in monitors {
-                        let pos = m.position();
-                        let size = m.size();
-                        if cx >= pos.x && cx < pos.x + size.width as i32
-                            && cy >= pos.y && cy < pos.y + size.height as i32 {
-                            target_monitor = Some(m);
-                            break;
-                        }
-                    }
-                }
-
-                let monitor = target_monitor.or(default_monitor.clone());
-                if let Some(m) = monitor {
-                    if let Ok(ws) = w.outer_size() {
-                        let work_pos = m.work_area().position;
-                        let work_size = m.work_area().size;
-
-                        let x = cx - (ws.width as i32 / 2);
-                        let y = cy + 24; // 24px below the caret
-
-                        let min_x = work_pos.x;
-                        let max_x = work_pos.x + work_size.width as i32 - ws.width as i32;
-                        let min_y = work_pos.y;
-                        let max_y = work_pos.y + work_size.height as i32 - ws.height as i32;
-
-                        let x = x.clamp(min_x, max_x);
-                        let y = y.clamp(min_y, max_y);
-
-                        let _ = w.set_position(PhysicalPosition::new(x, y));
-                        return;
-                    }
-                }
-            }
+        if bar_position == "near_caret"
+            && get_caret_position()
+                .is_some_and(|(cx, cy)| position_near_caret(&w, cx, cy, default_monitor.clone()))
+        {
+            return;
         }
 
-        // Fallback / fixed position at the bottom-center of the primary monitor
-        if let Some(monitor) = default_monitor {
-            let ms = monitor.size();
-            if let Ok(ws) = w.outer_size() {
-                let x = (ms.width as i32 - ws.width as i32) / 2;
-                let y = ms.height as i32 - ws.height as i32 - 96;
-                let _ = w.set_position(PhysicalPosition::new(x.max(0), y.max(0)));
+        position_at_default(&w, default_monitor);
+    }
+}
+
+/// Anchor the bar just below the screen-space caret (`cx`, `cy`), clamped to
+/// the work area of the monitor containing that point (or `default_monitor`
+/// when the point matches no monitor). Returns whether the bar was moved.
+fn position_near_caret(
+    w: &WebviewWindow,
+    cx: i32,
+    cy: i32,
+    default_monitor: Option<Monitor>,
+) -> bool {
+    // Find the monitor that contains the caret
+    let mut target_monitor = None;
+    if let Ok(monitors) = w.available_monitors() {
+        for m in monitors {
+            let pos = m.position();
+            let size = m.size();
+            if cx >= pos.x && cx < pos.x + size.width as i32
+                && cy >= pos.y && cy < pos.y + size.height as i32 {
+                target_monitor = Some(m);
+                break;
             }
+        }
+    }
+
+    let monitor = target_monitor.or(default_monitor);
+    if let Some(m) = monitor {
+        if let Ok(ws) = w.outer_size() {
+            let work_pos = m.work_area().position;
+            let work_size = m.work_area().size;
+
+            let x = cx - (ws.width as i32 / 2);
+            let y = cy + 24; // 24px below the caret
+
+            let min_x = work_pos.x;
+            let max_x = work_pos.x + work_size.width as i32 - ws.width as i32;
+            let min_y = work_pos.y;
+            let max_y = work_pos.y + work_size.height as i32 - ws.height as i32;
+
+            let x = x.clamp(min_x, max_x);
+            let y = y.clamp(min_y, max_y);
+
+            let _ = w.set_position(PhysicalPosition::new(x, y));
+            return true;
+        }
+    }
+    false
+}
+
+/// Fallback / fixed position at the bottom-center of the primary monitor.
+fn position_at_default(w: &WebviewWindow, default_monitor: Option<Monitor>) {
+    if let Some(monitor) = default_monitor {
+        let ms = monitor.size();
+        if let Ok(ws) = w.outer_size() {
+            let x = (ms.width as i32 - ws.width as i32) / 2;
+            let y = ms.height as i32 - ws.height as i32 - 96;
+            let _ = w.set_position(PhysicalPosition::new(x.max(0), y.max(0)));
         }
     }
 }

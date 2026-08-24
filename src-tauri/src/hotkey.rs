@@ -12,7 +12,7 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 use crate::state::AppState;
-use crate::{events, pipeline, window_mgmt};
+use crate::{events, llm, pipeline, window_mgmt};
 
 /// Parity A1: in hybrid mode, a press shorter than this is a "tap" that arms a
 /// hands-free toggle; holding past it behaves like push-to-talk.
@@ -139,6 +139,11 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
         return;
     }
 
+    // 1.P3: open a connection to the Groq host while the user is still talking
+    // so release-time transcription skips the TCP+TLS handshake. Fire-and-forget
+    // (spawned, errors discarded) - can never delay or fail this callback.
+    llm::prewarm_connection();
+
     crate::sound::play_start_sound(&st.settings.lock());
 
     // Capture the paste target + its context, apply the privacy-pause gate, and
@@ -147,6 +152,9 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
     if !capture_focus_and_gate(app, st) {
         return;
     }
+
+    // Allow Esc to cancel while recording (registered off the callback thread).
+    register_escape(app, st);
 
     // Tell the (event-only) Flow Bar how to size/fade itself for this session.
     let (bubble_scale, bubble_opacity, toggle_hint) = {
@@ -157,7 +165,24 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
             s.activation_mode != "hold",
         )
     };
-    window_mgmt::show_flowbar(app);
+
+    // Start the microphone before touching the Flow Bar: positioning it can
+    // fall back to UIA COM (tens of ms on this callback thread), which would
+    // delay capture start long enough to clip first syllables.
+    let device_name = st.settings.lock().input_device.clone();
+    st.capture.start(
+        app.clone(),
+        st.is_recording.clone(),
+        st.audio_buffer.clone(),
+        st.sample_rate.clone(),
+        st.current_amplitude.clone(),
+        device_name,
+    );
+
+    // Tell the (event-only) Flow Bar how to size/fade itself for this session.
+    // Show it at the default position right away, then let a spawned lookup
+    // move it next to the caret once the result arrives.
+    window_mgmt::show_flowbar_default(app);
     let _ = app.emit_to(
         events::FLOWBAR,
         events::START,
@@ -168,19 +193,7 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
             toggle_hint,
         },
     );
-
-    // Allow Esc to cancel while recording (registered off the callback thread).
-    register_escape(app, st);
-
-    let device_name = st.settings.lock().input_device.clone();
-    st.capture.start(
-        app.clone(),
-        st.is_recording.clone(),
-        st.audio_buffer.clone(),
-        st.sample_rate.clone(),
-        st.current_amplitude.clone(),
-        device_name,
-    );
+    window_mgmt::position_flowbar_near_caret_async(app.clone());
 }
 
 pub fn on_release(app: &AppHandle, st: &AppState) {

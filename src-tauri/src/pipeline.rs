@@ -9,11 +9,11 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::config::CleanupLevel;
 use crate::context::AppContext;
-use crate::db::{dictionary, flow_styles, queries, snippets, transforms, Db};
+use crate::db::{queries, Db};
 use crate::polish::StyleHint;
 use crate::state::AppState;
 use crate::timing::Timings;
-use crate::transcription::{local_backend_label_for, Audio, TranscriptionBenchmark};
+use crate::transcription::{local_backend_label_for, wav_needed, Audio, TranscriptionBenchmark};
 use crate::{audio, events, injection, text_processing, window_mgmt};
 
 /// Emit a coarse processing-stage label to the Flow Bar (Phase 1 visibility).
@@ -50,6 +50,7 @@ pub async fn process(app: AppHandle) {
         last_transcript,
         last_benchmark,
         db,
+        hot_cache,
         hwnd,
         context,
         to_scratchpad,
@@ -67,6 +68,7 @@ pub async fn process(app: AppHandle) {
             st.last_transcript.clone(),
             st.last_transcription_benchmark.clone(),
             st.db.clone(),
+            st.hot_cache.clone(),
             st.foreground_hwnd.load(Ordering::SeqCst),
             context,
             st.to_scratchpad.load(Ordering::SeqCst),
@@ -78,9 +80,19 @@ pub async fn process(app: AppHandle) {
     // breakdown is logged + persisted on completion (see `timings.finish`).
     let mut timings = Timings::new();
 
-    // Give the capture thread a moment to stop and flush its last samples.
-    let _ = tauri::async_runtime::spawn_blocking(|| std::thread::sleep(Duration::from_millis(60)))
-        .await;
+    // Deterministic stop handshake (replaces the old fixed 60 ms sleep): wait
+    // for the capture thread to ack that the stream is dropped and the final
+    // samples are flushed into the shared buffer. Typically returns in ~0-33 ms
+    // (one poll tick); on timeout we fall back to waiting the full 60 ms,
+    // exactly the previous behavior.
+    let app_for_handshake = app.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        app_for_handshake
+            .state::<AppState>()
+            .capture
+            .stop_and_wait(audio::STOP_ACK_TIMEOUT);
+    })
+    .await;
 
     let samples = {
         let mut b = buffer.lock();
@@ -106,11 +118,12 @@ pub async fn process(app: AppHandle) {
 
     // Resample to 16 kHz + WAV-encode (CPU-bound → off the async runtime). We
     // keep BOTH the f32 samples (fed straight to the local backend, no WAV
-    // round-trip) and the encoded WAV (cloud upload + history replay).
+    // round-trip) and the encoded WAV (cloud upload). When the local backend is
+    // selected and no Groq key exists for fallback, the WAV would be discarded
+    // unread - skip the encode entirely (`wav_needed`).
+    let need_wav = wav_needed(&settings.lock());
     let (samples16k, wav) = match tauri::async_runtime::spawn_blocking(move || {
-        let resampled = audio::resample_to_16k(&samples, rate);
-        let wav = audio::encode_wav(&resampled)?;
-        anyhow::Ok((resampled, wav))
+        audio::prepare_16k(samples, rate, need_wav)
     })
     .await
     {
@@ -181,10 +194,9 @@ pub async fn process(app: AppHandle) {
     let audio_bytes: Option<Vec<u8>> = None;
 
     // Phase 4: load dictionary terms to boost recognition (Whisper `prompt`).
-    let hints = {
-        let conn = db.lock();
-        dictionary::hints(&conn, 100).unwrap_or_default()
-    };
+    // 1.P5: served from the hot-path cache (invalidated on every dictionary
+    // write) so the session doesn't take the DB lock here.
+    let hints = hot_cache.hints(&db);
 
     timings.set_context(&transcription_backend, &transcriber_model, &profile);
 
@@ -270,10 +282,7 @@ pub async fn process(app: AppHandle) {
 
     // Phase 4: apply dictionary misspelling→correction mappings before any
     // other processing so downstream steps and the LLM see the corrected terms.
-    let corrections = {
-        let conn = db.lock();
-        dictionary::corrections(&conn).unwrap_or_default()
-    };
+    let corrections = hot_cache.corrections(&db);
     let dict_corrected = text_processing::apply_corrections(&raw, &corrections);
 
     // Deterministic course-correction runs BEFORE the LLM so the model never
@@ -283,12 +292,7 @@ pub async fn process(app: AppHandle) {
     // Phase 6: look up the active Flow Style for the focused app's category and
     // turn it into a StyleHint that shapes the polish prompt (tone, per-app
     // context, optional custom instruction + writing sample).
-    let style = {
-        let conn = db.lock();
-        flow_styles::active_for(&conn, context.category.as_str())
-            .ok()
-            .flatten()
-    };
+    let style = hot_cache.active_style(&db, context.category.as_str());
     let style_hint = style.map(|s| StyleHint {
         category: s.app_category,
         tone: s.tone,
@@ -327,10 +331,7 @@ pub async fn process(app: AppHandle) {
 
     // Phase 5: expand snippet triggers ("my email" → the full address) last,
     // just before injection, so the expansion text is injected verbatim.
-    let expansions = {
-        let conn = db.lock();
-        snippets::active_expansions(&conn).unwrap_or_default()
-    };
+    let expansions = hot_cache.snippet_expansions(&db);
     let mut text = text_processing::expand_snippets(&finalized, &expansions);
     if text.is_empty() {
         window_mgmt::fail(&app, "No speech detected");
@@ -348,10 +349,7 @@ pub async fn process(app: AppHandle) {
     // polish, just before injection). Each runs its saved prompt over the text
     // via the LLM; on error or empty output we keep the prior text so a
     // transform failure never blocks the dictation.
-    let auto_transforms = {
-        let conn = db.lock();
-        transforms::auto_apply_for(&conn, context.category.as_str()).unwrap_or_default()
-    };
+    let auto_transforms = hot_cache.auto_transforms(&db, context.category.as_str());
     for t in auto_transforms {
         if let Ok(out) = crate::command_mode::run_transform(&t.system_prompt, &text).await {
             if !out.is_empty() {
