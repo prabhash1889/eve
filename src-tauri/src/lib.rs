@@ -232,7 +232,10 @@ pub fn run() {
                 let st = app.state::<AppState>();
                 let want_prewarm = {
                     let s = st.settings.lock();
-                    s.transcription_backend == "local" && s.local_prewarm_enabled
+                    matches!(
+                        crate::transcription::resolve_speech(&s),
+                        crate::transcription::SpeechBackend::Local
+                    ) && s.local_prewarm_enabled
                 };
                 if want_prewarm {
                     let transcriber = st.transcriber.clone();

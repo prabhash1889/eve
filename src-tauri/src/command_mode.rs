@@ -157,36 +157,38 @@ async fn process_command(app: AppHandle) {
         return;
     }
 
-    let (language, strategy, backend, vad_enabled, correctness_rescue, profile, model) = {
+    let (language, strategy, speech_is_local, vad_enabled, correctness_rescue, profile, model) = {
         let s = settings.lock();
         let lang = if s.language == "auto" {
             None
         } else {
             Some(s.language.clone())
         };
+        // Resolve the speech backend once: local keeps its selected model id;
+        // cloud carries the resolved model for the benchmark row.
+        let (speech_is_local, model) = match crate::transcription::resolve_speech(&s) {
+            crate::transcription::SpeechBackend::Local => (true, s.local_whisper_model.clone()),
+            crate::transcription::SpeechBackend::Cloud(t) => (false, t.model),
+        };
         (
             lang,
             s.inject_strategy.clone(),
-            s.transcription_backend.clone(),
+            speech_is_local,
             s.local_vad_enabled,
             s.local_correctness_rescue,
             s.local_transcription_profile.clone(),
-            if s.transcription_backend == "local" {
-                s.local_whisper_model.clone()
-            } else {
-                String::new()
-            },
+            model,
         )
     };
 
     // Build the same dual-form audio payload as dictation mode. The local path
-    // consumes samples directly; the WAV stays available for Groq/fallback.
-    let backend_for_preprocess = backend.clone();
+    // consumes samples directly; the WAV stays available for cloud fallback.
+    let backend_for_preprocess = speech_is_local;
     let profile_for_preprocess = profile.clone();
     let processed = match tauri::async_runtime::spawn_blocking(move || {
         let mut resampled = audio::resample_to_16k(&samples, rate);
         let mut vad_trimmed = false;
-        if backend_for_preprocess == "local" && vad_enabled {
+        if backend_for_preprocess && vad_enabled {
             let pre = audio::preprocess_local(
                 &resampled,
                 audio::VadParams::for_profile(&profile_for_preprocess, correctness_rescue),
@@ -239,10 +241,12 @@ async fn process_command(app: AppHandle) {
     }
     *last_benchmark.lock() = Some(TranscriptionBenchmark {
         mode: "command".into(),
-        backend: if settings.lock().transcription_backend == "local" {
+        backend: if speech_is_local {
             local_backend_label_for(&model).to_string()
         } else {
-            "Groq".into()
+            crate::transcription::resolve_speech(&settings.lock())
+                .label()
+                .to_string()
         },
         model: if model.is_empty() {
             "whisper-large-v3-turbo".into()

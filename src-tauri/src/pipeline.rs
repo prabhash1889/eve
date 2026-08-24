@@ -119,7 +119,7 @@ pub async fn process(app: AppHandle) {
     // Resample to 16 kHz + WAV-encode (CPU-bound → off the async runtime). We
     // keep BOTH the f32 samples (fed straight to the local backend, no WAV
     // round-trip) and the encoded WAV (cloud upload). When the local backend is
-    // selected and no Groq key exists for fallback, the WAV would be discarded
+    // selected and no cloud fallback key exists, the WAV would be discarded
     // unread - skip the encode entirely (`wav_needed`).
     let need_wav = wav_needed(&settings.lock());
     let (samples16k, wav) = match tauri::async_runtime::spawn_blocking(move || {
@@ -141,8 +141,10 @@ pub async fn process(app: AppHandle) {
         level,
         strategy,
         vibe_coding,
-        transcription_backend,
+        speech_is_local,
+        speech_backend_label,
         transcriber_model,
+        max_wav_bytes,
         vad_enabled,
         correctness_rescue,
         profile,
@@ -155,20 +157,29 @@ pub async fn process(app: AppHandle) {
         } else {
             Some(s.language.clone())
         };
-        // Record the local model only when local STT is actually in effect.
-        let model = if s.transcription_backend == "local" {
-            s.local_whisper_model.clone()
-        } else {
-            String::new()
-        };
+        // Resolve the speech backend once: local keeps its selected model id;
+        // cloud carries the provider label + resolved model for the benchmark.
+        let (speech_is_local, speech_backend_label, transcriber_model) =
+            match crate::transcription::resolve_speech(&s) {
+                crate::transcription::SpeechBackend::Local => {
+                    (true, String::new(), s.local_whisper_model.clone())
+                }
+                crate::transcription::SpeechBackend::Cloud(t) => (
+                    false,
+                    t.provider.label().to_string(),
+                    t.model,
+                ),
+            };
         (
             lang,
             s.language.clone(),
             s.cleanup_level,
             s.inject_strategy.clone(),
             s.vibe_coding,
-            s.transcription_backend.clone(),
-            model,
+            speech_is_local,
+            speech_backend_label,
+            transcriber_model,
+            crate::transcription::max_wav_bytes_for(&s),
             s.local_vad_enabled,
             s.local_correctness_rescue,
             s.local_transcription_profile.clone(),
@@ -177,17 +188,18 @@ pub async fn process(app: AppHandle) {
         )
     };
 
-    // Groq rejects uploads over 25 MB (≈13 min of 16 kHz mono WAV). Detect that
-    // here and surface a clear "too long" message rather than letting the request
-    // fail with a generic "check your connection".
-    if transcription_backend == "groq"
-        && wav.len() > crate::transcription::GROQ_MAX_WAV_BYTES
-    {
-        window_mgmt::fail(
-            &app,
-            "Recording too long — keep dictations under about 13 minutes",
-        );
-        return;
+    // The effective provider's upload cap (Groq/OpenAI reject over 25 MB,
+    // ~13 min of 16 kHz mono WAV; Deepgram has none). Detect an over-length
+    // clip here and surface a clear "too long" message rather than letting the
+    // request fail with a generic "check your connection".
+    if let Some(cap) = max_wav_bytes {
+        if wav.len() > cap {
+            window_mgmt::fail(
+                &app,
+                "Recording too long — keep dictations under about 13 minutes",
+            );
+            return;
+        }
     }
 
     // Audio is never persisted — history keeps transcript text only.
@@ -198,14 +210,19 @@ pub async fn process(app: AppHandle) {
     // write) so the session doesn't take the DB lock here.
     let hints = hot_cache.hints(&db);
 
-    timings.set_context(&transcription_backend, &transcriber_model, &profile);
+    timings.set_context(
+        if speech_is_local { "local" } else { &speech_backend_label },
+        &transcriber_model,
+        &profile,
+    );
 
     // Phase 3 (optimization): local-only silence trimming + normalization. The
-    // full WAV (built above) is what Groq uploads and what history replays; only
-    // the f32 samples handed to the on-device backend are trimmed. A clip that
-    // reads as all-silence fails fast here rather than after a wasted inference.
+    // full WAV (built above) is what cloud providers upload and what history
+    // replays; only the f32 samples handed to the on-device backend are
+    // trimmed. A clip that reads as all-silence fails fast here rather than
+    // after a wasted inference.
     let mut vad_trimmed = false;
-    let samples16k = if transcription_backend == "local" && vad_enabled {
+    let samples16k = if speech_is_local && vad_enabled {
         let params = audio::VadParams::for_profile(&profile, correctness_rescue);
         match tauri::async_runtime::spawn_blocking(move || {
             audio::preprocess_local(&samples16k, params)
@@ -256,16 +273,12 @@ pub async fn process(app: AppHandle) {
     }
     *last_benchmark.lock() = Some(TranscriptionBenchmark {
         mode: "dictation".into(),
-        model: if transcription_backend == "local" {
-            transcriber_model.clone()
-        } else {
-            "whisper-large-v3-turbo".into()
-        },
+        model: transcriber_model.clone(),
         profile: profile.clone(),
-        backend: if transcription_backend == "local" {
+        backend: if speech_is_local {
             local_backend_label_for(&transcriber_model).to_string()
         } else {
-            "Groq".into()
+            speech_backend_label
         },
         clip_duration_ms: duration_ms.max(0) as u64,
         transcribe_ms,
@@ -511,9 +524,9 @@ fn friendly_error(err: &str) -> String {
     } else if err.contains("Failed to load") || err.contains("load model") {
         "Local model failed to load — try re-downloading it".into()
     } else if err.contains("API key") {
-        "Set your Groq API key in Settings".into()
+        "Set your provider API key in Settings".into()
     } else if err.contains("401") || err.contains("invalid_api_key") {
-        "Invalid Groq API key".into()
+        "Invalid API key — check Settings".into()
     } else if err.contains("429") {
         "Rate limited — try again in a moment".into()
     } else if err.contains("413") || err.contains("too large") || err.contains("too long") {

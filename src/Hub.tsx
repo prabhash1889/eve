@@ -32,6 +32,7 @@ import {
   MOUSE_TRIGGERS,
   PROVIDERS,
   SHORTCUT_CHOICES,
+  STT_PROVIDERS,
 } from "./lib/options";
 import { pausedAppExample } from "./lib/platform";
 import { THEMES, loadTheme, setTheme, type ThemeId } from "./lib/theme";
@@ -951,6 +952,13 @@ function ProvidersSection({
   const [flash, setFlash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Phase 3: effective speech provider. An empty `transcriptionProvider` is a
+  // legacy install - resolve from the old `transcriptionBackend` field exactly
+  // like the Rust router does.
+  const speechProvider =
+    settings.transcriptionProvider ||
+    (settings.transcriptionBackend === "local" ? "local" : "groq");
+
   // Load each provider's configured state (best-effort).
   useEffect(() => {
     PROVIDERS.forEach((p) => {
@@ -990,9 +998,9 @@ function ProvidersSection({
   return (
     <Section title="Providers" icon={<KeyRound size={16} />}>
       <p className="mb-4 text-sm text-ink-soft">
-        Pick which cloud LLM cleans up your dictations and powers Command Mode and
-        Transforms. Keys are stored securely in the Windows Credential Manager — never
-        written to disk in plain text.
+        Pick which cloud providers transcribe your speech and clean up your dictations
+        (plus Command Mode and Transforms). Keys are stored securely in the Windows
+        Credential Manager — never written to disk in plain text.
       </p>
 
       <div className="grid grid-cols-2 gap-3">
@@ -1030,6 +1038,57 @@ function ProvidersSection({
         On failure Eve tries the fallback provider (if its key is configured), then your local
         polish model. A rejected key is always reported - it never silently falls back.
       </p>
+
+      {/* Phase 3 providers B: cloud speech-to-text routing */}
+      <div className="mt-5 border-t border-border pt-4">
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <div className="mb-1.5 text-xs font-medium text-ink-soft">Speech provider</div>
+            <Select
+              value={speechProvider}
+              onChange={(v) =>
+                persist({ ...settings, transcriptionProvider: v })
+              }
+              options={[
+                ...STT_PROVIDERS.map((p) => ({ value: p.id, label: p.label })),
+                { value: "local", label: "Local model" },
+              ]}
+            />
+          </div>
+          <div>
+            <div className="mb-1.5 text-xs font-medium text-ink-soft">Fallback provider</div>
+            <Select
+              value={settings.fallbackTranscriptionProvider}
+              onChange={(v) =>
+                persist({ ...settings, fallbackTranscriptionProvider: v })
+              }
+              options={[
+                { value: "", label: "None" },
+                ...STT_PROVIDERS.filter(
+                  (p) => speechProvider === "local" || p.id !== speechProvider,
+                ).map((p) => ({ value: p.id, label: p.label })),
+              ]}
+            />
+          </div>
+        </div>
+        <input
+          type="text"
+          value={settings.transcriptionCloudModel}
+          onChange={(e) => persist({ ...settings, transcriptionCloudModel: e.target.value })}
+          placeholder={
+            speechProvider === "local"
+              ? "Local model is picked on the Models page"
+              : "Model — leave empty for the provider default"
+          }
+          disabled={speechProvider === "local"}
+          className="mt-3 w-full rounded-xl border border-border bg-surface px-3 py-2 outline-none focus:border-accent text-sm font-mono disabled:opacity-50"
+        />
+        <p className="mt-2 text-xs text-ink-faint">
+          {speechProvider === "local"
+            ? "Dictation runs on-device; on failure Eve falls back to your cloud speech provider when its key is set."
+            : "On rate limits or connection errors Eve switches to the fallback provider (if its key is configured). Deepgram doesn't support dictionary hints or translate-to-English."}
+        </p>
+      </div>
 
       <div className="mt-5 space-y-2 border-t border-border pt-4">
         {PROVIDERS.map((p) => (

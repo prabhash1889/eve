@@ -84,7 +84,13 @@ export function Onboarding({
 
   const pickMode = (m: SetupMode) => {
     setMode(m);
-    setDraft((d) => ({ ...d, transcriptionBackend: m === "private" ? "local" : "groq" }));
+    setDraft((d) => ({
+      ...d,
+      // Phase 3 providers B: the speech provider field is authoritative; the
+      // legacy backend field is kept in sync for older-build compatibility.
+      transcriptionProvider: m === "private" ? "local" : "groq",
+      transcriptionBackend: m === "private" ? "local" : "groq",
+    }));
   };
 
   const finish = async () => {
@@ -108,7 +114,7 @@ export function Onboarding({
     // Private mode: warm the downloaded model so the first dictation isn't
     // slowed by a cold load. Best-effort, mirrors LocalModelsPage.
     if (
-      final.transcriptionBackend === "local" &&
+      final.transcriptionProvider === "local" &&
       final.localWhisperModel &&
       final.localPrewarmEnabled
     ) {

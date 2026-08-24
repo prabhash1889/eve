@@ -10,7 +10,7 @@ the expected impact.
 
 Do not commit:
 
-- Groq API keys or other service credentials
+- Provider API keys (Groq, OpenAI, OpenRouter, Anthropic, Deepgram) or other service credentials
 - Tauri updater private signing keys
 - Authenticode, Azure, Apple, or other release-signing credentials
 - `.env*` files, local model downloads, release artifacts, or build output

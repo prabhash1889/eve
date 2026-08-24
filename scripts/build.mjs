@@ -11,7 +11,7 @@
 // (npm: `npm run build:all`, `npm run build:cpu`, `npm run build:cuda`;
 //  append `-- 0.3.0` to pin a version.)
 //
-// CPU  -> runs on ANY machine (Groq cloud + Parakeet on CPU; whisper on CPU).
+// CPU  -> runs on ANY machine (cloud providers + Parakeet on CPU; whisper on CPU).
 // CUDA -> GPU whisper on NVIDIA. Needs the CUDA toolchain - run from an x64 MSVC
 //         prompt. Both are UNSIGNED (no signing key, no in-app auto-update);
 //         Windows SmartScreen shows "More info -> Run anyway" the first time.

@@ -73,6 +73,24 @@ pub struct Settings {
     /// llama.cpp). Falls back to Groq on local failure.
     #[serde(default = "default_backend")]
     pub polish_backend: String,
+    /// Multi-provider speech (Phase 3 providers B): which backend runs
+    /// speech-to-text. One of "groq" | "openai" | "deepgram" | "local". Empty =
+    /// legacy install, resolve from `transcription_backend` ("local" -> local,
+    /// anything else -> Groq) so existing settings keep working unchanged.
+    #[serde(default)]
+    pub transcription_provider: String,
+    /// Optional model override for `transcription_provider`. Empty = the
+    /// provider's default STT model (e.g. "whisper-large-v3-turbo",
+    /// "whisper-1", "nova-3").
+    #[serde(default)]
+    pub transcription_cloud_model: String,
+    /// Secondary cloud STT provider tried when the primary fails with a
+    /// transient error (e.g. 429). Empty = none; a local primary with no
+    /// explicit fallback keeps falling back to Groq when its key exists.
+    /// Auth errors on the primary are never masked - they surface so a wrong
+    /// key is visible.
+    #[serde(default)]
+    pub fallback_transcription_provider: String,
     /// Multi-provider polish (Phase 2 providers A): which cloud LLM runs polish,
     /// Command Mode, and Transforms. One of "groq" | "openai" | "openrouter" |
     /// "anthropic". An empty/unknown value falls back to "groq".
@@ -292,6 +310,9 @@ impl Default for Settings {
             audio_retention_hours: default_audio_retention_hours(),
             transcription_backend: default_backend(),
             polish_backend: default_backend(),
+            transcription_provider: String::new(),
+            transcription_cloud_model: String::new(),
+            fallback_transcription_provider: String::new(),
             polish_provider: default_polish_provider(),
             polish_cloud_model: String::new(),
             fallback_polish_provider: String::new(),

@@ -1,7 +1,10 @@
-//! Transcription providers. `GroqTranscriber` calls the Groq Whisper API;
-//! `LocalTranscriber` runs whisper.cpp on-device (behind the `local-models`
-//! Cargo feature). `RoutingTranscriber` picks between them per call from the
-//! live `Settings`, falling back to Groq when the local backend errors.
+//! Transcription providers. Cloud speech-to-text goes through
+//! `CloudTranscriber`, which resolves a provider (Groq / OpenAI share the
+//! OpenAI-compatible multipart API; Deepgram speaks its own REST shape) from
+//! live `Settings` per call. `LocalTranscriber` runs whisper.cpp on-device
+//! (behind the `local-models` Cargo feature). `RoutingTranscriber` picks
+//! between them per call from the live `Settings`, falling back across the
+//! configured cloud chain when the selected backend errors.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,6 +15,7 @@ use serde::Serialize;
 
 use crate::config::Settings;
 use crate::{llm, secrets};
+use secrets::ProviderKey;
 
 /// Resampled 16 kHz mono audio in both forms the backends need: raw f32 samples
 /// (the local path feeds these straight into whisper.cpp, avoiding a WAV
@@ -58,11 +62,89 @@ pub struct TranscriptionBenchmark {
     pub vad_trimmed: bool,
 }
 
-/// Groq rejects uploads over 25 MB (≈13 min of 16 kHz mono WAV). The mic
-/// pipeline and the file-transcription queue both pre-check the encoded WAV
-/// against this so an over-length clip fails with a clear message instead of a
-/// generic network error.
-pub const GROQ_MAX_WAV_BYTES: usize = 25 * 1024 * 1024;
+/// Cloud STT providers Eve can route speech-to-text through (Phase 3
+/// providers B). Groq and OpenAI share the OpenAI-compatible multipart
+/// transcription API and `{text}` response; Deepgram speaks its own REST shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloudStt {
+    Groq,
+    OpenAi,
+    Deepgram,
+}
+
+impl CloudStt {
+    /// Parse the wire form stored in `Settings.transcription_provider`.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "groq" => Some(CloudStt::Groq),
+            "openai" => Some(CloudStt::OpenAi),
+            "deepgram" => Some(CloudStt::Deepgram),
+            _ => None,
+        }
+    }
+
+    /// Human label used in errors and benchmark rows ("OpenAI").
+    pub fn label(self) -> &'static str {
+        match self {
+            CloudStt::Groq => "Groq",
+            CloudStt::OpenAi => "OpenAI",
+            CloudStt::Deepgram => "Deepgram",
+        }
+    }
+
+    /// Which keychain slot holds this provider's credential.
+    pub fn key_slot(self) -> ProviderKey {
+        match self {
+            CloudStt::Groq => ProviderKey::Groq,
+            CloudStt::OpenAi => ProviderKey::OpenAi,
+            CloudStt::Deepgram => ProviderKey::Deepgram,
+        }
+    }
+
+    /// Default STT model used when `transcription_cloud_model` is empty.
+    pub fn default_model(self) -> &'static str {
+        match self {
+            CloudStt::Groq => "whisper-large-v3-turbo",
+            CloudStt::OpenAi => "whisper-1",
+            CloudStt::Deepgram => "nova-3",
+        }
+    }
+
+    /// Model forced when translate-to-English is on (the translations endpoint
+    /// has a smaller compatible set than transcriptions). OpenAI's whisper-1
+    /// serves both endpoints, so no override is needed there.
+    fn translate_model(self) -> &'static str {
+        match self {
+            CloudStt::Groq => "whisper-large-v3",
+            CloudStt::OpenAi => "whisper-1",
+            CloudStt::Deepgram => self.default_model(),
+        }
+    }
+
+    /// Whether the provider can translate audio to English. Deepgram's listen
+    /// endpoint can't; a user with translation enabled gets a clear error
+    /// instead of silently ignored audio.
+    pub fn supports_translate(self) -> bool {
+        !matches!(self, CloudStt::Deepgram)
+    }
+
+    /// Whether the provider honors Whisper-style vocabulary hints. Deepgram
+    /// takes per-word `keyword` params instead of a free-form prompt, so the
+    /// configured `whisper_prompt` degrades there (surfaced in UI copy).
+    pub fn supports_prompt_hints(self) -> bool {
+        !matches!(self, CloudStt::Deepgram)
+    }
+
+    /// Upload cap for the encoded WAV, if the provider enforces one. Both
+    /// OpenAI-compatible providers reject over 25 MB (~13 min of 16 kHz mono);
+    /// Deepgram accepts much larger bodies so no cap applies.
+    pub fn max_wav_bytes(self) -> Option<usize> {
+        match self {
+            CloudStt::Groq | CloudStt::OpenAi => Some(25 * 1024 * 1024),
+            CloudStt::Deepgram => None,
+        }
+    }
+}
 
 pub fn local_backend_label() -> &'static str {
     if cfg!(feature = "local-whisper-cuda") {
@@ -77,11 +159,121 @@ pub fn local_backend_label() -> &'static str {
 /// True when the encoded WAV will actually be consumed for a session with these
 /// settings (1.P7a). `RoutingTranscriber::transcribe_audio` uploads it directly
 /// for a cloud backend; a local backend receives an empty WAV and only needs the
-/// real bytes when falling back to Groq - which requires a key. When this
-/// returns false the router discards the WAV, so callers can skip
+/// real bytes when falling back to a cloud provider - which requires a key. When
+/// this returns false the router discards the WAV, so callers can skip
 /// `audio::encode_wav` entirely.
 pub fn wav_needed(settings: &Settings) -> bool {
-    settings.transcription_backend != "local" || secrets::has_api_key_fail_open()
+    match resolve_speech(settings) {
+        SpeechBackend::Cloud(_) => true,
+        SpeechBackend::Local => {
+            // Only worth encoding if some cloud fallback could consume it.
+            match CloudStt::parse(settings.fallback_transcription_provider.trim()) {
+                Some(fb) => secrets::has_provider_key_fail_open(fb.key_slot()),
+                // Legacy default: Groq is the implicit local-failure fallback.
+                None => secrets::has_api_key_fail_open(),
+            }
+        }
+    }
+}
+
+/// Upload cap for the effective speech provider, if it enforces one. The mic
+/// pipeline and file queue pre-check the encoded WAV against this so an
+/// over-length clip fails with a clear message instead of a generic error.
+pub fn max_wav_bytes_for(settings: &Settings) -> Option<usize> {
+    match resolve_speech(settings) {
+        SpeechBackend::Cloud(t) => t.provider.max_wav_bytes(),
+        SpeechBackend::Local => None,
+    }
+}
+
+/// A resolved cloud STT target: which provider and which model id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudSpeechTarget {
+    pub provider: CloudStt,
+    pub model: String,
+}
+
+impl CloudSpeechTarget {
+    fn with_default_model(provider: CloudStt) -> Self {
+        CloudSpeechTarget {
+            provider,
+            model: provider.default_model().to_string(),
+        }
+    }
+}
+
+impl SpeechBackend {
+    /// Label for benchmark/status rows: the cloud provider name, or "local".
+    pub fn label(&self) -> &str {
+        match self {
+            SpeechBackend::Cloud(t) => t.provider.label(),
+            SpeechBackend::Local => "local",
+        }
+    }
+}
+
+/// The effective speech backend for these settings: a cloud target or the
+/// on-device engine (whisper.cpp / Parakeet, selected by model id).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpeechBackend {
+    Cloud(CloudSpeechTarget),
+    Local,
+}
+
+/// Resolve the configured speech backend from live settings. An empty
+/// `transcription_provider` means a legacy install: fall back to
+/// `transcription_backend` ("local" -> local, anything else -> Groq) so
+/// existing settings keep working unchanged. An unknown provider string falls
+/// back to Groq. An empty cloud model picks the provider default. Read per call
+/// so settings changes hot-swap immediately (same pattern as `llm::resolve_chat`).
+pub fn resolve_speech(s: &Settings) -> SpeechBackend {
+    let raw = if s.transcription_provider.is_empty() {
+        if s.transcription_backend == "local" {
+            "local".to_string()
+        } else {
+            s.transcription_backend.clone()
+        }
+    } else {
+        s.transcription_provider.clone()
+    };
+    if raw.trim() == "local" {
+        return SpeechBackend::Local;
+    }
+    let provider = CloudStt::parse(raw.trim()).unwrap_or(CloudStt::Groq);
+    let configured = s.transcription_cloud_model.trim();
+    let model = if configured.is_empty() {
+        provider.default_model().to_string()
+    } else {
+        configured.to_string()
+    };
+    SpeechBackend::Cloud(CloudSpeechTarget { provider, model })
+}
+
+/// Ordered cloud fallback chain for these settings: the primary cloud target
+/// (when one is selected), then the configured fallback provider (only when its
+/// key exists - falling back to an unconfigured provider would just trade one
+/// error for a vaguer one). A local primary with no explicit fallback keeps the
+/// pre-Phase-3 behavior: Groq as the implicit last resort when its key exists.
+pub fn cloud_chain(s: &Settings) -> Vec<CloudSpeechTarget> {
+    let choice = resolve_speech(s);
+    let mut chain = match &choice {
+        SpeechBackend::Cloud(t) => vec![t.clone()],
+        SpeechBackend::Local => Vec::new(),
+    };
+    if let Some(fb) = CloudStt::parse(s.fallback_transcription_provider.trim()) {
+        if !chain.iter().any(|c| c.provider == fb)
+            && secrets::has_provider_key(fb.key_slot())
+        {
+            chain.push(CloudSpeechTarget::with_default_model(fb));
+        }
+    }
+    if matches!(choice, SpeechBackend::Local)
+        && chain.is_empty()
+        && secrets::has_api_key()
+    {
+        chain.push(CloudSpeechTarget::with_default_model(CloudStt::Groq));
+    }
+    chain
 }
 
 /// Backend label for a specific local model id — Parakeet ids run on the ONNX
@@ -144,42 +336,67 @@ pub trait Transcriber: Send + Sync {
     }
 }
 
-/// Groq Whisper (`whisper-large-v3-turbo`) over the OpenAI-compatible API.
-pub struct GroqTranscriber {
-    model: String,
+/// Cloud speech-to-text. Resolves the provider + model from live `Settings`
+/// per call, then dispatches to the OpenAI-compatible multipart adapter (Groq,
+/// OpenAI) or Deepgram's raw-body REST adapter.
+pub struct CloudTranscriber {
     settings: Arc<Mutex<Settings>>,
 }
 
-impl GroqTranscriber {
+impl CloudTranscriber {
     pub fn new(settings: Arc<Mutex<Settings>>) -> Self {
-        Self {
-            model: "whisper-large-v3-turbo".into(),
-            settings,
-        }
+        Self { settings }
     }
-}
 
-#[async_trait]
-impl Transcriber for GroqTranscriber {
-    async fn transcribe(
+    /// Transcribe one WAV against a resolved cloud target.
+    async fn transcribe_target(
         &self,
+        target: &CloudSpeechTarget,
         wav: Vec<u8>,
         language: Option<String>,
         hints: Vec<String>,
     ) -> anyhow::Result<String> {
-        let key = secrets::get_api_key()
-            .map_err(|_| anyhow::anyhow!("Set your Groq API key in Settings"))?;
+        match target.provider {
+            p @ (CloudStt::Groq | CloudStt::OpenAi) => {
+                self.openai_compat(p, &target.model, wav, language, hints)
+                    .await
+            }
+            CloudStt::Deepgram => self.deepgram(&target.model, wav, language, hints).await,
+        }
+    }
+
+    /// OpenAI-compatible transcription API (`/audio/transcriptions` +
+    /// `/audio/translations`), shared verbatim in shape by Groq and OpenAI:
+    /// multipart form with `model`/`file`(/`language`/`prompt`) and a `{text}`
+    /// JSON response.
+    async fn openai_compat(
+        &self,
+        provider: CloudStt,
+        model: &str,
+        wav: Vec<u8>,
+        language: Option<String>,
+        hints: Vec<String>,
+    ) -> anyhow::Result<String> {
+        let key = secrets::get_provider_key(provider.key_slot()).map_err(|_| {
+            anyhow::anyhow!("Set your {} API key in Settings", provider.label())
+        })?;
 
         let translate = self.settings.lock().translate_to_english;
+        if translate && !provider.supports_translate() {
+            anyhow::bail!(
+                "Translate to English isn't supported by {} - pick another speech provider",
+                provider.label()
+            );
+        }
 
         let part = reqwest::multipart::Part::bytes(wav)
             .file_name("audio.wav")
             .mime_str("audio/wav")?;
 
         let model = if translate {
-            "whisper-large-v3".to_string()
+            provider.translate_model().to_string()
         } else {
-            self.model.clone()
+            model.to_string()
         };
 
         let mut form = reqwest::multipart::Form::new()
@@ -201,19 +418,18 @@ impl Transcriber for GroqTranscriber {
         }
         final_hints.extend(hints);
 
-        if !final_hints.is_empty() {
+        if !final_hints.is_empty() && provider.supports_prompt_hints() {
             // Whisper uses `prompt` as a soft vocabulary hint (dictionary terms).
             form = form.text("prompt", final_hints.join(", "));
         }
 
-        let endpoint = if translate {
-            format!("{}/openai/v1/audio/translations", llm::GROQ_API_BASE)
-        } else {
-            format!("{}/openai/v1/audio/transcriptions", llm::GROQ_API_BASE)
-        };
-
         // Shared static client (see `llm::groq_client`) so the pre-warm
         // handshake fired on trigger-down is reused by this upload.
+        let endpoint = format!(
+            "{}/audio/{}",
+            api_base(provider),
+            if translate { "translations" } else { "transcriptions" }
+        );
         let resp = llm::groq_client()
             .post(endpoint)
             .bearer_auth(key)
@@ -224,17 +440,89 @@ impl Transcriber for GroqTranscriber {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("Groq error {}: {}", status, body);
+            anyhow::bail!("{} error {}: {}", provider.label(), status, body);
         }
 
         let value: serde_json::Value = resp.json().await?;
-        let text = value
-            .get("text")
+        extract_openai_text(&value).ok_or_else(|| anyhow::anyhow!("Malformed response"))
+    }
+
+    /// Deepgram REST adapter: POST /v1/listen with `Authorization: Token <key>`
+    /// (not Bearer), the raw WAV as the body with Content-Type audio/wav (no
+    /// multipart), and the transcript at
+    /// `results.channels[0].alternatives[0].transcript`. Dictionary hints map
+    /// to per-word `keyword` query params; Whisper-style prompts aren't
+    /// supported and degrade silently (surfaced in UI copy).
+    async fn deepgram(
+        &self,
+        model: &str,
+        wav: Vec<u8>,
+        language: Option<String>,
+        hints: Vec<String>,
+    ) -> anyhow::Result<String> {
+        if self.settings.lock().translate_to_english {
+            anyhow::bail!(
+                "Translate to English isn't supported by {} - pick another speech provider",
+                CloudStt::Deepgram.label()
+            );
+        }
+        let key =
+            secrets::get_provider_key(CloudStt::Deepgram.key_slot())
+                .map_err(|_| anyhow::anyhow!("Set your Deepgram API key in Settings"))?;
+
+        let mut params: Vec<(String, String)> =
+            vec![("model".into(), model.to_string())];
+        if let Some(lang) = &language {
+            params.push(("language".into(), lang.clone()));
+        } else {
+            params.push(("detect_language".into(), "true".into()));
+        }
+        for h in hints.iter().filter(|h| !h.trim().is_empty()) {
+            params.push(("keyword".into(), h.trim().to_string()));
+        }
+
+        let resp = llm::groq_client()
+            .post("https://api.deepgram.com/v1/listen")
+            .query(&params)
+            .header("Authorization", format!("Token {key}"))
+            .header("Content-Type", "audio/wav")
+            .body(wav)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Deepgram error {}: {}", status, body);
+        }
+
+        let value: serde_json::Value = resp.json().await?;
+        value
+            .get("results")
+            .and_then(|r| r.get("channels"))
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("alternatives"))
+            .and_then(|a| a.get(0))
+            .and_then(|a| a.get("transcript"))
             .and_then(|t| t.as_str())
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        Ok(text)
+            .map(|t| t.trim().to_string())
+            .ok_or_else(|| anyhow::anyhow!("Malformed Deepgram response"))
+    }
+}
+
+fn extract_openai_text(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("text")
+        .and_then(|t| t.as_str())
+        .map(str::to_string)
+}
+
+/// Scheme + host + version path for an OpenAI-compatible STT provider.
+fn api_base(provider: CloudStt) -> &'static str {
+    match provider {
+        CloudStt::Groq => "https://api.groq.com/openai/v1",
+        CloudStt::OpenAi => "https://api.openai.com/v1",
+        CloudStt::Deepgram => unreachable!("Deepgram uses its own adapter"),
     }
 }
 
@@ -680,12 +968,16 @@ fn decode_wav_f32(wav: &[u8]) -> anyhow::Result<Vec<f32>> {
     Ok(samples)
 }
 
-/// Routes each call to the Groq or local backend per the live `Settings`, with
-/// automatic fallback to Groq when the local backend errors and a key exists.
-/// "Local" covers two engines selected by the model id: whisper.cpp for the
-/// Whisper GGML catalog, Parakeet ONNX for `parakeet-*` ids.
+/// Routes each call across the speech backends per the live `Settings`
+/// (Phase 3 providers B): a local selection runs first and falls back to the
+/// cloud chain when it errors and any fallback key exists; a cloud primary
+/// walks its ordered chain (primary -> configured fallback provider), never
+/// masking auth errors - a wrong key must surface, not be traded for a vaguer
+/// failure elsewhere. "Local" covers two engines selected by the model id:
+/// whisper.cpp for the Whisper GGML catalog, Parakeet ONNX for `parakeet-*`
+/// ids.
 pub struct RoutingTranscriber {
-    groq: GroqTranscriber,
+    cloud: CloudTranscriber,
     local: LocalTranscriber,
     parakeet: crate::parakeet::LocalParakeetTranscriber,
     settings: Arc<Mutex<Settings>>,
@@ -698,7 +990,7 @@ impl RoutingTranscriber {
         settings: Arc<Mutex<Settings>>,
     ) -> Self {
         Self {
-            groq: GroqTranscriber::new(settings.clone()),
+            cloud: CloudTranscriber::new(settings.clone()),
             local: LocalTranscriber::new(models_dir.clone(), settings.clone()),
             parakeet: crate::parakeet::LocalParakeetTranscriber::new(
                 models_dir,
@@ -709,10 +1001,6 @@ impl RoutingTranscriber {
         }
     }
 
-    fn use_local(&self) -> bool {
-        self.settings.lock().transcription_backend == "local"
-    }
-
     /// The local engine for the currently selected model id.
     fn local_engine(&self) -> &dyn Transcriber {
         if is_parakeet_id(&self.settings.lock().local_whisper_model) {
@@ -720,6 +1008,47 @@ impl RoutingTranscriber {
         } else {
             &self.local
         }
+    }
+
+    /// Run the WAV through the cloud chain in order. Auth errors surface
+    /// immediately; every other failure (429 rate limits included) moves to the
+    /// next provider. No generic retry/backoff: latency matters more than
+    /// salvaging one dictation.
+    async fn transcribe_cloud_chain(
+        &self,
+        chain: &[CloudSpeechTarget],
+        wav: Vec<u8>,
+        language: Option<String>,
+        hints: Vec<String>,
+    ) -> anyhow::Result<String> {
+        let mut last_err: Option<anyhow::Error> = None;
+        for target in chain {
+            match self
+                .cloud
+                .transcribe_target(target, wav.clone(), language.clone(), hints.clone())
+                .await
+            {
+                Ok(text) => return Ok(text),
+                Err(e) if llm::is_auth_error(&e) => return Err(e),
+                Err(e) => {
+                    eprintln!(
+                        "Speech-to-text via {} failed ({e}); trying next provider",
+                        target.provider.label()
+                    );
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("No speech provider available")))
+    }
+
+    /// Snapshot the backend choice + fallback chain (guard dropped before any
+    /// await).
+    fn plan(&self) -> (SpeechBackend, Vec<CloudSpeechTarget>) {
+        let s = self.settings.lock();
+        let choice = resolve_speech(&s);
+        let chain = cloud_chain(&s);
+        (choice, chain)
     }
 }
 
@@ -731,20 +1060,26 @@ impl Transcriber for RoutingTranscriber {
         language: Option<String>,
         hints: Vec<String>,
     ) -> anyhow::Result<String> {
-        if self.use_local() {
-            match self
-                .local_engine()
-                .transcribe(wav.clone(), language.clone(), hints.clone())
-                .await
-            {
-                Ok(text) => return Ok(text),
-                Err(e) if secrets::has_api_key() => {
-                    eprintln!("Local transcription failed ({e}); falling back to Groq");
+        let (choice, chain) = self.plan();
+        match choice {
+            SpeechBackend::Cloud(_) => {
+                self.transcribe_cloud_chain(&chain, wav, language, hints).await
+            }
+            SpeechBackend::Local => {
+                match self
+                    .local_engine()
+                    .transcribe(wav.clone(), language.clone(), hints.clone())
+                    .await
+                {
+                    Ok(text) => return Ok(text),
+                    Err(e) if !chain.is_empty() => {
+                        eprintln!("Local transcription failed ({e}); falling back to cloud");
+                        self.transcribe_cloud_chain(&chain, wav, language, hints).await
+                    }
+                    Err(e) => return Err(e),
                 }
-                Err(e) => return Err(e),
             }
         }
-        self.groq.transcribe(wav, language, hints).await
     }
 
     async fn transcribe_audio(
@@ -753,26 +1088,34 @@ impl Transcriber for RoutingTranscriber {
         language: Option<String>,
         hints: Vec<String>,
     ) -> anyhow::Result<String> {
-        if self.use_local() {
-            // Hand the local backend a cheap Arc clone of the samples; keep the
-            // WAV here in case we have to fall back to Groq.
-            let local_audio = Audio {
-                samples: audio.samples.clone(),
-                wav: Vec::new(),
-            };
-            match self
-                .local_engine()
-                .transcribe_audio(local_audio, language.clone(), hints.clone())
-                .await
-            {
-                Ok(text) => return Ok(text),
-                Err(e) if secrets::has_api_key() => {
-                    eprintln!("Local transcription failed ({e}); falling back to Groq");
+        let (choice, chain) = self.plan();
+        match choice {
+            SpeechBackend::Cloud(_) => {
+                self.transcribe_cloud_chain(&chain, audio.wav, language, hints)
+                    .await
+            }
+            SpeechBackend::Local => {
+                // Hand the local backend a cheap Arc clone of the samples; keep the
+                // WAV here in case we have to fall back to a cloud provider.
+                let local_audio = Audio {
+                    samples: audio.samples.clone(),
+                    wav: Vec::new(),
+                };
+                match self
+                    .local_engine()
+                    .transcribe_audio(local_audio, language.clone(), hints.clone())
+                    .await
+                {
+                    Ok(text) => return Ok(text),
+                    Err(e) if !chain.is_empty() => {
+                        eprintln!("Local transcription failed ({e}); falling back to cloud");
+                        self.transcribe_cloud_chain(&chain, audio.wav, language, hints)
+                            .await
+                    }
+                    Err(e) => return Err(e),
                 }
-                Err(e) => return Err(e),
             }
         }
-        self.groq.transcribe(audio.wav, language, hints).await
     }
 
     async fn prewarm(&self) -> anyhow::Result<()> {
@@ -786,10 +1129,8 @@ impl Transcriber for RoutingTranscriber {
     async fn reconcile(&self, prewarm: bool) {
         let (use_local, id) = {
             let s = self.settings.lock();
-            (
-                s.transcription_backend == "local",
-                s.local_whisper_model.clone(),
-            )
+            let use_local = matches!(resolve_speech(&s), SpeechBackend::Local);
+            (use_local, s.local_whisper_model.clone())
         };
         let whisper_active = use_local && !id.is_empty() && !is_parakeet_id(&id);
         let parakeet_active = use_local && is_parakeet_id(&id);

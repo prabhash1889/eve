@@ -29,6 +29,7 @@ pub enum ProviderKey {
     OpenAi,
     OpenRouter,
     Anthropic,
+    Deepgram,
 }
 
 impl ProviderKey {
@@ -39,6 +40,7 @@ impl ProviderKey {
             "openai" => Some(ProviderKey::OpenAi),
             "openrouter" => Some(ProviderKey::OpenRouter),
             "anthropic" => Some(ProviderKey::Anthropic),
+            "deepgram" => Some(ProviderKey::Deepgram),
             _ => None,
         }
     }
@@ -50,6 +52,7 @@ impl ProviderKey {
             ProviderKey::OpenAi => "OpenAI",
             ProviderKey::OpenRouter => "OpenRouter",
             ProviderKey::Anthropic => "Anthropic",
+            ProviderKey::Deepgram => "Deepgram",
         }
     }
 
@@ -61,6 +64,7 @@ impl ProviderKey {
             ProviderKey::OpenAi => "openai_api_key",
             ProviderKey::OpenRouter => "openrouter_api_key",
             ProviderKey::Anthropic => "anthropic_api_key",
+            ProviderKey::Deepgram => "deepgram_api_key",
         }
     }
 }
@@ -174,15 +178,11 @@ pub fn delete_provider_key(p: ProviderKey) -> anyhow::Result<()> {
 }
 
 // --- Groq legacy shims --------------------------------------------------------
-// Kept so the existing transcription/pipeline hot path (still Groq-only until
-// Phase 3) reads naturally. New code should use the per-provider variants.
+// Kept so the existing transcription/pipeline hot path reads naturally. New
+// code should use the per-provider variants.
 
 pub fn set_api_key(key: &str) -> anyhow::Result<()> {
     set_provider_key(ProviderKey::Groq, key)
-}
-
-pub fn get_api_key() -> anyhow::Result<String> {
-    get_provider_key(ProviderKey::Groq)
 }
 
 pub fn has_api_key() -> bool {

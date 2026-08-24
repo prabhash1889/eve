@@ -5,7 +5,7 @@
 //!
 //! Files are drained serially by a single background worker so a batch of long
 //! files can't spawn N concurrent inferences (which would thrash a local model
-//! or blow past Groq rate limits). The queue lives in `AppState`; this module
+//! or blow past cloud rate limits). The queue lives in `AppState`; this module
 //! owns the worker loop and the decode step.
 
 use std::path::{Path, PathBuf};
@@ -19,7 +19,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::config::CleanupLevel;
 use crate::db::{dictionary, queries};
 use crate::state::AppState;
-use crate::transcription::{Audio, GROQ_MAX_WAV_BYTES};
+use crate::transcription::Audio;
 use crate::{audio, events, text_processing};
 
 /// A file waiting in (or moving through) the transcription queue. The path is
@@ -183,7 +183,7 @@ async fn process_one(app: &AppHandle, item: &QueuedFile) {
     };
 
     // Snapshot the settings we need (guard drops before any await).
-    let (language, lang_label, level, backend, cjk_autocorrect) = {
+    let (language, lang_label, level, max_wav_bytes, cjk_autocorrect) = {
         let s = settings.lock();
         let lang = if s.language == "auto" {
             None
@@ -194,19 +194,22 @@ async fn process_one(app: &AppHandle, item: &QueuedFile) {
             lang,
             s.language.clone(),
             s.cleanup_level,
-            s.transcription_backend.clone(),
+            crate::transcription::max_wav_bytes_for(&s),
             s.cjk_autocorrect,
         )
     };
 
-    // Groq's 25 MB cap applies per file. Long files are not chunked yet — error
+    // The effective provider's upload cap applies per file (Groq/OpenAI reject
+    // over 25 MB; Deepgram has none). Long files are not chunked yet — error
     // clearly instead of letting the upload fail generically. Local has no cap.
-    if backend == "groq" && wav.len() > GROQ_MAX_WAV_BYTES {
-        return fail(
-            app,
-            item,
-            "File is too long for cloud transcription (about 13 min max). Switch to a local model for long files.",
-        );
+    if let Some(cap) = max_wav_bytes {
+        if wav.len() > cap {
+            return fail(
+                app,
+                item,
+                "File is too long for cloud transcription (about 13 min max). Switch to a local model for long files.",
+            );
+        }
     }
 
     if cancelled(app, item.id) {
@@ -440,9 +443,9 @@ fn friendly_decode_error(err: &str) -> String {
 
 fn friendly_transcribe_error(err: &str) -> String {
     if err.contains("API key") {
-        "Set your Groq API key in Settings".into()
+        "Set your provider API key in Settings".into()
     } else if err.contains("401") || err.contains("invalid_api_key") {
-        "Invalid Groq API key".into()
+        "Invalid API key — check Settings".into()
     } else if err.contains("429") {
         "Rate limited — try again in a moment".into()
     } else if err.contains("not downloaded") || err.contains("No local") {

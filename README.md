@@ -4,9 +4,10 @@ System-wide AI voice dictation for Windows, built with Tauri 2, Rust, React, and
 TypeScript.
 
 Hold a shortcut anywhere, speak, release, and Eve transcribes the audio, cleans up
-the text, and inserts it into the focused app. Eve can use Groq for cloud
-transcription and polish, or a local whisper.cpp build for on-device
-speech-to-text.
+the text, and inserts it into the focused app. Cloud speech-to-text routes
+through Groq, OpenAI, or Deepgram; cloud polish/Command Mode route through Groq,
+OpenAI, OpenRouter, or Anthropic. Local whisper.cpp builds are available for
+on-device speech-to-text.
 
 ## Status
 
@@ -18,7 +19,7 @@ planned but not production-ready.
 ## Features
 
 - Push-to-talk dictation with a floating flow bar
-- Cloud transcription through Groq Whisper
+- Cloud transcription through Groq, OpenAI, or Deepgram
 - AI cleanup and deterministic text transforms
 - Optional local whisper.cpp speech-to-text builds
 - History, snippets, dictionary, transforms, and scratchpad surfaces
@@ -32,7 +33,7 @@ planned but not production-ready.
 - Rust stable and Cargo
 - Node.js 20+ and npm
 - WebView2 runtime
-- Groq API key for the default cloud build
+- A provider API key (e.g. Groq) for the default cloud build
 
 Local Whisper builds additionally require CMake and a C/C++ toolchain. On Windows,
 Visual Studio Build Tools with the "Desktop development with C++" workload is the
@@ -63,8 +64,8 @@ That is useful for UI work, but it does not run the Rust backend or OS integrati
 
 ## Local Speech-To-Text Builds
 
-The default build uses Groq for speech-to-text and polish. To build Eve with
-on-device speech-to-text, enable the local Whisper feature:
+The default build uses a cloud provider for speech-to-text and polish. To build
+Eve with on-device speech-to-text, enable the local Whisper feature:
 
 ```sh
 npm run tauri dev -- --features local-whisper

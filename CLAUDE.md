@@ -9,8 +9,10 @@ speak, release, and Eve transcribes, cleans up, and inserts the result into the
 focused app.
 
 The app uses Tauri 2 with a Rust backend and a React/TypeScript/Vite frontend.
-Cloud transcription and polish use Groq. Local Whisper and local LLM support are
-available as separate Cargo feature builds.
+Cloud speech-to-text routes through Groq, OpenAI, or Deepgram; cloud polish and
+Command Mode route through Groq, OpenAI, OpenRouter, or Anthropic (keys live in
+the OS keychain via `src-tauri/src/secrets.rs`). Local Whisper and local LLM
+support are available as separate Cargo feature builds.
 
 Windows is the primary, fully featured platform. A cross-platform seam
 (`src-tauri/src/platform/`) lets the backend compile on macOS and Linux, and a

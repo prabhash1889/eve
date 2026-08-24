@@ -6,13 +6,13 @@ import {
   EVT,
   type Settings,
   type ModelStatus,
-  type ModelBackend,
   type LocalProfile,
   type ModelProgressPayload,
   type ModelStatusPayload,
   type TranscriptionBenchmark,
   type WhisperStatus,
 } from "../lib/api";
+import { STT_PROVIDERS } from "../lib/options";
 
 function fmtBytes(n: number): string {
   if (n >= 1e9) return (n / 1e9).toFixed(1) + " GB";
@@ -143,14 +143,40 @@ export function LocalModelsPage({
     await api.updateSettings(next).catch(() => {});
   };
 
+  // Phase 3: effective speech provider. An empty `transcriptionProvider` is a
+  // legacy install - resolve from the old `transcriptionBackend` field exactly
+  // like the Rust router does.
+  const speechProvider =
+    settings.transcriptionProvider ||
+    (settings.transcriptionBackend === "local" ? "local" : "groq");
+  const speechIsLocal = speechProvider === "local";
+
+  // Speech backend toggle: Cloud / Local. Cloud keeps whichever cloud provider
+  // was previously selected (defaulting to Groq); Local writes "local".
+  const setSpeechBackend = async (v: string) => {
+    const toLocal = v === "local";
+    await persist({
+      ...settings,
+      transcriptionProvider: toLocal
+        ? "local"
+        : STT_PROVIDERS.some((p) => p.id === speechProvider)
+          ? speechProvider
+          : "groq",
+    });
+    // Speech backend changed → reconcile: prewarm on switch to local, and free
+    // the local model's memory on switch to cloud.
+    if (speechIsLocal !== toLocal) reconcile();
+  };
+
+  const setSpeechProvider = async (id: string) => {
+    await persist({ ...settings, transcriptionProvider: id });
+  };
+
   const setBackend = async (
-    key: "transcriptionBackend" | "polishBackend",
-    value: ModelBackend,
+    key: "polishBackend",
+    value: "groq" | "local",
   ) => {
     await persist({ ...settings, [key]: value });
-    // Speech backend changed → reconcile: prewarm on switch to local, and free
-    // the local model's memory on switch to Groq.
-    if (key === "transcriptionBackend") reconcile();
   };
 
   const download = async (id: string) => {
@@ -199,9 +225,7 @@ export function LocalModelsPage({
   const llm = models.filter((m) => m.kind === "llm");
 
   // Warn when a local backend is chosen but no downloaded model is active.
-  const needsWhisper =
-    settings.transcriptionBackend === "local" &&
-    !whisper.some((m) => m.active && m.installed);
+  const needsWhisper = speechIsLocal && !whisper.some((m) => m.active && m.installed);
   const needsLlm =
     settings.polishBackend === "local" && !llm.some((m) => m.active && m.installed);
 
@@ -212,7 +236,7 @@ export function LocalModelsPage({
   );
   // Nudge when the selected speech model isn't one the active profile suggests.
   const offProfile =
-    settings.transcriptionBackend === "local" &&
+    speechIsLocal &&
     !!settings.localWhisperModel &&
     !recommended.has(settings.localWhisperModel);
 
@@ -221,9 +245,7 @@ export function LocalModelsPage({
   // GPU build, where the large model is fast and this doesn't apply.)
   const onCpuBuild = !!whisperStatus?.backend?.includes("CPU");
   const heavyOnCpu =
-    settings.transcriptionBackend === "local" &&
-    onCpuBuild &&
-    settings.localWhisperModel === "whisper-large-v3-turbo";
+    speechIsLocal && onCpuBuild && settings.localWhisperModel === "whisper-large-v3-turbo";
 
   const setProfile = (value: LocalProfile) => persist({ ...settings, localTranscriptionProfile: value });
 
@@ -244,22 +266,53 @@ export function LocalModelsPage({
         <div className="space-y-3 rounded-2xl border border-border bg-surface p-5">
           <BackendRow
             label="Speech-to-text"
-            value={settings.transcriptionBackend}
-            onChange={(v) => setBackend("transcriptionBackend", v)}
+            value={speechIsLocal ? "local" : "cloud"}
+            onChange={setSpeechBackend}
+            options={[
+              {
+                value: "cloud",
+                label: `Cloud (${
+                  STT_PROVIDERS.find((p) => p.id === speechProvider)?.label ?? "Groq"
+                })`,
+              },
+              { value: "local", label: "Local" },
+            ]}
             warn={needsWhisper ? "Select a downloaded speech model below." : undefined}
           />
+          {!speechIsLocal && (
+            <div className="flex items-center justify-end gap-1 rounded-xl border border-border bg-canvas p-1 text-xs">
+              <span className="px-2 text-ink-faint">Provider</span>
+              {STT_PROVIDERS.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => setSpeechProvider(p.id)}
+                  className={
+                    "rounded-lg px-3 py-1.5 transition-colors " +
+                    (speechProvider === p.id
+                      ? "bg-accent-soft text-ink"
+                      : "text-ink-faint hover:text-ink")
+                  }
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          )}
           <BackendRow
             label="AI polish"
             value={settings.polishBackend}
-            onChange={(v) => setBackend("polishBackend", v)}
-            cloudLabel="Cloud (provider)"
+            onChange={(v) => setBackend("polishBackend", v as "groq" | "local")}
+            options={[
+              { value: "groq", label: "Cloud (provider)" },
+              { value: "local", label: "Local" },
+            ]}
             warn={needsLlm ? "Select a downloaded polish model below." : undefined}
           />
         </div>
       </section>
 
       {/* Performance profile + tuning (optimization Phase 4) */}
-      {settings.transcriptionBackend === "local" && (
+      {speechIsLocal && (
         <section className="mt-8">
           <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-faint">
             Performance
@@ -328,7 +381,11 @@ export function LocalModelsPage({
             />
 
             <StatusPanel
-              backend={settings.transcriptionBackend}
+              backend={
+                speechIsLocal
+                  ? (whisperStatus?.backend ?? "Local")
+                  : (STT_PROVIDERS.find((p) => p.id === speechProvider)?.label ?? speechProvider)
+              }
               model={settings.localWhisperModel}
               status={whisperStatus}
               benchmark={benchmark}
@@ -352,9 +409,7 @@ export function LocalModelsPage({
         onDeselect={deselectModel}
         recommended={recommended}
         status={
-          settings.transcriptionBackend === "local" ? (
-            <WhisperReadiness status={whisperStatus} />
-          ) : undefined
+          speechIsLocal ? <WhisperReadiness status={whisperStatus} /> : undefined
         }
       />
       <ModelSection
@@ -378,21 +433,17 @@ function BackendRow({
   label,
   value,
   onChange,
-  cloudLabel = "Groq (cloud)",
+  options,
   warn,
 }: {
   label: string;
-  value: ModelBackend;
-  onChange: (v: ModelBackend) => void;
-  /** Label for the cloud option. Speech stays Groq-only until Phase 3; polish
-   * routes across the configured providers. */
-  cloudLabel?: string;
+  value: string;
+  onChange: (v: string) => void;
+  /** Segmented-control choices. Speech routes across the configured cloud
+   * providers (Phase 3); polish stays cloud-vs-local here. */
+  options: { value: string; label: string }[];
   warn?: string;
 }) {
-  const options: { value: ModelBackend; label: string }[] = [
-    { value: "groq", label: cloudLabel },
-    { value: "local", label: "Local" },
-  ];
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div>
@@ -488,7 +539,8 @@ function StatusPanel({
   status,
   benchmark,
 }: {
-  backend: ModelBackend;
+  /** Resolved speech backend label ("whisper.cpp CPU", "Groq", "Deepgram", ...). */
+  backend: string;
   model: string;
   status: WhisperStatus | null;
   benchmark: TranscriptionBenchmark | null;
@@ -502,7 +554,7 @@ function StatusPanel({
         : "Loads on first use";
   return (
     <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 rounded-xl border border-border bg-canvas p-4 text-xs sm:grid-cols-[auto_minmax(0,1fr)_auto_auto]">
-      <StatusCell label="Backend" value={backend === "local" ? (status?.backend ?? "Local") : "Groq"} />
+      <StatusCell label="Backend" value={backend} />
       <StatusCell label="Model" value={model || "—"} />
       <StatusCell label="Readiness" value={readiness} />
       <StatusCell

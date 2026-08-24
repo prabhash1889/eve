@@ -3,9 +3,9 @@
 ## Purpose
 
 All OS integration and the dictation pipeline: global push-to-talk hotkey, mic capture,
-resample/encode, Groq transcription, deterministic text cleanup + Groq Llama AI polish,
-and text injection into the focused app. Exposes commands and emits `session://*` events
-to the frontend. Owns no UI.
+resample/encode, cloud transcription (Groq/OpenAI/Deepgram), deterministic text cleanup +
+cloud LLM polish, and text injection into the focused app. Exposes commands and emits
+`session://*` events to the frontend. Owns no UI.
 
 ## Entry Points
 
@@ -21,8 +21,9 @@ to the frontend. Owns no UI.
 `hotkey::on_press` (guard key-repeat, capture foreground HWND, show bar, start
 `audio::start_capture`) → while held the cpal thread accumulates f32 samples + pushes
 amplitude ~30×/s → `hotkey::on_release` spawns `pipeline::process` → resample to 16 kHz +
-WAV-encode (`audio.rs`) → `Transcriber` (`transcription.rs`, Groq Whisper) →
-`text_processing::course_correct` → `Polisher` (`polish.rs`, Groq Llama; no-op for
+WAV-encode (`audio.rs`) → `Transcriber` (`transcription.rs`, cloud STT via
+Groq/OpenAI/Deepgram or local whisper.cpp/Parakeet) →
+`text_processing::course_correct` → `Polisher` (`polish.rs`, cloud LLM; no-op for
 `CleanupLevel::None`) → `text_processing::finalize` (spoken punctuation + lists) →
 `injection::inject` (clipboard + `SetForegroundWindow` + Ctrl+V) → emit `done`.
 `Esc` → `hotkey::on_cancel` (clear buffer, hide bar). `copy_shortcut` →
@@ -38,20 +39,25 @@ WAV-encode (`audio.rs`) → `Transcriber` (`transcription.rs`, Groq Whisper) →
   match `../../src/lib/api.ts`. **Adding a command = define here + register in `lib.rs`
   `generate_handler!` + wrapper in `api.ts` + permission in `capabilities/default.json`.**
 - CPU/blocking work (resample, encode, injection) runs under `spawn_blocking`, off the async runtime.
-- Secrets: the Groq API key lives **only** in the OS keychain (`secrets.rs`), never on disk.
-  Settings persist as JSON (`config.rs`).
+- Secrets: provider API keys live **only** in the OS keychain (`secrets.rs`, one slot
+  per provider), never on disk. Settings persist as JSON (`config.rs`).
 
 ## Patterns
 
 - Swap transcription/polish backends behind the `Transcriber` / `Polisher` traits.
   `AppState` installs **router** impls (`RoutingTranscriber` / `RoutingPolisher`) that hold
-  both the Groq and local backends plus a clone of the live `Arc<Mutex<Settings>>`, and pick
-  per call from `transcription_backend` / `polish_backend`. This gives runtime hot-swap and
-  Groq fallback (on local error, when a key exists) without mutating the `Arc<dyn>` fields.
+  the cloud adapters and local backends plus a clone of the live `Arc<Mutex<Settings>>`,
+  and resolve the target per call (`transcription::resolve_speech` / `llm::resolve_chat`)
+  from `transcription_provider` / `polish_provider`. This gives runtime hot-swap and an
+  ordered fallback chain (auth errors always surface; local failures fall back to cloud
+  when a key exists) without mutating the `Arc<dyn>` fields. The legacy
+  `transcription_backend`/`polish_backend` strings are only read when the provider field
+  is empty (pre-multi-provider settings files).
 - **Local models** (`models.rs` + the `local-models` Cargo feature): on-device Whisper
   (`whisper-rs`) and polish LLM (`llama-cpp-2`). The feature is **off by default** so
   `cargo check`/`build` work without a C/C++ toolchain (local backends then return
-  "not built in" and routing falls back to Groq). Build real inference with
+  "not built in" and routing falls back to the configured cloud chain). Build real
+  inference with
   `cargo build --features local-models` (needs CMake + clang/MSVC). `LocalTranscriber` /
   `LocalPolisher` lazily load + cache their model, reloading only when the selected id
   changes; inference runs under `spawn_blocking`. `models.rs` owns the download manager

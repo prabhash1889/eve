@@ -4,7 +4,7 @@
 
 The two Tauri webview UIs: the **Hub** (Dashboard + Settings) and the **Flow Bar**
 (floating dictation widget). Owns rendering and settings *input* only — all OS work
-(hotkey, audio, Groq, injection) lives in the Rust backend (`../src-tauri/src/`).
+(hotkey, audio, cloud providers, injection) lives in the Rust backend (`../src-tauri/src/`).
 
 ## Entry Points
 
@@ -35,7 +35,8 @@ The two Tauri webview UIs: the **Hub** (Dashboard + Settings) and the **Flow Bar
   `StylesPage.tsx` / `LocalModelsPage.tsx`), then add it to the `Nav` union, a `NavItem`,
   and the content switch in `Hub.tsx`.
 - **Local models** (`pages/LocalModelsPage.tsx`): backend selectors persist
-  `transcriptionBackend`/`polishBackend`; model cards drive `api.downloadModel`/`deleteModel`
+  `transcriptionProvider` (speech: cloud provider id or "local") / `polishBackend`;
+  model cards drive `api.downloadModel`/`deleteModel`
   and subscribe to `EVT.modelProgress|modelDone|modelError` for the progress bar (clean up
   the `on()` unlisten on unmount).
 

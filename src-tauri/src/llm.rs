@@ -18,11 +18,6 @@ use crate::secrets::{self, ProviderKey};
 /// Default Groq chat model, matching the original polisher.
 pub const DEFAULT_MODEL: &str = "llama-3.1-8b-instant";
 
-/// Scheme + host for every Groq API call (chat, transcription uploads). The
-/// connection pre-warm targets this host so the TCP+TLS handshake overlaps the
-/// recording window instead of delaying the first post-release request.
-pub const GROQ_API_BASE: &str = "https://api.groq.com";
-
 /// Shared HTTP client for all cloud API calls (chat completions and multipart
 /// audio uploads). Built once with finite timeouts (10s to connect, 120s
 /// overall) so a dead connection can never hang the pipeline forever, and
@@ -127,17 +122,25 @@ pub fn resolve_chat(s: &Settings) -> CloudChat {
     CloudChat { provider, model }
 }
 
-/// Fire-and-forget connection pre-warm (1.P3). Dials the Groq host - still the
-/// transcription endpoint until Phase 3 - plus the configured polish host when
-/// it differs, so TCP+TLS (~100-300ms after an idle period) overlaps the
+/// Fire-and-forget connection pre-warm (1.P3). Dials the configured speech and
+/// polish hosts so TCP+TLS (~100-300ms after an idle period) overlaps the
 /// recording instead of adding to release-to-transcript latency. Never blocks
 /// or fails the caller: network errors are discarded and key checks are
 /// best-effort (local-only users skip the pointless dial-out).
 pub fn prewarm_connection(settings: &Settings) {
     let mut hosts: Vec<&'static str> = Vec::new();
-    if secrets::has_api_key() {
-        hosts.push(GROQ_API_BASE);
-    }
+    // Speech target (Phase 3): whichever cloud STT provider is selected, when
+    // its key is configured. A local selection dials nothing.
+    if let crate::transcription::SpeechBackend::Cloud(t) =
+        crate::transcription::resolve_speech(settings)
+    {
+        if secrets::has_provider_key(t.provider.key_slot()) {
+            hosts.push(match t.provider {
+                crate::transcription::CloudStt::Groq => "https://api.groq.com",
+                crate::transcription::CloudStt::OpenAi => "https://api.openai.com",
+                crate::transcription::CloudStt::Deepgram => "https://api.deepgram.com",
+            });
+        }    }
     // The polish target may be a different provider/host; warm whichever one
     // has a key configured so the first chat request after release reuses the
     // handshake.

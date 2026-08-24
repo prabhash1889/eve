@@ -31,8 +31,11 @@ export interface Settings {
   bubbleOpacity: number; // Flow Bar opacity (0–1)
   audioStoragePolicy: AudioStoragePolicy; // retention of saved audio (Phase 3)
   audioRetentionHours: number; // window for "delete24h"
-  transcriptionBackend: ModelBackend; // local models: speech→text backend
+  transcriptionBackend: ModelBackend; // legacy speech backend field ("groq"|"local"); superseded by transcriptionProvider
   polishBackend: ModelBackend; // local models: polish backend
+  transcriptionProvider: string; // Phase 3 providers B: speech→text backend ("groq"|"openai"|"deepgram"|"local"; "" = resolve from transcriptionBackend)
+  transcriptionCloudModel: string; // model override for transcriptionProvider ("" = provider default)
+  fallbackTranscriptionProvider: string; // secondary cloud STT provider on transient errors ("" = none)
   polishProvider: string; // cloud LLM for polish/Command Mode/Transforms ("groq"|"openai"|"openrouter"|"anthropic")
   polishCloudModel: string; // model override for polishProvider ("" = provider default)
   fallbackPolishProvider: string; // secondary provider on transient errors ("" = none)
@@ -76,6 +79,9 @@ export const DEFAULT_SETTINGS: Settings = {
   audioRetentionHours: 24,
   transcriptionBackend: "groq",
   polishBackend: "groq",
+  transcriptionProvider: "",
+  transcriptionCloudModel: "",
+  fallbackTranscriptionProvider: "",
   polishProvider: "groq",
   polishCloudModel: "",
   fallbackPolishProvider: "",

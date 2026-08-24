@@ -71,4 +71,14 @@ export const PROVIDERS: { id: string; label: string; placeholder: string }[] = [
   { id: "openai", label: "OpenAI", placeholder: "sk-..." },
   { id: "openrouter", label: "OpenRouter", placeholder: "sk-or-..." },
   { id: "anthropic", label: "Anthropic", placeholder: "sk-ant-..." },
+  { id: "deepgram", label: "Deepgram", placeholder: "Deepgram API key" },
+];
+
+// Phase 3 providers B: cloud speech-to-text providers (a subset of the chat
+// providers - OpenRouter and Anthropic have no STT endpoint). Deepgram uses a
+// distinct REST API and takes per-word keywords rather than Whisper prompts.
+export const STT_PROVIDERS: { id: string; label: string }[] = [
+  { id: "groq", label: "Groq" },
+  { id: "openai", label: "OpenAI" },
+  { id: "deepgram", label: "Deepgram" },
 ];
