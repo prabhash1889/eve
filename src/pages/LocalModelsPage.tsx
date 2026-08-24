@@ -233,7 +233,7 @@ export function LocalModelsPage({
       <p className="mt-2 max-w-lg text-sm text-ink-soft">
         Run speech-to-text and AI polish on your own machine — fully offline, no audio or
         text leaves your computer. Downloaded models are stored locally. If a local model
-        fails, Eve falls back to Groq when an API key is set.
+        fails, Eve falls back to your cloud provider when a key is set.
       </p>
 
       {/* Backend selectors */}
@@ -252,6 +252,7 @@ export function LocalModelsPage({
             label="AI polish"
             value={settings.polishBackend}
             onChange={(v) => setBackend("polishBackend", v)}
+            cloudLabel="Cloud (provider)"
             warn={needsLlm ? "Select a downloaded polish model below." : undefined}
           />
         </div>
@@ -377,15 +378,19 @@ function BackendRow({
   label,
   value,
   onChange,
+  cloudLabel = "Groq (cloud)",
   warn,
 }: {
   label: string;
   value: ModelBackend;
   onChange: (v: ModelBackend) => void;
+  /** Label for the cloud option. Speech stays Groq-only until Phase 3; polish
+   * routes across the configured providers. */
+  cloudLabel?: string;
   warn?: string;
 }) {
   const options: { value: ModelBackend; label: string }[] = [
-    { value: "groq", label: "Groq (cloud)" },
+    { value: "groq", label: cloudLabel },
     { value: "local", label: "Local" },
   ];
   return (

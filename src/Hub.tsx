@@ -30,6 +30,7 @@ import {
   CLEANUP,
   MODIFIER_TRIGGERS,
   MOUSE_TRIGGERS,
+  PROVIDERS,
   SHORTCUT_CHOICES,
 } from "./lib/options";
 import { pausedAppExample } from "./lib/platform";
@@ -210,8 +211,6 @@ export function Hub() {
             <SettingsPanel
               settings={settings}
               setSettings={setSettings}
-              hasKey={hasKey}
-              setHasKey={setHasKey}
               updateNonce={updateNonce}
             />
           )}
@@ -425,19 +424,12 @@ function StatCard({ icon, label, value }: { icon: ReactNode; label: string; valu
 function SettingsPanel({
   settings,
   setSettings,
-  hasKey,
-  setHasKey,
   updateNonce,
 }: {
   settings: Settings;
   setSettings: (s: Settings) => void;
-  hasKey: boolean;
-  setHasKey: (b: boolean) => void;
   updateNonce: number;
 }) {
-  const [apiKey, setApiKey] = useState("");
-  const [savedFlash, setSavedFlash] = useState(false);
-  const [keyError, setKeyError] = useState<string | null>(null);
   const [inputDevices, setInputDevices] = useState<string[]>([]);
   // Phase 4 (Linux/Wayland): the compositor owns global shortcuts via the XDG
   // portal, which can't express bare-modifier/mouse triggers or an Esc-cancel
@@ -456,65 +448,11 @@ function SettingsPanel({
     await api.updateSettings(next).catch(() => {});
   };
 
-  const saveKey = async () => {
-    if (!apiKey.trim()) return;
-    try {
-      await api.storeApiKey(apiKey.trim());
-    } catch {
-      // Surface the failure rather than flashing "Saved ✓" on a rejected store.
-      setKeyError("Couldn't save the key. Please try again.");
-      return;
-    }
-    setApiKey("");
-    setHasKey(true);
-    setKeyError(null);
-    setSavedFlash(true);
-    setTimeout(() => setSavedFlash(false), 1500);
-  };
-
   return (
     <div>
       <h1 className="font-serif text-3xl">Settings</h1>
 
-      {!isStore && (
-        <Section title="Groq API key" icon={<KeyRound size={16} />}>
-          <p className="mb-3 text-sm text-ink-soft">
-            Stored securely in the Windows Credential Manager — never written to disk in plain text.
-          </p>
-          <div className="flex gap-2">
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder={hasKey ? "•••••••••••• (configured)" : "gsk_..."}
-              className="flex-1 rounded-xl border border-border bg-surface px-3 py-2 outline-none focus:border-accent"
-            />
-            <button
-              onClick={saveKey}
-              className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90"
-            >
-              {savedFlash ? "Saved ✓" : "Save"}
-            </button>
-          </div>
-          {keyError && <p className="mt-2 text-xs text-danger">{keyError}</p>}
-          {hasKey && (
-            <button
-              onClick={async () => {
-                try {
-                  await api.clearApiKey();
-                  setHasKey(false);
-                  setKeyError(null);
-                } catch {
-                  setKeyError("Couldn't remove the key. Please try again.");
-                }
-              }}
-              className="mt-2 text-xs text-ink-faint underline hover:text-danger"
-            >
-              Remove key
-            </button>
-          )}
-        </Section>
-      )}
+      {!isStore && <ProvidersSection settings={settings} persist={persist} />}
 
       <Section title="Record trigger">
         <ShortcutCapture
@@ -659,7 +597,8 @@ function SettingsPanel({
           />
           <p className="mt-2 text-xs text-ink-faint">
             {CLEANUP.find((c) => c.value === settings.cleanupLevel)?.hint}
-            {settings.cleanupLevel !== "none" && " · uses Groq Llama (needs your API key)"}
+            {settings.cleanupLevel !== "none" &&
+              " · uses your cloud LLM provider (needs its API key)"}
           </p>
         </Section>
       )}
@@ -694,8 +633,8 @@ function SettingsPanel({
           />
           <p className="mt-2 text-xs text-ink-faint">
             Hold this and speak an instruction. With text selected, Eve rewrites it; with
-            nothing selected, it generates text at your cursor. Uses Groq Llama (needs your
-            API key).
+            nothing selected, it generates text at your cursor. Uses your cloud LLM
+            provider (needs its API key).
           </p>
         </Section>
       )}
@@ -992,6 +931,151 @@ function UpdateChecker({ nonce }: { nonce: number }) {
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Phase 2 providers A: per-provider key management plus the cloud LLM routing
+ * choices for polish / Command Mode / Transforms. Keys go straight to the OS
+ * keychain via `secrets.rs`; provider/model changes hot-swap on the next call.
+ */
+function ProvidersSection({
+  settings,
+  persist,
+}: {
+  settings: Settings;
+  persist: (s: Settings) => void;
+}) {
+  const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({});
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [flash, setFlash] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Load each provider's configured state (best-effort).
+  useEffect(() => {
+    PROVIDERS.forEach((p) => {
+      api
+        .hasProviderKey(p.id)
+        .then((has) => setKeyStatus((s) => ({ ...s, [p.id]: has })))
+        .catch(() => {});
+    });
+  }, []);
+
+  const saveKey = async (id: string) => {
+    const key = (drafts[id] ?? "").trim();
+    if (!key) return;
+    try {
+      await api.storeProviderKey(id, key);
+    } catch {
+      setError("Couldn't save the key. Please try again.");
+      return;
+    }
+    setDrafts((d) => ({ ...d, [id]: "" }));
+    setKeyStatus((s) => ({ ...s, [id]: true }));
+    setError(null);
+    setFlash(id);
+    setTimeout(() => setFlash((f) => (f === id ? null : f)), 1500);
+  };
+
+  const removeKey = async (id: string) => {
+    try {
+      await api.clearProviderKey(id);
+      setKeyStatus((s) => ({ ...s, [id]: false }));
+      setError(null);
+    } catch {
+      setError("Couldn't remove the key. Please try again.");
+    }
+  };
+
+  return (
+    <Section title="Providers" icon={<KeyRound size={16} />}>
+      <p className="mb-4 text-sm text-ink-soft">
+        Pick which cloud LLM cleans up your dictations and powers Command Mode and
+        Transforms. Keys are stored securely in the Windows Credential Manager — never
+        written to disk in plain text.
+      </p>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <div className="mb-1.5 text-xs font-medium text-ink-soft">Polish provider</div>
+          <Select
+            value={settings.polishProvider}
+            onChange={(v) => persist({ ...settings, polishProvider: v })}
+            options={PROVIDERS.map((p) => ({ value: p.id, label: p.label }))}
+          />
+        </div>
+        <div>
+          <div className="mb-1.5 text-xs font-medium text-ink-soft">Fallback provider</div>
+          <Select
+            value={settings.fallbackPolishProvider}
+            onChange={(v) => persist({ ...settings, fallbackPolishProvider: v })}
+            options={[
+              { value: "", label: "None" },
+              ...PROVIDERS.filter((p) => p.id !== settings.polishProvider).map((p) => ({
+                value: p.id,
+                label: p.label,
+              })),
+            ]}
+          />
+        </div>
+      </div>
+      <input
+        type="text"
+        value={settings.polishCloudModel}
+        onChange={(e) => persist({ ...settings, polishCloudModel: e.target.value })}
+        placeholder="Model — leave empty for the provider default"
+        className="mt-3 w-full rounded-xl border border-border bg-surface px-3 py-2 outline-none focus:border-accent text-sm font-mono"
+      />
+      <p className="mt-2 text-xs text-ink-faint">
+        On failure Eve tries the fallback provider (if its key is configured), then your local
+        polish model. A rejected key is always reported - it never silently falls back.
+      </p>
+
+      <div className="mt-5 space-y-2 border-t border-border pt-4">
+        {PROVIDERS.map((p) => (
+          <div key={p.id} className="flex items-center gap-2">
+            <span className="w-24 shrink-0 text-sm text-ink">{p.label}</span>
+            {keyStatus[p.id] ? (
+              <>
+                <span className="flex flex-1 items-center gap-1.5 text-sm text-accent">
+                  <Check size={15} /> Configured
+                </span>
+                <button
+                  onClick={() => removeKey(p.id)}
+                  className="text-xs text-ink-faint underline hover:text-danger"
+                >
+                  Remove
+                </button>
+              </>
+            ) : (
+              <>
+                <input
+                  type="password"
+                  value={drafts[p.id] ?? ""}
+                  onChange={(e) => setDrafts((d) => ({ ...d, [p.id]: e.target.value }))}
+                  onKeyDown={(e) => e.key === "Enter" && saveKey(p.id)}
+                  placeholder={p.placeholder}
+                  className="flex-1 rounded-lg border border-border bg-surface px-3 py-1.5 outline-none focus:border-accent text-sm"
+                />
+                <button
+                  onClick={() => saveKey(p.id)}
+                  disabled={!(drafts[p.id] ?? "").trim()}
+                  className={
+                    "shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium " +
+                    (flash === p.id
+                      ? "bg-accent-soft text-accent"
+                      : "bg-accent text-white hover:opacity-90 disabled:opacity-40")
+                  }
+                >
+                  {flash === p.id ? "Saved ✓" : "Save"}
+                </button>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+      {error && <p className="mt-3 text-xs text-danger">{error}</p>}
+    </Section>
   );
 }
 

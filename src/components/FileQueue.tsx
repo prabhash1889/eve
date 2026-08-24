@@ -123,7 +123,7 @@ export function FileQueue({ hasKey, onItemDone }: { hasKey: boolean; onItemDone:
           </div>
           <div className="mt-1 text-xs text-ink-faint">
             Drop files here or pick them — wav, mp3, m4a, flac, ogg. Results appear in History.
-            {!hasKey && !isStore && " Needs a Groq API key, or a local model."}
+            {!hasKey && !isStore && " Needs an API key, or a local model."}
           </div>
         </div>
         <button

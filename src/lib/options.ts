@@ -63,3 +63,12 @@ export const CLEANUP: { value: CleanupLevel; label: string; hint: string }[] = [
   { value: "medium", label: "Medium", hint: "Remove fillers, fix grammar, resolve self-corrections" },
   { value: "high", label: "High", hint: "Rewrite into clean prose; format spoken lists" },
 ];
+
+// Phase 2 providers A: cloud LLM providers Eve can route polish, Command Mode,
+// and Transforms through. `placeholder` hints at the expected key format.
+export const PROVIDERS: { id: string; label: string; placeholder: string }[] = [
+  { id: "groq", label: "Groq", placeholder: "gsk_..." },
+  { id: "openai", label: "OpenAI", placeholder: "sk-..." },
+  { id: "openrouter", label: "OpenRouter", placeholder: "sk-or-..." },
+  { id: "anthropic", label: "Anthropic", placeholder: "sk-ant-..." },
+];

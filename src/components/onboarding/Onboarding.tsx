@@ -26,7 +26,7 @@ import {
   type ModelStatusPayload,
   type Settings,
 } from "../../lib/api";
-import { LANGUAGES, CLEANUP, SHORTCUT_CHOICES } from "../../lib/options";
+import { LANGUAGES, CLEANUP, PROVIDERS, SHORTCUT_CHOICES } from "../../lib/options";
 import { isMac } from "../../lib/platform";
 import { isStore } from "../../lib/edition";
 
@@ -142,6 +142,9 @@ export function Onboarding({
               apiKey={apiKey}
               setApiKey={setApiKey}
               onSaved={() => setHasKey(true)}
+              onProvider={(polishProvider) =>
+                setDraft((d) => ({ ...d, polishProvider }))
+              }
             />
           )}
           {stepName === "Local model" && (
@@ -282,7 +285,7 @@ function ModeStep({ mode, onPick }: { mode: SetupMode; onPick: (m: SetupMode) =>
       icon: <Cloud size={18} />,
       title: "Cloud",
       blurb:
-        "Fast setup and fastest transcription via Groq. Needs a free API key; audio is sent to Groq while you dictate.",
+        "Fast setup and fast transcription via Groq, OpenAI, or OpenRouter. Needs an API key; audio is sent to the provider while you dictate.",
     },
     {
       value: "private",
@@ -531,18 +534,22 @@ function ApiKeyStep({
   apiKey,
   setApiKey,
   onSaved,
+  onProvider,
 }: {
   hasKey: boolean;
   apiKey: string;
   setApiKey: (v: string) => void;
   onSaved: () => void;
+  /** Notifies the draft which provider the saved key belongs to. */
+  onProvider: (provider: string) => void;
 }) {
+  const [provider, setProvider] = useState("groq");
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const save = async () => {
     if (!apiKey.trim()) return;
     try {
-      await api.storeApiKey(apiKey.trim());
+      await api.storeProviderKey(provider, apiKey.trim());
     } catch {
       // Surface the failure instead of claiming success — otherwise the user
       // thinks the key saved and dictation silently fails later.
@@ -552,42 +559,61 @@ function ApiKeyStep({
     setApiKey("");
     setSaved(true);
     setError(null);
+    onProvider(provider);
     onSaved();
   };
   return (
     <div>
       <StepHeader
         icon={<KeyRound size={20} />}
-        title="Groq API key"
-        subtitle="Eve uses Groq for fast transcription. Your key is stored in the Windows Credential Manager, never on disk."
+        title="Provider API key"
+        subtitle="Eve uses your chosen provider for fast transcription and cleanup. Your key is stored in the OS credential store, never on disk."
       />
       {hasKey && !saved ? (
         <div className="flex items-center gap-2 rounded-xl border border-accent/40 bg-accent-soft/40 px-4 py-3 text-sm">
           <Check size={16} className="text-accent" /> A key is already configured.
         </div>
       ) : (
-        <div className="flex gap-2">
-          <input
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="gsk_..."
-            className="flex-1 rounded-xl border border-border bg-surface px-3 py-2 outline-none focus:border-accent"
-          />
-          <button
-            onClick={save}
-            className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90"
-          >
-            {saved ? "Saved ✓" : "Save"}
-          </button>
+        <div className="space-y-3">
+          <div className="flex flex-wrap gap-1.5">
+            {PROVIDERS.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => setProvider(p.id)}
+                className={
+                  "rounded-full border px-3 py-1.5 text-sm transition-colors " +
+                  (provider === p.id
+                    ? "border-accent bg-accent-soft text-ink"
+                    : "border-border bg-surface text-ink-soft hover:bg-surface-2")
+                }
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={PROVIDERS.find((p) => p.id === provider)?.placeholder}
+              className="flex-1 rounded-xl border border-border bg-surface px-3 py-2 outline-none focus:border-accent"
+            />
+            <button
+              onClick={save}
+              className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+            >
+              {saved ? "Saved ✓" : "Save"}
+            </button>
+          </div>
         </div>
       )}
       {error && (
         <p className="mt-3 text-xs text-danger">{error}</p>
       )}
       <p className="mt-3 text-xs text-ink-faint">
-        Get a free key at console.groq.com. This step is skippable - you can add the key
-        later in Settings - but Eve can't transcribe in cloud mode until it has one.
+        Groq offers a free tier at console.groq.com. This step is skippable - you can add keys
+        later in Settings → Providers - but Eve can't transcribe in cloud mode without one.
       </p>
     </div>
   );
@@ -748,7 +774,7 @@ function CleanupStep({
       <StepHeader
         icon={<Sparkles size={20} />}
         title="Cleanup level"
-        subtitle="How much should Eve polish your words? Higher levels use Groq Llama to rewrite for clarity."
+        subtitle="How much should Eve polish your words? Higher levels use your cloud LLM provider to rewrite for clarity."
       />
       <div className="space-y-2">
         {CLEANUP.map((c) => (
@@ -777,8 +803,8 @@ function CleanupStep({
       </div>
       {value !== "none" && !hasKey && (
         <p className="mt-3 flex items-center gap-1.5 text-xs text-danger">
-          <ShieldCheck size={13} /> This level needs your Groq API key (add it in
-          Settings).
+          <ShieldCheck size={13} /> This level needs your provider API key (add it in
+          Settings → Providers).
         </p>
       )}
     </div>
