@@ -131,7 +131,7 @@ pub fn set_shortcut(
 
     let mut s = state.settings.lock();
     s.shortcut = shortcut;
-    let _ = config::save(&state.settings_path, &s);
+    config::save(&state.settings_path, &s).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -150,7 +150,7 @@ pub fn set_copy_shortcut(
 
     let mut s = state.settings.lock();
     s.copy_shortcut = shortcut;
-    let _ = config::save(&state.settings_path, &s);
+    config::save(&state.settings_path, &s).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -462,7 +462,7 @@ pub fn set_command_shortcut(
 
     let mut s = state.settings.lock();
     s.command_shortcut = shortcut;
-    let _ = config::save(&state.settings_path, &s);
+    config::save(&state.settings_path, &s).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -562,7 +562,7 @@ pub fn set_scratchpad_shortcut(
 
     let mut s = state.settings.lock();
     s.scratchpad_shortcut = shortcut;
-    let _ = config::save(&state.settings_path, &s);
+    config::save(&state.settings_path, &s).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -703,7 +703,7 @@ pub fn set_autostart(app: AppHandle, state: State<AppState>, enabled: bool) -> R
     }
     let mut s = state.settings.lock();
     s.launch_at_startup = enabled;
-    let _ = config::save(&state.settings_path, &s);
+    config::save(&state.settings_path, &s).map_err(|e| e.to_string())?;
     Ok(())
 }
 

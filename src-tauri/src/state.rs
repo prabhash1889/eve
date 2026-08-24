@@ -19,10 +19,12 @@ use crate::transcription::{RoutingTranscriber, Transcriber, TranscriptionBenchma
 
 pub struct AppState {
     pub is_recording: Arc<AtomicBool>,
-    /// Set true from key-up until `pipeline::process` finishes (success, error,
-    /// or cancel). `hotkey::on_press` refuses to start a new capture while it is
-    /// set, so a rapid press while the previous dictation is still transcribing
-    /// can't spawn a second, overlapping pipeline.
+    /// Set true from key-up until the pipeline (`pipeline::process`,
+    /// `command_mode::process_command`, or `run_transform_shortcut`) finishes
+    /// (success, error, or cancel). The dictation/command/transform handlers
+    /// refuse to start or re-fire while it is set, so a rapid press or a key
+    /// auto-repeat while the previous pipeline is still running can't spawn a
+    /// second, overlapping one.
     pub is_processing: Arc<AtomicBool>,
     /// Parity A1: when the recording started (stamped on the trigger press).
     /// Hybrid activation compares against this to tell a quick tap (arms a
@@ -40,6 +42,15 @@ pub struct AppState {
     /// arriving once the pipeline finishes would start an unintended new
     /// recording - this latch drops every `Pressed` that isn't a fresh press.
     pub trigger_down: Arc<AtomicBool>,
+    /// Phase 0: physical-down latch for the Command Mode shortcut, mirroring
+    /// `trigger_down`. The OS auto-repeats `Pressed` for the whole hold; without
+    /// this the repeat that arrives once `is_processing` clears mid-hold would
+    /// start a capture on the tail of the instruction and inject spuriously.
+    pub command_down: Arc<AtomicBool>,
+    /// Phase 0: physical-down latch for transform accelerators, same shape as
+    /// `command_down`. Prevents the auto-repeat after a transform finishes from
+    /// re-firing the transform (re-capturing the selection + re-injecting).
+    pub transform_down: Arc<AtomicBool>,
     pub audio_buffer: Arc<Mutex<Vec<f32>>>,
     pub sample_rate: Arc<AtomicU32>,
     pub current_amplitude: Arc<Mutex<f32>>,
@@ -124,6 +135,8 @@ impl AppState {
             press_at: Arc::new(Mutex::new(None)),
             saw_release: Arc::new(AtomicBool::new(false)),
             trigger_down: Arc::new(AtomicBool::new(false)),
+            command_down: Arc::new(AtomicBool::new(false)),
+            transform_down: Arc::new(AtomicBool::new(false)),
             audio_buffer: Arc::new(Mutex::new(Vec::new())),
             sample_rate: Arc::new(AtomicU32::new(16_000)),
             current_amplitude: Arc::new(Mutex::new(0.0)),

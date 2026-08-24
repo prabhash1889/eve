@@ -1,3 +1,10 @@
+// `local-whisper` and `local-llm` are mutually exclusive: whisper.cpp and
+// llama.cpp each statically vendor their own copy of the ggml symbols, so a
+// combined build fails with an opaque linker clash. Fail here instead, with a
+// readable message.
+#[cfg(all(feature = "local-whisper", feature = "local-llm"))]
+compile_error!("`local-whisper` and `local-llm` are mutually exclusive (vendored ggml symbol clash)");
+
 mod audio;
 mod command_mode;
 mod commands;
@@ -84,6 +91,8 @@ pub fn run() {
                                 hotkey::on_main_released(app, st);
                             } else if is_command {
                                 command_mode::on_release(app, st);
+                            } else if transform_id.is_some() {
+                                command_mode::on_transform_released(st);
                             }
                         }
                     }

@@ -29,6 +29,19 @@ use crate::{audio, events, hotkey, injection, llm, polish, window_mgmt};
 /// key-up routes to `process_command`. Mirrors `hotkey::on_press` but tags the
 /// Flow Bar with the "command" mode for a distinct look.
 pub fn on_press(app: &AppHandle, st: &AppState) {
+    // Physical-down latch: the OS auto-repeats `Pressed` for the whole hold.
+    // Refuse unless this is the first press of the key, so a repeat arriving
+    // once `is_processing` clears mid-hold can't start a capture on the tail of
+    // the instruction. Must run first, mirroring `hotkey::on_main_pressed`.
+    if st.command_down.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    // Refuse to start while a pipeline (dictation, command, or transform) is
+    // still in flight. Starting a capture here would clear the shared audio
+    // buffer mid-drain and corrupt the running session.
+    if st.is_processing.load(Ordering::SeqCst) {
+        return;
+    }
     if st.is_recording.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -72,9 +85,15 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
 
 /// Key-up: stop recording and run the command pipeline.
 pub fn on_release(app: &AppHandle, st: &AppState) {
+    // Clear the physical-down latch first, before the recording early-return, so
+    // a refused (overlapping) press still re-arms the shortcut on key-up.
+    st.command_down.store(false, Ordering::SeqCst);
     if !st.is_recording.swap(false, Ordering::SeqCst) {
         return;
     }
+    // Mark the pipeline in-flight; `process_command` clears it via a drop guard
+    // on every exit path, mirroring `hotkey::on_release` / `pipeline::process`.
+    st.is_processing.store(true, Ordering::SeqCst);
     st.is_command_mode.store(false, Ordering::SeqCst);
     st.capture.stop();
     hotkey::unregister_escape(app, st);
@@ -89,6 +108,10 @@ pub fn on_release(app: &AppHandle, st: &AppState) {
 /// Post-release Command Mode flow: transcribe the instruction → capture the
 /// selection → rewrite-or-generate via the LLM → inject.
 async fn process_command(app: AppHandle) {
+    // Release the concurrency flag on every exit path (mirrors `pipeline::process`).
+    let _processing =
+        crate::pipeline::ProcessingGuard(app.state::<AppState>().is_processing.clone());
+
     let (buffer, sample_rate, settings, transcriber, last_transcript, last_benchmark, hwnd) = {
         let st = app.state::<AppState>();
         (
@@ -252,11 +275,26 @@ async fn process_command(app: AppHandle) {
 // --- Transform shortcuts -----------------------------------------------------
 
 /// A transform accelerator fired: rewrite the current selection with the saved
-/// transform's prompt. No-op while a dictation/command capture is in flight.
+/// transform's prompt. No-op while a dictation/command capture is in flight or
+/// a pipeline is still processing.
 pub fn on_transform(app: &AppHandle, st: &AppState, id: i64) {
+    // Physical-down latch: the OS auto-repeats `Pressed` for the whole hold.
+    // Refuse unless this is the first press, so a repeat arriving after the
+    // transform finishes can't re-fire it (re-capture the selection + re-inject
+    // again). Must run first, mirroring `hotkey::on_main_pressed`.
+    if st.transform_down.swap(true, Ordering::SeqCst) {
+        return;
+    }
     if st.is_recording.load(Ordering::SeqCst) {
         return;
     }
+    if st.is_processing.load(Ordering::SeqCst) {
+        return;
+    }
+    // Mark the pipeline in-flight before spawning; `run_transform_shortcut`
+    // clears it via a drop guard on every exit path. Set here (not inside the
+    // task) so a second accelerator press racing the spawn still sees it.
+    st.is_processing.store(true, Ordering::SeqCst);
 
     let hwnd = crate::platform::frontmost(app).handle;
 
@@ -266,7 +304,19 @@ pub fn on_transform(app: &AppHandle, st: &AppState, id: i64) {
     });
 }
 
+/// Key-up for a transform accelerator: clear its physical-down latch so the
+/// next fresh press is accepted. The `Released` event is dispatched to this
+/// even when `on_transform` refused the press (overlap), so the latch is always
+/// re-armed on key release.
+pub fn on_transform_released(st: &AppState) {
+    st.transform_down.store(false, Ordering::SeqCst);
+}
+
 async fn run_transform_shortcut(app: AppHandle, id: i64, hwnd: isize) {
+    // Release the concurrency flag on every exit path (mirrors `pipeline::process`).
+    let _processing =
+        crate::pipeline::ProcessingGuard(app.state::<AppState>().is_processing.clone());
+
     let (db, strategy, last_transcript, bubble) = {
         let st = app.state::<AppState>();
         let s = st.settings.lock();

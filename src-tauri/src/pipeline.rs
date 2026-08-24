@@ -29,7 +29,7 @@ fn stage(app: &AppHandle, label: &str) {
 
 /// Clears `is_processing` on drop, so the concurrency guard is released on every
 /// exit path of `process` — including the many early returns and any panic.
-struct ProcessingGuard(Arc<AtomicBool>);
+pub struct ProcessingGuard(pub Arc<AtomicBool>);
 impl Drop for ProcessingGuard {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
@@ -408,29 +408,38 @@ pub async fn process(app: AppHandle) {
     // folded into the daily rollup for the Insights page.
     let corrections = text_processing::count_edits(&raw, &text) as i64;
 
-    // Phase 3: persist this dictation to history (after all awaits, so we never
-    // hold the DB guard across one). Best-effort — a failed insert must not
-    // break the user-visible flow.
-    persist(
-        &app,
-        &db,
-        &raw,
-        &text,
-        level,
-        &lang_label,
-        duration_ms,
-        corrections,
-        audio_bytes,
-        &context,
-    );
-
     timings.mark("inject");
     // Phase 1: log + persist the full stage breakdown for this session. Phase 5:
     // when debug-timing is on, also print the detailed per-stage breakdown.
     timings.finish(&app, debug_timing);
 
-    let _ = app.emit_to(events::FLOWBAR, events::DONE, events::DonePayload { text });
-    window_mgmt::hide_flowbar_after(app, 900);
+    // Emit DONE before persisting: persistence is best-effort (SQLite insert +
+    // possible WAV file I/O) and must never delay the user-visible completion
+    // signal. It runs off the async runtime in spawn_blocking so we never block
+    // the tokio workers with disk I/O.
+    let _ = app.emit_to(
+        events::FLOWBAR,
+        events::DONE,
+        events::DonePayload { text: text.clone() },
+    );
+    window_mgmt::hide_flowbar_after(app.clone(), 900);
+
+    let persist_app = app.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        persist(
+            &persist_app,
+            &db,
+            &raw,
+            &text,
+            level,
+            &lang_label,
+            duration_ms,
+            corrections,
+            audio_bytes,
+            &context,
+        );
+    })
+    .await;
 }
 
 /// Save the dictation to the history DB, optionally writing the WAV to disk for
