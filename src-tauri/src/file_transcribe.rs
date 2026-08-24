@@ -453,3 +453,53 @@ fn friendly_transcribe_error(err: &str) -> String {
         "Transcription failed — check your connection".into()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{friendly_decode_error, friendly_transcribe_error};
+
+    /// Freeze the file-queue error strings before the 5.1 extraction.
+    #[test]
+    fn decode_error_strings_are_frozen() {
+        assert_eq!(
+            friendly_decode_error("No decodable audio track"),
+            "Unsupported or corrupt audio file"
+        );
+        assert_eq!(
+            friendly_decode_error("unsupported codec"),
+            "Unsupported or corrupt audio file"
+        );
+        assert_eq!(
+            friendly_decode_error("No audio decoded from file"),
+            "Unsupported or corrupt audio file"
+        );
+        assert_eq!(
+            friendly_decode_error("io error while reading"),
+            "Couldn't decode the audio file"
+        );
+    }
+
+    #[test]
+    fn transcribe_error_strings_are_frozen() {
+        assert_eq!(
+            friendly_transcribe_error("Set your Deepgram API key in Settings"),
+            "Set your provider API key in Settings"
+        );
+        assert_eq!(
+            friendly_transcribe_error("Groq error 401: invalid_api_key"),
+            "Invalid API key \u{2014} check Settings"
+        );
+        assert_eq!(
+            friendly_transcribe_error("Deepgram error 429"),
+            "Rate limited \u{2014} try again in a moment"
+        );
+        assert_eq!(
+            friendly_transcribe_error("Model 'x' is not downloaded yet"),
+            "Model 'x' is not downloaded yet"
+        );
+        assert_eq!(
+            friendly_transcribe_error("connection closed"),
+            "Transcription failed \u{2014} check your connection"
+        );
+    }
+}

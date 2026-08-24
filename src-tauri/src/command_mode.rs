@@ -639,3 +639,34 @@ fn command_error(err: &str) -> String {
         "Command failed — check your connection".into()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::command_error;
+
+    /// Freeze the Command Mode / transform error strings before the 5.1
+    /// extraction unifies them behind `session::errors`.
+    #[test]
+    fn command_error_strings_are_frozen() {
+        assert_eq!(
+            command_error("Set your OpenRouter API key in Settings"),
+            "Set your provider API key in Settings"
+        );
+        assert_eq!(
+            command_error("OpenAI error 401: invalid_api_key"),
+            "Invalid API key \u{2014} check Settings"
+        );
+        assert_eq!(
+            command_error("Anthropic error 403 Forbidden"),
+            "Access denied \u{2014} check your API key"
+        );
+        assert_eq!(
+            command_error("Groq error 429 rate limit exceeded"),
+            "Rate limited \u{2014} try again in a moment"
+        );
+        assert_eq!(
+            command_error("connection reset by peer"),
+            "Command failed \u{2014} check your connection"
+        );
+    }
+}

@@ -520,3 +520,102 @@ impl Polisher for RoutingPolisher {
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("No polish provider available")))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hint(category: &str, tone: &str, system_prompt: &str, writing_sample: &str) -> StyleHint {
+        StyleHint {
+            category: category.into(),
+            tone: tone.into(),
+            system_prompt: system_prompt.into(),
+            writing_sample: writing_sample.into(),
+        }
+    }
+
+    #[test]
+    fn light_prompt_freezes_shape() {
+        let p = system_prompt(CleanupLevel::Light, None);
+        assert!(p.starts_with(
+            "Lightly tidy this dictated text. Fix capitalization and obvious \
+             punctuation and remove stray filler words (um, uh). Keep the \
+             speaker's exact wording and meaning otherwise."
+        ));
+        assert!(p.ends_with(
+            "Preserve existing line breaks and paragraph structure. \
+             Output ONLY the resulting text \u{2014} no preamble, labels, quotes, or \
+             explanation. If the input is already clean, return it unchanged."
+        ));
+        assert!(!p.contains("This text is an email"));
+    }
+
+    #[test]
+    fn medium_and_high_prompts_carry_their_role_text() {
+        let medium = system_prompt(CleanupLevel::Medium, None);
+        assert!(medium.contains("Remove filler words"));
+        assert!(medium.contains("resolve spoken self-corrections"));
+
+        let high = system_prompt(CleanupLevel::High, None);
+        assert!(high.contains("Rewrite this dictated text into clear, well-punctuated prose."));
+        assert!(high.contains("never invent information"));
+
+        // Every prompt ends with the hard output-only rule.
+        for p in [&medium, &high] {
+            assert!(p.contains("Output ONLY the resulting text"));
+        }
+    }
+
+    #[test]
+    fn style_clause_appends_category_tone_custom_and_sample() {
+        let s = hint("email", "formal", "Always sign as Sam.", "Dear team,");
+        let c = style_clause(&s);
+        assert!(c.contains("This text is an email."));
+        assert!(c.contains("Use a formal, professional tone."));
+        assert!(c.contains("Always sign as Sam."));
+        assert!(c.contains("Match the voice and style of this writing sample:\nDear team,"));
+
+        // Empty fields produce no fragments at all.
+        assert_eq!(style_clause(&hint("", "", "", "")), "");
+    }
+
+    #[test]
+    fn style_clause_maps_known_categories_and_tones() {
+        assert!(style_clause(&hint("workmsg", "", "", ""))
+            .contains("This is a work chat message"));
+        assert!(style_clause(&hint("personalmsg", "", "", ""))
+            .contains("casual personal message"));
+        assert!(style_clause(&hint("code", "", "", ""))
+            .contains("preserve technical terms and identifiers"));
+        // Unknown categories/tones contribute nothing.
+        assert_eq!(style_clause(&hint("unknown_cat", "unknown_tone", "", "")), "");
+
+        assert!(style_clause(&hint("", "excited", "", "")).contains("upbeat, enthusiastic"));
+        assert!(style_clause(&hint("", "very_casual", "", "")).contains("very casual, relaxed"));
+        assert!(style_clause(&hint("", "casual", "", "")).contains("casual, conversational"));
+    }
+
+    #[test]
+    fn strip_wrapping_removes_one_layer_of_quotes_or_preamble_trim() {
+        assert_eq!(strip_wrapping("  hello  "), "hello");
+        assert_eq!(strip_wrapping("\"quoted\""), "quoted");
+        assert_eq!(strip_wrapping("'single'"), "single");
+        // Only a single layer is dropped.
+        assert_eq!(strip_wrapping("\"nested 'inner' outer\""), "nested 'inner' outer");
+        // Interior quotes stay.
+        assert_eq!(strip_wrapping("he said \"hi\""), "he said \"hi\"");
+        // A lone quote is not wrapping.
+        assert_eq!(strip_wrapping("\""), "\"");
+        assert_eq!(strip_wrapping(""), "");
+    }
+
+    #[test]
+    fn noop_polisher_returns_text_unchanged() {
+        let out = tauri::async_runtime::block_on(NoOpPolisher.polish(
+            " keep me ".into(),
+            CleanupLevel::Medium,
+            Some(hint("email", "", "", "")),
+        ));
+        assert_eq!(out.unwrap(), " keep me ");
+    }
+}

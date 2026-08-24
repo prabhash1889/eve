@@ -537,3 +537,61 @@ fn friendly_error(err: &str) -> String {
         "Transcription failed — check your connection".into()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::friendly_error;
+
+    /// Freeze the error-mapping strings before the 5.1 session-module
+    /// extraction moves them. Each raw provider/backend error maps to exactly
+    /// one user-facing Flow Bar message.
+    #[test]
+    fn friendly_error_strings_are_frozen() {
+        // Local backend selected but the model is missing: message passes through.
+        assert_eq!(
+            friendly_error("Model 'whisper-small' is not downloaded yet"),
+            "Model 'whisper-small' is not downloaded yet"
+        );
+        assert_eq!(
+            friendly_error("No local speech model selected - pick one in Models"),
+            "No local speech model selected - pick one in Models"
+        );
+        assert_eq!(
+            friendly_error("Local transcription was not built in (enable the `local-whisper` feature)"),
+            "Local models aren't available in this build"
+        );
+        assert_eq!(
+            friendly_error("Failed to load Whisper model: bad ggml"),
+            "Local model failed to load \u{2014} try re-downloading it"
+        );
+        assert_eq!(
+            friendly_error("Set your Groq API key in Settings"),
+            "Set your provider API key in Settings"
+        );
+        assert_eq!(
+            friendly_error("Groq error 401 Unauthorized: invalid_api_key"),
+            "Invalid API key \u{2014} check Settings"
+        );
+        assert_eq!(
+            friendly_error("Groq error 429 Too Many Requests"),
+            "Rate limited \u{2014} try again in a moment"
+        );
+        assert_eq!(
+            friendly_error("413 Payload Too Large"),
+            "Recording too long \u{2014} keep dictations under about 13 minutes"
+        );
+        assert_eq!(
+            friendly_error("error sending request for url"),
+            "Transcription failed \u{2014} check your connection"
+        );
+    }
+
+    /// Ordering matters: today the generic "API key" branch is checked before
+    /// the 401 branch, so an error containing both maps to the key hint. Freeze
+    /// that precedence so a reorder during extraction is a conscious choice.
+    #[test]
+    fn friendly_error_key_hint_precedes_auth_check() {
+        let mapped = friendly_error("invalid_api_key with 'API key' in body");
+        assert_eq!(mapped, "Set your provider API key in Settings");
+    }
+}
