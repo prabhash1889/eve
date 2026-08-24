@@ -1,4 +1,4 @@
-﻿//! Show / hide / position the floating Flow Bar window, plus a shared failure
+//! Show / hide / position the floating Flow Bar window, plus a shared failure
 //! helper that surfaces an error in the bar and then dismisses it.
 
 use std::sync::atomic::{AtomicU64, Ordering};
