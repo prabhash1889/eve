@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::audio;
 use crate::config::CleanupLevel;
@@ -37,6 +37,19 @@ pub const MIN_DURATION_MS: i64 = 1000;
 /// degrades to its course-corrected raw transcript after 20s instead of
 /// holding the queue hostage.
 pub const POLISH_TIMEOUT: Duration = Duration::from_secs(20);
+
+// --- Cancellation (phase 5.3) -------------------------------------------------
+
+/// True when the user pressed Esc since the current pipeline run started. Each
+/// run clears `AppState::cancel_requested` when it begins; `hotkey::on_cancel`
+/// sets it while `is_processing` (the Flow Bar is idled there). Stage boundaries
+/// poll this and bail QUIETLY: just return - no further events are emitted, so
+/// a cancelled session never overwrites the bar's idle state.
+pub fn cancelled(app: &AppHandle) -> bool {
+    app.state::<crate::state::AppState>()
+        .cancel_requested
+        .load(Ordering::SeqCst)
+}
 
 // --- Stop handshake + drain ---------------------------------------------------
 

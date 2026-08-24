@@ -96,7 +96,8 @@ shortcut down
 -> restore clipboard
 ```
 
-`Esc` during recording cancels the current session.
+`Esc` cancels the current session: while recording it stops the capture; while
+processing it cancels the pipeline at its next stage boundary.
 
 ## IPC Contract
 

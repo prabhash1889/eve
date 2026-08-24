@@ -14,7 +14,7 @@ use crate::session;
 use crate::state::AppState;
 use crate::timing::Timings;
 use crate::transcription::{local_backend_label_for, wav_needed, Audio};
-use crate::{audio, events, injection, text_processing, window_mgmt};
+use crate::{audio, events, hotkey, injection, text_processing, window_mgmt};
 
 /// Emit a coarse processing-stage label to the Flow Bar (Phase 1 visibility).
 fn stage(app: &AppHandle, label: &str) {
@@ -28,17 +28,31 @@ fn stage(app: &AppHandle, label: &str) {
 }
 
 /// Clears `is_processing` on drop, so the concurrency guard is released on every
-/// exit path of `process` — including the many early returns and any panic.
-pub struct ProcessingGuard(pub Arc<AtomicBool>);
+/// exit path of `process` - including the many early returns and any panic.
+///
+/// Phase 5.3: the drop also unregisters Esc. Esc stays registered for the whole
+/// pipeline (so it can cancel at stage boundaries); `hotkey::on_release` no
+/// longer unregisters it up front. The unregister is fire-and-forget (a send to
+/// hotkey's serialized dispatcher thread), so Drop never blocks.
+pub struct ProcessingGuard(pub Arc<AtomicBool>, pub AppHandle);
 impl Drop for ProcessingGuard {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
+        // AppState is guaranteed managed here: every constructor resolved it via
+        // `app.state::<AppState>()` one line above.
+        let st = self.1.state::<AppState>();
+        hotkey::unregister_escape(&self.1, &st);
     }
 }
 
 pub async fn process(app: AppHandle) {
-    // Release the concurrency flag whenever this function returns.
-    let _processing = ProcessingGuard(app.state::<AppState>().is_processing.clone());
+    // Release the concurrency flag (and Esc's registration) on every exit path.
+    let _processing = ProcessingGuard(app.state::<AppState>().is_processing.clone(), app.clone());
+    // Phase 5.3: fresh pipeline run - drop any cancel request left over from a
+    // cancelled predecessor.
+    app.state::<AppState>()
+        .cancel_requested
+        .store(false, Ordering::SeqCst);
 
     // Snapshot the Arc-backed state up front so we never hold the guard across an await.
     let (
@@ -196,6 +210,11 @@ pub async fn process(app: AppHandle) {
             return;
         }
     };
+    // Phase 5.3: cancelled mid-flight? Bail quietly - on_cancel already idled
+    // the bar, so no further events are emitted from here.
+    if session::cancelled(&app) {
+        return;
+    }
     // The single preparation pass spans both the former resample/encode and
     // VAD windows, so the stage marks land together (order unchanged).
     timings.mark("resample_encode");
@@ -264,6 +283,10 @@ pub async fn process(app: AppHandle) {
             return;
         }
     };
+    // Phase 5.3: quiet cancel before the raw transcript reaches the bar.
+    if session::cancelled(&app) {
+        return;
+    }
     timings.mark("transcribe");
     if raw.trim().is_empty() {
         window_mgmt::fail(&app, "No speech detected");
@@ -332,6 +355,12 @@ pub async fn process(app: AppHandle) {
         polished
     };
     timings.mark("polish");
+
+    // Phase 5.3: quiet cancel before finalize/inject - the text never lands in
+    // the target app once Esc was pressed.
+    if session::cancelled(&app) {
+        return;
+    }
 
     let finalized = text_processing::finalize(&polished, cjk_autocorrect, &lang_label);
 

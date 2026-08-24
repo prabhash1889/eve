@@ -28,7 +28,9 @@ Groq/OpenAI/Deepgram or local whisper.cpp/Parakeet) →
 `text_processing::course_correct` → `Polisher` (`polish.rs`, cloud LLM; no-op for
 `CleanupLevel::None`) → `text_processing::finalize` (spoken punctuation + lists) →
 `injection::inject` (clipboard + `SetForegroundWindow` + Ctrl+V) → emit `done`.
-`Esc` → `hotkey::on_cancel` (clear buffer, hide bar). `copy_shortcut` →
+`Esc` → `hotkey::on_cancel` (while recording: clear buffer, hide bar; while
+processing: set the `cancel_requested` flag the pipeline checks at stage
+boundaries and bail quietly). `copy_shortcut` →
 `hotkey::on_copy` (copy `last_transcript` to clipboard).
 
 ## Contracts & Invariants

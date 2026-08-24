@@ -175,6 +175,11 @@ pub struct AppState {
     /// auto-repeat while the previous pipeline is still running can't spawn a
     /// second, overlapping one.
     pub is_processing: Arc<AtomicBool>,
+    /// Phase 5.3: set by `hotkey::on_cancel` when Esc lands while a pipeline
+    /// (not a capture) is in flight. Each run clears it at start and polls it
+    /// at stage boundaries via `session::cancelled`, bailing quietly when set -
+    /// the only way out of a hung cloud request without waiting out its timeout.
+    pub cancel_requested: Arc<AtomicBool>,
     /// Parity A1: when the recording started (stamped on the trigger press).
     /// Hybrid activation compares against this to tell a quick tap (arms a
     /// toggle) from a genuine push-to-talk hold.
@@ -302,6 +307,7 @@ impl AppState {
         Self {
             is_recording: Arc::new(AtomicBool::new(false)),
             is_processing: Arc::new(AtomicBool::new(false)),
+            cancel_requested: Arc::new(AtomicBool::new(false)),
             press_at: Arc::new(Mutex::new(None)),
             saw_release: Arc::new(AtomicBool::new(false)),
             trigger_down: Arc::new(AtomicBool::new(false)),

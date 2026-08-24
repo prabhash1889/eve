@@ -5,12 +5,14 @@
 //! primitives `on_press`/`on_release`. Esc → cancel.
 
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::{self, Sender};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
-use tauri_plugin_global_shortcut::GlobalShortcutExt;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 use crate::state::AppState;
 use crate::{events, injection, llm, pipeline, window_mgmt};
@@ -268,10 +270,11 @@ pub fn on_release(app: &AppHandle, st: &AppState) {
         return;
     }
     // Mark the pipeline in-flight; `process` clears it via a drop guard on every
-    // exit path (success, error, or early return).
+    // exit path (success, error, or early return). The guard also releases Esc,
+    // which stays registered for the whole pipeline so it can cancel mid-
+    // processing (phase 5.3).
     st.is_processing.store(true, Ordering::SeqCst);
     st.capture.stop();
-    unregister_escape(app, st);
     let _ = app.emit_to(events::FLOWBAR, events::PROCESSING, ());
 
     let handle = app.clone();
@@ -281,16 +284,28 @@ pub fn on_release(app: &AppHandle, st: &AppState) {
 }
 
 pub fn on_cancel(app: &AppHandle, st: &AppState) {
-    if !st.is_recording.swap(false, Ordering::SeqCst) {
+    if st.is_recording.swap(false, Ordering::SeqCst) {
+        // Esc while recording: stop the capture, drop its audio, idle the bar.
+        // No pipeline follows, so Esc is unregistered right here.
+        st.is_command_mode.store(false, Ordering::SeqCst);
+        st.capture.stop();
+        unregister_escape(app, st);
+        st.audio_buffer.lock().clear();
+        let _ = app.emit_to(events::FLOWBAR, events::CANCEL, ());
+        window_mgmt::hide_flowbar_after(app.clone(), 400);
         return;
     }
-    // Reset Command Mode too — Esc cancels either capture.
-    st.is_command_mode.store(false, Ordering::SeqCst);
-    st.capture.stop();
-    unregister_escape(app, st);
-    st.audio_buffer.lock().clear();
-    let _ = app.emit_to(events::FLOWBAR, events::CANCEL, ());
-    window_mgmt::hide_flowbar_after(app.clone(), 400);
+    if st.is_processing.load(Ordering::SeqCst) {
+        // Phase 5.3: Esc during transcription/polish/etc. asks the in-flight
+        // pipeline to cancel; it polls this flag at stage boundaries and bails
+        // quietly (the bar is idled here, not by the pipeline). The capture and
+        // buffer belong to that pipeline - leave them alone. Esc stays
+        // registered until the pipeline's ProcessingGuard releases it.
+        st.cancel_requested.store(true, Ordering::SeqCst);
+        let _ = app.emit_to(events::FLOWBAR, events::CANCEL, ());
+        window_mgmt::hide_flowbar_after(app.clone(), 400);
+    }
+    // Neither recording nor processing: nothing to cancel.
 }
 
 /// Copy-last-transcript shortcut: put the most recent transcript on the
@@ -350,18 +365,45 @@ pub fn on_undo(app: &AppHandle, st: &AppState) {
     });
 }
 
+/// Escape shortcut jobs handled by the serialized dispatcher thread.
+enum EscapeJob {
+    Register,
+    Unregister,
+}
+
+/// Lazily start (once) the single OS thread that performs every Esc
+/// register/unregister, and hand back its job sender.
+///
+/// Phase 5.6: `register`/`unregister` used to each spawn an independent task,
+/// so two racing ops could complete out of order - e.g. a stale unregister
+/// landing after a fresh press's register left Esc dead for the next recording.
+/// Routing both through ONE dedicated thread makes them strictly sequential:
+/// whatever order the sends happen in is the order they take effect, and the
+/// global-shortcut callback thread never blocks (the send is fire-and-forget).
+fn escape_dispatcher(app: &AppHandle, esc: Shortcut) -> &Sender<EscapeJob> {
+    static SENDER: OnceLock<Sender<EscapeJob>> = OnceLock::new();
+    SENDER.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<EscapeJob>();
+        let handle = app.clone();
+        // Inert when this thread ever dies: senders just fail their send and
+        // the callers ignore that (same best-effort as the old spawned tasks).
+        thread::spawn(move || {
+            let gs = handle.global_shortcut();
+            while let Ok(job) = rx.recv() {
+                let _ = match job {
+                    EscapeJob::Register => gs.register(esc),
+                    EscapeJob::Unregister => gs.unregister(esc),
+                };
+            }
+        });
+        tx
+    })
+}
+
 pub(crate) fn register_escape(app: &AppHandle, st: &AppState) {
-    let handle = app.clone();
-    let esc = st.escape_shortcut;
-    tauri::async_runtime::spawn(async move {
-        let _ = handle.global_shortcut().register(esc);
-    });
+    let _ = escape_dispatcher(app, st.escape_shortcut).send(EscapeJob::Register);
 }
 
 pub(crate) fn unregister_escape(app: &AppHandle, st: &AppState) {
-    let handle = app.clone();
-    let esc = st.escape_shortcut;
-    tauri::async_runtime::spawn(async move {
-        let _ = handle.global_shortcut().unregister(esc);
-    });
+    let _ = escape_dispatcher(app, st.escape_shortcut).send(EscapeJob::Unregister);
 }

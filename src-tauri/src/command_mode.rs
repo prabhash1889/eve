@@ -97,10 +97,11 @@ pub fn on_release(app: &AppHandle, st: &AppState) {
     }
     // Mark the pipeline in-flight; `process_command` clears it via a drop guard
     // on every exit path, mirroring `hotkey::on_release` / `pipeline::process`.
+    // The guard also releases Esc (kept registered for the whole pipeline so it
+    // can cancel mid-processing, phase 5.3).
     st.is_processing.store(true, Ordering::SeqCst);
     st.is_command_mode.store(false, Ordering::SeqCst);
     st.capture.stop();
-    hotkey::unregister_escape(app, st);
     let _ = app.emit_to(events::FLOWBAR, events::PROCESSING, ());
 
     let handle = app.clone();
@@ -113,8 +114,14 @@ pub fn on_release(app: &AppHandle, st: &AppState) {
 /// selection → rewrite-or-generate via the LLM → inject.
 async fn process_command(app: AppHandle) {
     // Release the concurrency flag on every exit path (mirrors `pipeline::process`).
-    let _processing =
-        crate::pipeline::ProcessingGuard(app.state::<AppState>().is_processing.clone());
+    let _processing = crate::pipeline::ProcessingGuard(
+        app.state::<AppState>().is_processing.clone(),
+        app.clone(),
+    );
+    // Phase 5.3: fresh pipeline run - clear any stale cancel request.
+    app.state::<AppState>()
+        .cancel_requested
+        .store(false, Ordering::SeqCst);
 
     let (buffer, sample_rate, capture, settings, transcriber, last_transcript, last_benchmark, hwnd) = {
         let st = app.state::<AppState>();
@@ -201,6 +208,11 @@ async fn process_command(app: AppHandle) {
             return;
         }
     };
+    // Phase 5.3: cancelled mid-flight? Bail quietly - on_cancel already idled
+    // the bar, so no further events are emitted from here.
+    if session::cancelled(&app) {
+        return;
+    }
     let duration_ms = prepared.duration_ms;
 
     let (instruction, benchmark) = match session::run_stt_benchmarked(
@@ -239,6 +251,10 @@ async fn process_command(app: AppHandle) {
             return;
         }
     };
+    // Phase 5.3: quiet cancel before touching the user's selection.
+    if session::cancelled(&app) {
+        return;
+    }
     if instruction.trim().is_empty() {
         window_mgmt::fail(&app, "No instruction heard");
         return;
@@ -266,6 +282,12 @@ async fn process_command(app: AppHandle) {
             return;
         }
     };
+
+    // Phase 5.3: quiet cancel before injecting - the result never lands in the
+    // target app once Esc was pressed.
+    if session::cancelled(&app) {
+        return;
+    }
 
     inject_and_finish(&app, &result, hwnd, &strategy).await;
     *last_transcript.lock() = Some(result);
@@ -313,8 +335,10 @@ pub fn on_transform_released(st: &AppState) {
 
 async fn run_transform_shortcut(app: AppHandle, id: i64, hwnd: isize) {
     // Release the concurrency flag on every exit path (mirrors `pipeline::process`).
-    let _processing =
-        crate::pipeline::ProcessingGuard(app.state::<AppState>().is_processing.clone());
+    let _processing = crate::pipeline::ProcessingGuard(
+        app.state::<AppState>().is_processing.clone(),
+        app.clone(),
+    );
 
     let (db, strategy, last_transcript, bubble, settings_snapshot) = {
         let st = app.state::<AppState>();
