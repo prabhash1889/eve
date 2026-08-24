@@ -3,7 +3,6 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -11,9 +10,10 @@ use crate::config::CleanupLevel;
 use crate::context::AppContext;
 use crate::db::{queries, Db};
 use crate::polish::StyleHint;
+use crate::session;
 use crate::state::AppState;
 use crate::timing::Timings;
-use crate::transcription::{local_backend_label_for, wav_needed, Audio, TranscriptionBenchmark};
+use crate::transcription::{local_backend_label_for, wav_needed, Audio};
 use crate::{audio, events, injection, text_processing, window_mgmt};
 
 /// Emit a coarse processing-stage label to the Flow Bar (Phase 1 visibility).
@@ -44,6 +44,7 @@ pub async fn process(app: AppHandle) {
     let (
         buffer,
         sample_rate,
+        capture,
         settings,
         transcriber,
         polisher,
@@ -66,6 +67,7 @@ pub async fn process(app: AppHandle) {
         (
             st.audio_buffer.clone(),
             st.sample_rate.clone(),
+            st.capture.clone(),
             st.settings.clone(),
             st.transcriber.clone(),
             st.polisher.clone(),
@@ -85,61 +87,17 @@ pub async fn process(app: AppHandle) {
     // breakdown is logged + persisted on completion (see `timings.finish`).
     let mut timings = Timings::new();
 
-    // Deterministic stop handshake (replaces the old fixed 60 ms sleep): wait
-    // for the capture thread to ack that the stream is dropped and the final
-    // samples are flushed into the shared buffer. Typically returns in ~0-33 ms
-    // (one poll tick); on timeout we fall back to waiting the full 60 ms,
-    // exactly the previous behavior.
-    let app_for_handshake = app.clone();
-    let _ = tauri::async_runtime::spawn_blocking(move || {
-        app_for_handshake
-            .state::<AppState>()
-            .capture
-            .stop_and_wait(audio::STOP_ACK_TIMEOUT);
-    })
-    .await;
-
-    let samples = {
-        let mut b = buffer.lock();
-        std::mem::take(&mut *b)
-    };
-    let rate = sample_rate.load(Ordering::SeqCst);
+    // Deterministic stop handshake + buffer drain (shared with Command Mode):
+    // wait for the capture thread to ack that the stream is dropped and the
+    // final samples are flushed into the shared buffer, then take the buffer.
+    let drained = session::stop_and_drain(&capture, buffer, sample_rate).await;
     timings.mark("drain");
 
-    // Capture length BEFORE `samples` is moved into the encode closure.
-    let duration_ms = (samples.len() as i64 * 1000) / (rate.max(1) as i64);
-
-    if duration_ms < 1000 {
-        let _ = app.emit_to(
-            events::FLOWBAR,
-            events::ERROR,
-            events::ErrorPayload {
-                message: "Too short".to_string(),
-            },
-        );
-        window_mgmt::hide_flowbar_after(app, 1200);
-        return;
-    }
-
-    // Resample to 16 kHz + WAV-encode (CPU-bound → off the async runtime). We
-    // keep BOTH the f32 samples (fed straight to the local backend, no WAV
-    // round-trip) and the encoded WAV (cloud upload). When the local backend is
-    // selected and no cloud fallback key exists, the WAV would be discarded
-    // unread - skip the encode entirely (`wav_needed`).
-    let need_wav = wav_needed(&settings.lock());
-    let (samples16k, wav) = match tauri::async_runtime::spawn_blocking(move || {
-        audio::prepare_16k(samples, rate, need_wav)
-    })
-    .await
-    {
-        Ok(Ok(v)) => v,
-        Ok(Err(_)) | Err(_) => {
-            window_mgmt::fail(&app, "Audio processing failed");
-            return;
-        }
-    };
-    timings.mark("resample_encode");
-
+    // Snapshot every setting this session needs (one lock acquisition; the
+    // block previously ran after resampling, but moved ahead of
+    // `prepare_audio` because the local-VAD parameters select the preparation
+    // behavior). `need_wav`, formerly read separately before preparing, now
+    // comes from the same snapshot.
     let (
         language,
         lang_label,
@@ -155,6 +113,7 @@ pub async fn process(app: AppHandle) {
         profile,
         debug_timing,
         cjk_autocorrect,
+        need_wav,
     ) = {
         let s = settings.lock();
         let lang = if s.language == "auto" {
@@ -190,15 +149,66 @@ pub async fn process(app: AppHandle) {
             s.local_transcription_profile.clone(),
             s.debug_timing,
             s.cjk_autocorrect,
+            wav_needed(&s),
         )
     };
+
+    // Resample to 16 kHz + optional WAV encode + optional local VAD in one
+    // blocking pass (`session::prepare_audio`). Dictation encodes the WAV from
+    // the FULL clip before VAD trims the samples: cloud uploads the complete
+    // recording and history replays it; only the f32 samples handed to an
+    // on-device backend are trimmed. A clip that reads as all-silence fails
+    // fast here rather than after a wasted inference.
+    let prepared = match session::prepare_audio(
+        drained.samples,
+        drained.rate,
+        session::PrepareOptions {
+            encode_before_vad: true,
+            need_wav,
+            vad: if speech_is_local && vad_enabled {
+                Some(audio::VadParams::for_profile(&profile, correctness_rescue))
+            } else {
+                None
+            },
+            min_duration_ms: Some(session::MIN_DURATION_MS),
+        },
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(session::PrepareError::TooShort) => {
+            let _ = app.emit_to(
+                events::FLOWBAR,
+                events::ERROR,
+                events::ErrorPayload {
+                    message: "Too short".to_string(),
+                },
+            );
+            window_mgmt::hide_flowbar_after(app, 1200);
+            return;
+        }
+        Err(session::PrepareError::AudioFailed) => {
+            window_mgmt::fail(&app, "Audio processing failed");
+            return;
+        }
+        Err(session::PrepareError::NoSpeech) => {
+            window_mgmt::fail(&app, "No speech detected");
+            return;
+        }
+    };
+    // The single preparation pass spans both the former resample/encode and
+    // VAD windows, so the stage marks land together (order unchanged).
+    timings.mark("resample_encode");
+    timings.mark("preprocess");
+
+    let duration_ms = prepared.duration_ms;
 
     // The effective provider's upload cap (Groq/OpenAI reject over 25 MB,
     // ~13 min of 16 kHz mono WAV; Deepgram has none). Detect an over-length
     // clip here and surface a clear "too long" message rather than letting the
     // request fail with a generic "check your connection".
     if let Some(cap) = max_wav_bytes {
-        if wav.len() > cap {
+        if prepared.wav.len() > cap {
             window_mgmt::fail(
                 &app,
                 "Recording too long — keep dictations under about 13 minutes",
@@ -220,75 +230,46 @@ pub async fn process(app: AppHandle) {
         &profile,
     );
 
-    // Phase 3 (optimization): local-only silence trimming + normalization. The
-    // full WAV (built above) is what cloud providers upload and what history
-    // replays; only the f32 samples handed to the on-device backend are
-    // trimmed. A clip that reads as all-silence fails fast here rather than
-    // after a wasted inference.
-    let mut vad_trimmed = false;
-    let samples16k = if speech_is_local && vad_enabled {
-        let params = audio::VadParams::for_profile(&profile, correctness_rescue);
-        match tauri::async_runtime::spawn_blocking(move || {
-            audio::preprocess_local(&samples16k, params)
-        })
-        .await
-        {
-            Ok(pre) if pre.speech_detected => {
-                vad_trimmed = pre.trimmed;
-                Arc::new(pre.samples)
-            }
-            Ok(_) => {
-                window_mgmt::fail(&app, "No speech detected");
-                return;
-            }
-            Err(_) => {
-                window_mgmt::fail(&app, "Audio processing failed");
-                return;
-            }
-        }
-    } else {
-        Arc::new(samples16k)
-    };
-    timings.mark("preprocess");
-
     // Transcribe. Pass the f32 samples + WAV together so the local backend skips
     // the WAV decode while Groq still gets the bytes it uploads.
     stage(&app, "Transcribing");
     let audio_input = Audio {
-        samples: samples16k,
-        wav,
+        samples: prepared.samples,
+        wav: prepared.wav,
     };
-    let transcribe_started = std::time::Instant::now();
-    let raw = match transcriber
-        .transcribe_audio(audio_input, language, hints)
-        .await
+    let vad_trimmed = prepared.vad_trimmed;
+    let (raw, benchmark) = match session::run_stt_benchmarked(
+        transcriber.as_ref(),
+        audio_input,
+        language,
+        hints,
+        session::SttMeta {
+            mode: "dictation",
+            model: transcriber_model.clone(),
+            backend: if speech_is_local {
+                local_backend_label_for(&transcriber_model).to_string()
+            } else {
+                speech_backend_label
+            },
+            profile: profile.clone(),
+            clip_duration_ms: duration_ms.max(0) as u64,
+            vad_trimmed,
+        },
+    )
+    .await
     {
-        Ok(t) => t,
+        Ok(v) => v,
         Err(e) => {
-            window_mgmt::fail(&app, &friendly_error(&e.to_string()));
+            window_mgmt::fail(&app, &session::errors::transcription_error(&e.to_string()));
             return;
         }
     };
-    let transcribe_ms = transcribe_started.elapsed().as_millis() as u64;
     timings.mark("transcribe");
     if raw.trim().is_empty() {
         window_mgmt::fail(&app, "No speech detected");
         return;
     }
-    *last_benchmark.lock() = Some(TranscriptionBenchmark {
-        mode: "dictation".into(),
-        model: transcriber_model.clone(),
-        profile: profile.clone(),
-        backend: if speech_is_local {
-            local_backend_label_for(&transcriber_model).to_string()
-        } else {
-            speech_backend_label
-        },
-        clip_duration_ms: duration_ms.max(0) as u64,
-        transcribe_ms,
-        words_produced: raw.split_whitespace().count(),
-        vad_trimmed,
-    });
+    *last_benchmark.lock() = Some(benchmark);
 
     // Preview the raw transcript on the Flow Bar before polishing.
     let _ = app.emit_to(
@@ -331,46 +312,24 @@ pub async fn process(app: AppHandle) {
 
     // Phase 5: polish is optional and never allowed to stall the pipeline.
     //  - CleanupLevel::None skips the LLM entirely (no round-trip at all).
-    //  - Otherwise the call is bounded by POLISH_TIMEOUT; on timeout *or* error
-    //    we inject the best available transcript (the course-corrected text)
-    //    rather than making the user wait on a slow/hung model.
-    const POLISH_TIMEOUT: Duration = Duration::from_secs(20);
+    //  - Otherwise the call is bounded by session::POLISH_TIMEOUT; on timeout
+    //    *or* error we inject the best available transcript (the
+    //    course-corrected text) rather than making the user wait on a slow/hung
+    //    model. The degrade emission lives inside the shared helper.
     let polished = if matches!(level, CleanupLevel::None) {
         corrected
     } else {
         stage(&app, "Polishing");
-        let fallback = corrected.clone();
-        match tokio::time::timeout(
-            POLISH_TIMEOUT,
-            polisher.polish(corrected, level, style_hint),
+        let (polished, _degraded) = session::run_polish_bounded(
+            &app,
+            polisher.as_ref(),
+            corrected,
+            level,
+            style_hint,
+            session::POLISH_TIMEOUT,
         )
-        .await
-        {
-            Ok(Ok(p)) => p,
-            Ok(Err(_)) => {
-                // Phase 5.6: surface the silent degrade-to-raw fallback so the
-                // Flow Bar can hint that polish was skipped.
-                let _ = app.emit_to(
-                    events::FLOWBAR,
-                    events::DEGRADED,
-                    events::StagePayload {
-                        label: "Polish unavailable - using raw".to_string(),
-                    },
-                );
-                fallback
-            }
-            Err(_) => {
-                eprintln!("[polish] timed out after {POLISH_TIMEOUT:?}; injecting raw transcript");
-                let _ = app.emit_to(
-                    events::FLOWBAR,
-                    events::DEGRADED,
-                    events::StagePayload {
-                        label: "Polish unavailable - using raw".to_string(),
-                    },
-                );
-                fallback
-            }
-        }
+        .await;
+        polished
     };
     timings.mark("polish");
 
@@ -535,81 +494,3 @@ fn persist(
     );
 }
 
-fn friendly_error(err: &str) -> String {
-    if err.contains("not downloaded") || err.contains("No local") {
-        // Local backend selected but no usable model (and no Groq fallback).
-        err.to_string()
-    } else if err.contains("not built in") {
-        "Local models aren't available in this build".into()
-    } else if err.contains("Failed to load") || err.contains("load model") {
-        "Local model failed to load — try re-downloading it".into()
-    } else if err.contains("API key") {
-        "Set your provider API key in Settings".into()
-    } else if err.contains("401") || err.contains("invalid_api_key") {
-        "Invalid API key — check Settings".into()
-    } else if err.contains("429") {
-        "Rate limited — try again in a moment".into()
-    } else if err.contains("413") || err.contains("too large") || err.contains("too long") {
-        "Recording too long — keep dictations under about 13 minutes".into()
-    } else {
-        "Transcription failed — check your connection".into()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::friendly_error;
-
-    /// Freeze the error-mapping strings before the 5.1 session-module
-    /// extraction moves them. Each raw provider/backend error maps to exactly
-    /// one user-facing Flow Bar message.
-    #[test]
-    fn friendly_error_strings_are_frozen() {
-        // Local backend selected but the model is missing: message passes through.
-        assert_eq!(
-            friendly_error("Model 'whisper-small' is not downloaded yet"),
-            "Model 'whisper-small' is not downloaded yet"
-        );
-        assert_eq!(
-            friendly_error("No local speech model selected - pick one in Models"),
-            "No local speech model selected - pick one in Models"
-        );
-        assert_eq!(
-            friendly_error("Local transcription was not built in (enable the `local-whisper` feature)"),
-            "Local models aren't available in this build"
-        );
-        assert_eq!(
-            friendly_error("Failed to load Whisper model: bad ggml"),
-            "Local model failed to load \u{2014} try re-downloading it"
-        );
-        assert_eq!(
-            friendly_error("Set your Groq API key in Settings"),
-            "Set your provider API key in Settings"
-        );
-        assert_eq!(
-            friendly_error("Groq error 401 Unauthorized: invalid_api_key"),
-            "Invalid API key \u{2014} check Settings"
-        );
-        assert_eq!(
-            friendly_error("Groq error 429 Too Many Requests"),
-            "Rate limited \u{2014} try again in a moment"
-        );
-        assert_eq!(
-            friendly_error("413 Payload Too Large"),
-            "Recording too long \u{2014} keep dictations under about 13 minutes"
-        );
-        assert_eq!(
-            friendly_error("error sending request for url"),
-            "Transcription failed \u{2014} check your connection"
-        );
-    }
-
-    /// Ordering matters: today the generic "API key" branch is checked before
-    /// the 401 branch, so an error containing both maps to the key hint. Freeze
-    /// that precedence so a reorder during extraction is a conscious choice.
-    #[test]
-    fn friendly_error_key_hint_precedes_auth_check() {
-        let mapped = friendly_error("invalid_api_key with 'API key' in body");
-        assert_eq!(mapped, "Set your provider API key in Settings");
-    }
-}

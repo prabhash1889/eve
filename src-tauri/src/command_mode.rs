@@ -18,8 +18,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 use crate::db::transforms;
+use crate::session;
 use crate::state::AppState;
-use crate::transcription::{local_backend_label_for, Audio, TranscriptionBenchmark};
+use crate::transcription::{local_backend_label_for, Audio};
 use crate::{audio, events, hotkey, injection, llm, polish, window_mgmt};
 
 // --- Command Mode push-to-talk ----------------------------------------------
@@ -115,11 +116,12 @@ async fn process_command(app: AppHandle) {
     let _processing =
         crate::pipeline::ProcessingGuard(app.state::<AppState>().is_processing.clone());
 
-    let (buffer, sample_rate, settings, transcriber, last_transcript, last_benchmark, hwnd) = {
+    let (buffer, sample_rate, capture, settings, transcriber, last_transcript, last_benchmark, hwnd) = {
         let st = app.state::<AppState>();
         (
             st.audio_buffer.clone(),
             st.sample_rate.clone(),
+            st.capture.clone(),
             st.settings.clone(),
             st.transcriber.clone(),
             st.last_transcript.clone(),
@@ -130,36 +132,9 @@ async fn process_command(app: AppHandle) {
     // Snapshot for the LLM step below; never hold the guard across `.await`.
     let settings_snapshot = settings.lock().clone();
 
-    // Deterministic stop handshake (mirrors `pipeline::process`): wait for the
-    // capture thread to ack the stream drop + final sample flush instead of
-    // sleeping a fixed 60 ms. Timeout fallback = exactly the old behavior.
-    let app_for_handshake = app.clone();
-    let _ = tauri::async_runtime::spawn_blocking(move || {
-        app_for_handshake
-            .state::<AppState>()
-            .capture
-            .stop_and_wait(crate::audio::STOP_ACK_TIMEOUT);
-    })
-    .await;
-
-    let samples = {
-        let mut b = buffer.lock();
-        std::mem::take(&mut *b)
-    };
-    let rate = sample_rate.load(Ordering::SeqCst);
-    let duration_ms = (samples.len() as u64 * 1000) / rate.max(1) as u64;
-
-    if duration_ms < 1000 {
-        let _ = app.emit_to(
-            events::FLOWBAR,
-            events::ERROR,
-            events::ErrorPayload {
-                message: "Too short".to_string(),
-            },
-        );
-        window_mgmt::hide_flowbar_after(app, 1200);
-        return;
-    }
+    // Deterministic stop handshake + buffer drain (mirrors `pipeline::process`,
+    // shared via `session::stop_and_drain`).
+    let drained = session::stop_and_drain(&capture, buffer, sample_rate).await;
 
     let (language, strategy, speech_is_local, vad_enabled, correctness_rescue, profile, model) = {
         let s = settings.lock();
@@ -185,84 +160,90 @@ async fn process_command(app: AppHandle) {
         )
     };
 
-    // Build the same dual-form audio payload as dictation mode. The local path
-    // consumes samples directly; the WAV stays available for cloud fallback.
-    let backend_for_preprocess = speech_is_local;
-    let profile_for_preprocess = profile.clone();
-    let processed = match tauri::async_runtime::spawn_blocking(move || {
-        let mut resampled = audio::resample_to_16k(&samples, rate);
-        let mut vad_trimmed = false;
-        if backend_for_preprocess && vad_enabled {
-            let pre = audio::preprocess_local(
-                &resampled,
-                audio::VadParams::for_profile(&profile_for_preprocess, correctness_rescue),
-            );
-            if !pre.speech_detected {
-                return anyhow::Ok((resampled, Vec::new(), vad_trimmed, false));
-            }
-            vad_trimmed = pre.trimmed;
-            resampled = pre.samples;
-        }
-        let wav = audio::encode_wav(&resampled)?;
-        anyhow::Ok((resampled, wav, vad_trimmed, true))
-    })
+    // Build the same dual-form audio payload as dictation mode via
+    // `session::prepare_audio`, with Command Mode's own ordering: local VAD
+    // runs FIRST and the WAV encodes the TRIMMED clip afterwards (that post-VAD
+    // WAV is what a cloud fallback uploads), and it is always encoded.
+    let prepared = match session::prepare_audio(
+        drained.samples,
+        drained.rate,
+        session::PrepareOptions {
+            encode_before_vad: false,
+            need_wav: true,
+            vad: if speech_is_local && vad_enabled {
+                Some(audio::VadParams::for_profile(&profile, correctness_rescue))
+            } else {
+                None
+            },
+            min_duration_ms: Some(session::MIN_DURATION_MS),
+        },
+    )
     .await
     {
-        Ok(Ok(v)) => v,
-        Ok(Err(_)) | Err(_) => {
+        Ok(p) => p,
+        Err(session::PrepareError::TooShort) => {
+            let _ = app.emit_to(
+                events::FLOWBAR,
+                events::ERROR,
+                events::ErrorPayload {
+                    message: "Too short".to_string(),
+                },
+            );
+            window_mgmt::hide_flowbar_after(app, 1200);
+            return;
+        }
+        Err(session::PrepareError::AudioFailed) => {
             window_mgmt::fail(&app, "Audio processing failed");
             return;
         }
-    };
-    let (samples16k, wav, vad_trimmed, speech_detected) = processed;
-    if !speech_detected {
-        window_mgmt::fail(&app, "No speech detected");
-        return;
-    }
-
-    let transcribe_started = std::time::Instant::now();
-    let instruction = match transcriber
-        .transcribe_audio(
-            Audio {
-                samples: std::sync::Arc::new(samples16k),
-                wav,
-            },
-            language,
-            Vec::new(),
-        )
-        .await
-    {
-        Ok(t) => t,
-        Err(e) => {
-            window_mgmt::fail(&app, &command_error(&e.to_string()));
+        Err(session::PrepareError::NoSpeech) => {
+            window_mgmt::fail(&app, "No speech detected");
             return;
         }
     };
-    let transcribe_ms = transcribe_started.elapsed().as_millis() as u64;
+    let duration_ms = prepared.duration_ms;
+
+    let (instruction, benchmark) = match session::run_stt_benchmarked(
+        transcriber.as_ref(),
+        Audio {
+            samples: prepared.samples,
+            wav: prepared.wav,
+        },
+        language,
+        Vec::new(),
+        session::SttMeta {
+            mode: "command",
+            backend: if speech_is_local {
+                local_backend_label_for(&model).to_string()
+            } else {
+                crate::transcription::resolve_speech(&settings.lock())
+                    .label()
+                    .to_string()
+            },
+            // Preserve the historical default label when no model id resolves.
+            model: if model.is_empty() {
+                "whisper-large-v3-turbo".into()
+            } else {
+                model
+            },
+            profile,
+            clip_duration_ms: duration_ms.max(0) as u64,
+            vad_trimmed: prepared.vad_trimmed,
+        },
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            window_mgmt::fail(&app, &session::errors::command_error(&e.to_string()));
+            return;
+        }
+    };
     if instruction.trim().is_empty() {
         window_mgmt::fail(&app, "No instruction heard");
         return;
     }
-    *last_benchmark.lock() = Some(TranscriptionBenchmark {
-        mode: "command".into(),
-        backend: if speech_is_local {
-            local_backend_label_for(&model).to_string()
-        } else {
-            crate::transcription::resolve_speech(&settings.lock())
-                .label()
-                .to_string()
-        },
-        model: if model.is_empty() {
-            "whisper-large-v3-turbo".into()
-        } else {
-            model
-        },
-        profile,
-        clip_duration_ms: duration_ms,
-        transcribe_ms,
-        words_produced: instruction.split_whitespace().count(),
-        vad_trimmed,
-    });
+    *last_benchmark.lock() = Some(benchmark);
 
     // Read the selection from the still-focused target app (blocking key sim).
     let app_for_sel = app.clone();
@@ -281,7 +262,7 @@ async fn process_command(app: AppHandle) {
             return;
         }
         Err(e) => {
-            window_mgmt::fail(&app, &command_error(&e.to_string()));
+            window_mgmt::fail(&app, &session::errors::command_error(&e.to_string()));
             return;
         }
     };
@@ -389,7 +370,7 @@ async fn run_transform_shortcut(app: AppHandle, id: i64, hwnd: isize) {
             return;
         }
         Err(e) => {
-            window_mgmt::fail(&app, &command_error(&e.to_string()));
+            window_mgmt::fail(&app, &session::errors::command_error(&e.to_string()));
             return;
         }
     };
@@ -625,48 +606,3 @@ async fn inject_and_finish(app: &AppHandle, text: &str, hwnd: isize, strategy: &
     window_mgmt::hide_flowbar_after(app.clone(), 900);
 }
 
-/// Map an LLM/transcription error to a short Flow Bar message.
-fn command_error(err: &str) -> String {
-    if err.contains("API key") {
-        "Set your provider API key in Settings".into()
-    } else if err.contains("401") || err.contains("invalid_api_key") {
-        "Invalid API key — check Settings".into()
-    } else if err.contains("403") {
-        "Access denied — check your API key".into()
-    } else if err.contains("429") {
-        "Rate limited — try again in a moment".into()
-    } else {
-        "Command failed — check your connection".into()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::command_error;
-
-    /// Freeze the Command Mode / transform error strings before the 5.1
-    /// extraction unifies them behind `session::errors`.
-    #[test]
-    fn command_error_strings_are_frozen() {
-        assert_eq!(
-            command_error("Set your OpenRouter API key in Settings"),
-            "Set your provider API key in Settings"
-        );
-        assert_eq!(
-            command_error("OpenAI error 401: invalid_api_key"),
-            "Invalid API key \u{2014} check Settings"
-        );
-        assert_eq!(
-            command_error("Anthropic error 403 Forbidden"),
-            "Access denied \u{2014} check your API key"
-        );
-        assert_eq!(
-            command_error("Groq error 429 rate limit exceeded"),
-            "Rate limited \u{2014} try again in a moment"
-        );
-        assert_eq!(
-            command_error("connection reset by peer"),
-            "Command failed \u{2014} check your connection"
-        );
-    }
-}

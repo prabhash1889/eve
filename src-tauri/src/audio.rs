@@ -81,8 +81,13 @@ pub const STOP_ACK_TIMEOUT: Duration = Duration::from_millis(60);
 /// slow-starting thread plus a new one, both racing to open the mic - was the
 /// source of the rapid-tap failures where the next press intermittently died
 /// with a device-busy error or hijacked the wrong session.
+///
+/// Cheaply clonable: clones share the same command channel, which lets
+/// `session::stop_and_drain` move a handle onto the blocking pool for the
+/// stop handshake.
+#[derive(Clone)]
 pub struct CaptureHandle {
-    tx: Mutex<Option<Sender<CaptureCmd>>>,
+    tx: std::sync::Arc<Mutex<Option<Sender<CaptureCmd>>>>,
 }
 
 impl Default for CaptureHandle {
@@ -94,7 +99,7 @@ impl Default for CaptureHandle {
 impl CaptureHandle {
     pub fn new() -> Self {
         Self {
-            tx: Mutex::new(None),
+            tx: std::sync::Arc::new(Mutex::new(None)),
         }
     }
 

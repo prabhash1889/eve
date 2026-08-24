@@ -10,17 +10,16 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::config::CleanupLevel;
 use crate::db::{dictionary, queries};
+use crate::session;
 use crate::state::AppState;
 use crate::transcription::Audio;
-use crate::{audio, events, text_processing};
+use crate::{events, text_processing};
 
 /// A file waiting in (or moving through) the transcription queue. The path is
 /// kept private to the backend; the UI only ever sees `id` + `file_name`.
@@ -162,25 +161,32 @@ async fn process_one(app: &AppHandle, item: &QueuedFile) {
     let path = item.path.clone();
     let decoded = match tauri::async_runtime::spawn_blocking(move || decode_file(&path)).await {
         Ok(Ok(d)) => d,
-        Ok(Err(e)) => return fail(app, item, &friendly_decode_error(&e.to_string())),
+        Ok(Err(e)) => return fail(app, item, &session::errors::decode_error(&e.to_string())),
         Err(_) => return fail(app, item, "Couldn't read the audio file"),
     };
 
-    let duration_ms =
-        (decoded.samples.len() as i64 * 1000) / (decoded.sample_rate.max(1) as i64);
-
-    // Resample to 16 kHz + WAV-encode (the WAV is what Groq uploads; the samples
-    // feed a local model directly).
-    let (samples16k, wav) = match tauri::async_runtime::spawn_blocking(move || {
-        let resampled = audio::resample_to_16k(&decoded.samples, decoded.sample_rate);
-        let wav = audio::encode_wav(&resampled)?;
-        anyhow::Ok((resampled, wav))
-    })
+    // Resample to 16 kHz + WAV-encode in one blocking pass (the WAV is what
+    // Groq uploads; the samples feed a local model directly). No VAD and no
+    // minimum length for file items - the clip duration computed inside from
+    // the decoded samples feeds the history row below.
+    let prepared = match session::prepare_audio(
+        decoded.samples,
+        decoded.sample_rate,
+        session::PrepareOptions {
+            encode_before_vad: true,
+            need_wav: true,
+            vad: None,
+            min_duration_ms: None,
+        },
+    )
     .await
     {
-        Ok(Ok(v)) => v,
-        Ok(Err(_)) | Err(_) => return fail(app, item, "Audio processing failed"),
+        Ok(p) => p,
+        // With no VAD pass and no minimum-length gate, only the generic audio
+        // failure is reachable here.
+        Err(_) => return fail(app, item, "Audio processing failed"),
     };
+    let duration_ms = prepared.duration_ms;
 
     // Snapshot the settings we need (guard drops before any await).
     let (language, lang_label, level, max_wav_bytes, cjk_autocorrect) = {
@@ -203,7 +209,7 @@ async fn process_one(app: &AppHandle, item: &QueuedFile) {
     // over 25 MB; Deepgram has none). Long files are not chunked yet — error
     // clearly instead of letting the upload fail generically. Local has no cap.
     if let Some(cap) = max_wav_bytes {
-        if wav.len() > cap {
+        if prepared.wav.len() > cap {
             return fail(
                 app,
                 item,
@@ -224,15 +230,15 @@ async fn process_one(app: &AppHandle, item: &QueuedFile) {
 
     emit_progress(app, item.id, &item.file_name, "Transcribing");
     let audio_input = Audio {
-        samples: Arc::new(samples16k),
-        wav,
+        samples: prepared.samples,
+        wav: prepared.wav,
     };
     let raw = match transcriber
         .transcribe_audio(audio_input, language, hints)
         .await
     {
         Ok(t) => t,
-        Err(e) => return fail(app, item, &friendly_transcribe_error(&e.to_string())),
+        Err(e) => return fail(app, item, &session::errors::file_transcribe_error(&e.to_string())),
     };
     if raw.trim().is_empty() {
         return fail(app, item, "No speech found in this file");
@@ -252,17 +258,25 @@ async fn process_one(app: &AppHandle, item: &QueuedFile) {
     let dict_corrected = text_processing::apply_corrections(&raw, &corrections);
     let corrected = text_processing::course_correct(&dict_corrected);
 
-    // Polish is optional and time-bounded so a slow model can't wedge the queue.
-    const POLISH_TIMEOUT: Duration = Duration::from_secs(30);
+    // Polish is optional and time-bounded so a slow model can't wedge the
+    // queue. Shares `session::run_polish_bounded` with the mic flows: on
+    // timeout or error the course-corrected raw text is kept and the Flow Bar
+    // is told polish was skipped. The queue formerly allowed 30s; the unified
+    // 20s bound (see session::POLISH_TIMEOUT) favors latency-to-text.
     let polished = if matches!(level, CleanupLevel::None) {
         corrected
     } else {
         emit_progress(app, item.id, &item.file_name, "Polishing");
-        let fallback = corrected.clone();
-        match tokio::time::timeout(POLISH_TIMEOUT, polisher.polish(corrected, level, None)).await {
-            Ok(Ok(p)) => p,
-            Ok(Err(_)) | Err(_) => fallback,
-        }
+        let (polished, _degraded) = session::run_polish_bounded(
+            app,
+            polisher.as_ref(),
+            corrected,
+            level,
+            None,
+            session::POLISH_TIMEOUT,
+        )
+        .await;
+        polished
     };
     let text = text_processing::finalize(&polished, cjk_autocorrect, &lang_label);
     if text.trim().is_empty() {
@@ -432,74 +446,3 @@ fn decode_file(path: &Path) -> anyhow::Result<DecodedAudio> {
     })
 }
 
-fn friendly_decode_error(err: &str) -> String {
-    if err.contains("unsupported") || err.contains("No decodable") || err.contains("No audio") {
-        "Unsupported or corrupt audio file".into()
-    } else {
-        "Couldn't decode the audio file".into()
-    }
-}
-
-fn friendly_transcribe_error(err: &str) -> String {
-    if err.contains("API key") {
-        "Set your provider API key in Settings".into()
-    } else if err.contains("401") || err.contains("invalid_api_key") {
-        "Invalid API key — check Settings".into()
-    } else if err.contains("429") {
-        "Rate limited — try again in a moment".into()
-    } else if err.contains("not downloaded") || err.contains("No local") {
-        err.to_string()
-    } else {
-        "Transcription failed — check your connection".into()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{friendly_decode_error, friendly_transcribe_error};
-
-    /// Freeze the file-queue error strings before the 5.1 extraction.
-    #[test]
-    fn decode_error_strings_are_frozen() {
-        assert_eq!(
-            friendly_decode_error("No decodable audio track"),
-            "Unsupported or corrupt audio file"
-        );
-        assert_eq!(
-            friendly_decode_error("unsupported codec"),
-            "Unsupported or corrupt audio file"
-        );
-        assert_eq!(
-            friendly_decode_error("No audio decoded from file"),
-            "Unsupported or corrupt audio file"
-        );
-        assert_eq!(
-            friendly_decode_error("io error while reading"),
-            "Couldn't decode the audio file"
-        );
-    }
-
-    #[test]
-    fn transcribe_error_strings_are_frozen() {
-        assert_eq!(
-            friendly_transcribe_error("Set your Deepgram API key in Settings"),
-            "Set your provider API key in Settings"
-        );
-        assert_eq!(
-            friendly_transcribe_error("Groq error 401: invalid_api_key"),
-            "Invalid API key \u{2014} check Settings"
-        );
-        assert_eq!(
-            friendly_transcribe_error("Deepgram error 429"),
-            "Rate limited \u{2014} try again in a moment"
-        );
-        assert_eq!(
-            friendly_transcribe_error("Model 'x' is not downloaded yet"),
-            "Model 'x' is not downloaded yet"
-        );
-        assert_eq!(
-            friendly_transcribe_error("connection closed"),
-            "Transcription failed \u{2014} check your connection"
-        );
-    }
-}

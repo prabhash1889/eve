@@ -26,6 +26,7 @@ mod pipeline;
 mod platform;
 mod polish;
 mod secrets;
+mod session;
 mod state;
 mod text_processing;
 mod timing;
