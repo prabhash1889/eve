@@ -11,6 +11,7 @@ use crate::db::queries::{self, HistoryPage, Stats};
 use crate::db::scratchpad::{self, ScratchpadTab};
 use crate::db::snippets::{self, Snippet, SnippetImport};
 use crate::db::transforms::{self, Transform};
+use crate::injection;
 use crate::models::{self, ModelStatus};
 use crate::secrets;
 use crate::state::{self, AppState};
@@ -205,6 +206,35 @@ pub fn has_provider_key(provider: String) -> Result<bool, String> {
 pub fn clear_provider_key(provider: String) -> Result<(), String> {
     let p = parse_provider(&provider)?;
     secrets::delete_provider_key(p).map_err(|e| e.to_string())
+}
+
+// --- Feature MVPs: history re-inject ------------------------------------------
+
+/// Paste arbitrary text into whatever app currently has focus. Backs the
+/// History page's "Paste" button (re-inject an old transcript): wraps the same
+/// `injection::inject` path dictation uses, so focus restore, clipboard save/
+/// restore, and the INJECTING guard all apply unchanged. The target window is
+/// whatever is focused *now*, not where the transcript originally landed.
+#[tauri::command]
+pub async fn paste_text(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<(), String> {
+    // Don't fight an in-flight capture/pipeline for focus or the clipboard.
+    if state.is_recording.load(std::sync::atomic::Ordering::SeqCst)
+        || state.is_processing.load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return Err("Eve is busy - try again in a moment".into());
+    }
+    let front = crate::platform::frontmost(&app);
+    let strategy = state.settings.lock().inject_strategy.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        injection::inject(&app, &text, front.handle, &strategy)
+    })
+    .await
+    .map_err(|_| "Couldn't paste the text".to_string())?
+    .map_err(|e| e.to_string())
 }
 
 // --- Phase 3: history & stats -------------------------------------------------
@@ -441,51 +471,59 @@ pub fn get_flow_styles(state: State<AppState>) -> Result<Vec<FlowStyle>, String>
     flow_styles::list(&state.db.lock()).map_err(|e| e.to_string())
 }
 
-/// Insert or update the Flow Style for an app category (one style per category).
-/// `name` defaults to the category label when blank.
+/// Insert or update a Flow Style for an app category. `app_process` empty =
+/// whole-category default; otherwise the style is scoped to that exact process
+/// name (normalized to lowercase, matching how capture reports processes) and
+/// takes precedence over the category default in the pipeline. `name` defaults
+/// to the category label when blank.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn upsert_flow_style(
+    app: AppHandle,
     state: State<AppState>,
     name: String,
     app_category: String,
+    app_process: String,
     tone: String,
     system_prompt: String,
     writing_sample: String,
     is_active: bool,
+    shortcut: String,
 ) -> Result<i64, String> {
     let category = app_category.trim();
     if category.is_empty() {
         return Err("Category cannot be empty".into());
     }
-    let name = {
-        let n = name.trim();
-        if n.is_empty() {
-            category
-        } else {
-            n
-        }
-    };
+    let process = app_process.trim().to_ascii_lowercase();
     let now = chrono::Utc::now().timestamp_millis();
     let id = flow_styles::upsert(
         &state.db.lock(),
-        name,
+        name.trim(),
         category,
+        &process,
         tone.trim(),
         system_prompt.trim(),
         writing_sample.trim(),
         is_active,
+        shortcut.trim(),
         now,
     )
     .map_err(|e| e.to_string())?;
     state.hot_cache.invalidate();
+    // 4.4: a changed/added/removed accelerator takes effect immediately.
+    command_mode::register_style_shortcuts(&app, &state);
     Ok(id)
 }
 
 #[tauri::command]
-pub fn delete_flow_style(state: State<AppState>, id: i64) -> Result<(), String> {
+pub fn delete_flow_style(
+    app: AppHandle,
+    state: State<AppState>,
+    id: i64,
+) -> Result<(), String> {
     flow_styles::delete(&state.db.lock(), id).map_err(|e| e.to_string())?;
     state.hot_cache.invalidate();
+    command_mode::register_style_shortcuts(&app, &state);
     Ok(())
 }
 
@@ -616,6 +654,27 @@ pub fn set_scratchpad_shortcut(
     Ok(())
 }
 
+/// Set (and re-register) the global shortcut that deletes the last injection
+/// (4.2 undo / recall).
+#[tauri::command]
+pub fn set_undo_shortcut(
+    app: AppHandle,
+    state: State<AppState>,
+    shortcut: String,
+) -> Result<(), String> {
+    let new_shortcut = state::parse_shortcut(&shortcut);
+    let old_shortcut = *state.undo_shortcut.lock();
+
+    swap_global_shortcut(&app, old_shortcut, new_shortcut)?;
+
+    *state.undo_shortcut.lock() = new_shortcut;
+
+    let mut s = state.settings.lock();
+    s.undo_shortcut = shortcut;
+    config::save(&state.settings_path, &s).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Show (and focus) the Scratchpad window — wired to the Hub sidebar item.
 #[tauri::command]
 pub fn open_scratchpad(app: AppHandle) {
@@ -672,6 +731,93 @@ pub fn transcribe_files(app: AppHandle, paths: Vec<String>) -> Vec<crate::file_t
 #[tauri::command]
 pub fn cancel_queue_item(app: AppHandle, id: u64) {
     crate::file_transcribe::cancel(&app, id);
+}
+
+// --- 4.6: full backup bundle --------------------------------------------------
+
+/// Export settings (secrets excluded - keys live only in the OS keychain),
+/// dictionary, snippets, Flow Styles, transforms, and optionally all history to
+/// a single JSON file at `path`.
+#[tauri::command]
+pub fn export_backup(
+    state: State<AppState>,
+    path: String,
+    include_history: bool,
+) -> Result<(), String> {
+    let settings = state.settings.lock().clone();
+    let bundle =
+        crate::backup::build(&state.db, &settings, include_history).map_err(|e| e.to_string())?;
+    crate::backup::write_to(&bundle, std::path::Path::new(&path)).map_err(|e| e.to_string())
+}
+
+/// Restore a backup bundle written by [`export_backup`]: merge data rows and
+/// apply the bundled settings, re-registering shortcuts/triggers so everything
+/// is live without a restart.
+#[tauri::command]
+pub fn import_backup(
+    app: AppHandle,
+    state: State<AppState>,
+    path: String,
+) -> Result<crate::backup::ImportSummary, String> {
+    let bundle =
+        crate::backup::read_from(std::path::Path::new(&path)).map_err(|e| e.to_string())?;
+    let summary = crate::backup::merge_data(&state.db, &bundle).map_err(|e| e.to_string())?;
+
+    apply_bundled_settings(&app, &state, bundle.settings)?;
+
+    state.hot_cache.invalidate();
+    command_mode::register_transform_shortcuts(&app, &state);
+    command_mode::register_style_shortcuts(&app, &state);
+    Ok(summary)
+}
+
+/// Apply a settings snapshot from a bundle, swapping any registered global
+/// shortcut whose accelerator changed so the imported triggers work live.
+fn apply_bundled_settings(
+    app: &AppHandle,
+    state: &State<AppState>,
+    next: Settings,
+) -> Result<(), String> {
+    use std::str::FromStr;
+    let swap_if_changed = |field: &std::sync::Arc<parking_lot::Mutex<Shortcut>>,
+                           old_accel: &str,
+                           new_accel: &str|
+     -> Result<(), String> {
+        if old_accel == new_accel {
+            return Ok(());
+        }
+        let new_sc = Shortcut::from_str(new_accel)
+            .map_err(|_| format!("\"{new_accel}\" isn't a supported shortcut"))?;
+        swap_global_shortcut(app, *field.lock(), new_sc)?;
+        *field.lock() = new_sc;
+        Ok(())
+    };
+
+    let prev = state.settings.lock().clone();
+    swap_if_changed(&state.main_shortcut, &prev.shortcut, &next.shortcut)?;
+    swap_if_changed(&state.copy_shortcut, &prev.copy_shortcut, &next.copy_shortcut)?;
+    swap_if_changed(
+        &state.command_shortcut,
+        &prev.command_shortcut,
+        &next.command_shortcut,
+    )?;
+    swap_if_changed(
+        &state.scratchpad_shortcut,
+        &prev.scratchpad_shortcut,
+        &next.scratchpad_shortcut,
+    )?;
+    swap_if_changed(&state.undo_shortcut, &prev.undo_shortcut, &next.undo_shortcut)?;
+
+    // Republish bare-modifier / mouse-button triggers to the low-level backends.
+    #[cfg(windows)]
+    crate::hooks::update_triggers(&next);
+    #[cfg(target_os = "macos")]
+    crate::platform::macos::input::update_triggers(&next);
+    #[cfg(target_os = "linux")]
+    crate::platform::linux::x11::update_triggers(&next);
+
+    *state.settings.lock() = next.clone();
+    config::save(&state.settings_path, &next).map_err(|e| e.to_string())
 }
 
 // --- Local models ------------------------------------------------------------

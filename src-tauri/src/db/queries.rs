@@ -2,10 +2,11 @@
 //! match the TypeScript mirror in `src/lib/api.ts`.
 
 use rusqlite::{params, Connection, Row};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-/// A stored dictation, returned to the History page.
-#[derive(Debug, Clone, Serialize)]
+/// A stored dictation, returned to the History page. `Deserialize` backs the
+/// backup-bundle import (4.6).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Transcript {
     pub id: i64,
@@ -14,7 +15,6 @@ pub struct Transcript {
     pub polished_text: String,
     pub cleanup_level: String,
     pub language: String,
-    pub audio_path: Option<String>,
     pub app_process: String,
     pub app_title: String,
     pub app_category: String,
@@ -34,7 +34,6 @@ pub struct NewTranscript {
     pub polished_text: String,
     pub cleanup_level: String,
     pub language: String,
-    pub audio_path: Option<String>,
     pub app_process: String,
     pub app_title: String,
     pub app_category: String,
@@ -100,7 +99,6 @@ fn row_to_transcript(row: &Row) -> rusqlite::Result<Transcript> {
         polished_text: row.get("polished_text")?,
         cleanup_level: row.get("cleanup_level")?,
         language: row.get("language")?,
-        audio_path: row.get("audio_path")?,
         app_process: row.get("app_process")?,
         app_title: row.get("app_title")?,
         app_category: row.get("app_category")?,
@@ -113,19 +111,20 @@ fn row_to_transcript(row: &Row) -> rusqlite::Result<Transcript> {
 }
 
 pub fn insert_transcript(conn: &Connection, t: &NewTranscript) -> rusqlite::Result<i64> {
+    // 4.8: audio is never persisted, so `audio_path` is always NULL (the column
+    // remains in the schema for older databases).
     conn.execute(
         "INSERT INTO transcripts
             (created_at, raw_text, polished_text, cleanup_level, language, audio_path,
              app_process, app_title, app_category, word_count, duration_ms, was_polished,
              source_file)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+         VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             t.created_at,
             t.raw_text,
             t.polished_text,
             t.cleanup_level,
             t.language,
-            t.audio_path,
             t.app_process,
             t.app_title,
             t.app_category,
@@ -212,6 +211,18 @@ pub fn get_history(
         page,
         per_page,
     })
+}
+
+/// Every non-deleted transcript, newest first (no pagination). Used by the
+/// backup-bundle export (4.6).
+pub fn list_all_transcripts(conn: &Connection) -> rusqlite::Result<Vec<Transcript>> {
+    let mut stmt = conn.prepare(
+        "SELECT * FROM transcripts WHERE deleted_at IS NULL ORDER BY created_at DESC",
+    )?;
+    let rows = stmt
+        .query_map([], row_to_transcript)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 /// Soft delete: mark `deleted_at` so the row drops out of history but can be
@@ -373,26 +384,4 @@ pub fn record_daily(
         params![date, updated],
     )?;
     Ok(())
-}
-
-/// Find saved audio recorded before `cutoff`, clear their `audio_path`, and
-/// return the file paths so the caller can delete them from disk. Transcript
-/// text is preserved — only the audio ages out.
-pub fn prune_audio(conn: &Connection, cutoff: i64) -> rusqlite::Result<Vec<String>> {
-    let paths: Vec<String> = {
-        let mut stmt = conn.prepare(
-            "SELECT audio_path FROM transcripts
-              WHERE audio_path IS NOT NULL AND created_at < ?1",
-        )?;
-        let rows = stmt
-            .query_map(params![cutoff], |r| r.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows
-    };
-    conn.execute(
-        "UPDATE transcripts SET audio_path = NULL
-          WHERE audio_path IS NOT NULL AND created_at < ?1",
-        params![cutoff],
-    )?;
-    Ok(paths)
 }

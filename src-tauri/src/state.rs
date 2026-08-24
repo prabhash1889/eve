@@ -100,9 +100,34 @@ impl HotPathCache {
         self.inner.lock().expansions.get_or_insert(fresh).clone()
     }
 
-    /// The active Flow Style for a category, or `None` (same fallback shape as
-    /// the pipeline's former direct read: a query error yielded no style).
-    pub fn active_style(&self, db: &Db, category: &str) -> Option<FlowStyle> {
+    /// The active Flow Style for the focused app: the exact-process profile
+    /// (4.3) when one exists, else the whole-category default - or `None`
+    /// (same fallback shape as the pipeline's former direct read: a query
+    /// error yielded no style). Cache keys are `"{category}"` and
+    /// `"{category}|{process}"` respectively.
+    pub fn active_style(&self, db: &Db, category: &str, process: &str) -> Option<FlowStyle> {
+        let proc = process.trim().to_ascii_lowercase();
+        if !proc.is_empty() {
+            let key = format!("{category}|{proc}");
+            if let Some(cached) = self.inner.lock().styles.get(&key) {
+                return cached.clone();
+            }
+            let fresh = {
+                let conn = db.lock();
+                flow_styles::active_for_process(&conn, category, &proc)
+                    .ok()
+                    .flatten()
+            };
+            self.inner
+                .lock()
+                .styles
+                .insert(key, fresh.clone());
+            if fresh.is_some() {
+                return fresh;
+            }
+            // No exact-app match: fall through to the category default below,
+            // but don't cache it under this key (the exact-app row may appear).
+        }
         if let Some(cached) = self.inner.lock().styles.get(category) {
             return cached.clone();
         }
@@ -175,6 +200,9 @@ pub struct AppState {
     /// `command_down`. Prevents the auto-repeat after a transform finishes from
     /// re-firing the transform (re-capturing the selection + re-injecting).
     pub transform_down: Arc<AtomicBool>,
+    /// 4.4: physical-down latch for style accelerators, mirroring
+    /// `transform_down` (drops key auto-repeat re-arming the override).
+    pub style_down: Arc<AtomicBool>,
     pub audio_buffer: Arc<Mutex<Vec<f32>>>,
     pub sample_rate: Arc<AtomicU32>,
     pub current_amplitude: Arc<Mutex<f32>>,
@@ -202,11 +230,20 @@ pub struct AppState {
     /// routes the dictation into its editor instead of OS-pasting.
     pub scratchpad_shortcut: Arc<Mutex<Shortcut>>,
     pub to_scratchpad: Arc<AtomicBool>,
+    /// 4.2: global shortcut that deletes the last injection.
+    pub undo_shortcut: Arc<Mutex<Shortcut>>,
     /// Phase 7: registered transform accelerators paired with their transform
     /// id. A Vec (not a map) so we don't depend on `Shortcut: Hash`; the handler
     /// linear-scans it like the other reserved shortcuts. Rebuilt at launch and
     /// whenever transforms are edited.
     pub transform_shortcuts: Arc<Mutex<Vec<(Shortcut, i64)>>>,
+    /// 4.4: registered Flow Style accelerators paired with their style id,
+    /// same shape as `transform_shortcuts`. Pressing one arms that style for
+    /// the next dictation only.
+    pub style_shortcuts: Arc<Mutex<Vec<(Shortcut, i64)>>>,
+    /// 4.4: Flow Style id armed by its accelerator, consumed (taken) by the
+    /// next dictation pipeline run. `None` when no override is armed.
+    pub pending_style_id: Arc<Mutex<Option<i64>>>,
     pub last_transcript: Arc<Mutex<Option<String>>>,
     pub last_transcription_benchmark: Arc<Mutex<Option<TranscriptionBenchmark>>>,
     pub settings: Arc<Mutex<Settings>>,
@@ -252,6 +289,7 @@ impl AppState {
         let copy = parse_shortcut(&settings.copy_shortcut);
         let command = parse_shortcut(&settings.command_shortcut);
         let scratchpad = parse_shortcut(&settings.scratchpad_shortcut);
+        let undo = parse_shortcut(&settings.undo_shortcut);
         // "Escape" always parses, but fall back gracefully instead of panicking
         // at startup if a future toolkit change ever rejects it.
         let escape = parse_shortcut("Escape");
@@ -269,6 +307,7 @@ impl AppState {
             trigger_down: Arc::new(AtomicBool::new(false)),
             command_down: Arc::new(AtomicBool::new(false)),
             transform_down: Arc::new(AtomicBool::new(false)),
+            style_down: Arc::new(AtomicBool::new(false)),
             audio_buffer: Arc::new(Mutex::new(Vec::new())),
             sample_rate: Arc::new(AtomicU32::new(16_000)),
             current_amplitude: Arc::new(Mutex::new(0.0)),
@@ -282,7 +321,10 @@ impl AppState {
             is_command_mode: Arc::new(AtomicBool::new(false)),
             scratchpad_shortcut: Arc::new(Mutex::new(scratchpad)),
             to_scratchpad: Arc::new(AtomicBool::new(false)),
+            undo_shortcut: Arc::new(Mutex::new(undo)),
             transform_shortcuts: Arc::new(Mutex::new(Vec::new())),
+            style_shortcuts: Arc::new(Mutex::new(Vec::new())),
+            pending_style_id: Arc::new(Mutex::new(None)),
             last_transcript: Arc::new(Mutex::new(None)),
             last_transcription_benchmark: Arc::new(Mutex::new(None)),
             transcriber: Arc::new(RoutingTranscriber::new(

@@ -1,4 +1,4 @@
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn, type EventCallback } from "@tauri-apps/api/event";
 
 // ---------------------------------------------------------------------------
@@ -6,8 +6,6 @@ import { listen, type UnlistenFn, type EventCallback } from "@tauri-apps/api/eve
 // ---------------------------------------------------------------------------
 
 export type CleanupLevel = "none" | "light" | "medium" | "high";
-
-export type AudioStoragePolicy = "store" | "delete24h" | "never";
 
 /** Which backend runs an AI step: cloud Groq or on-device local model. */
 export type ModelBackend = "groq" | "local";
@@ -27,10 +25,9 @@ export interface Settings {
   copyShortcut: string;
   commandShortcut: string; // Phase 7: Command Mode push-to-talk shortcut
   scratchpadShortcut: string; // Phase 9: opens the floating Scratchpad window
+  undoShortcut: string; // 4.2: deletes the last injection (one Backspace per char)
   bubbleScale: number; // Flow Bar size multiplier (1.0 = default)
   bubbleOpacity: number; // Flow Bar opacity (0–1)
-  audioStoragePolicy: AudioStoragePolicy; // retention of saved audio (Phase 3)
-  audioRetentionHours: number; // window for "delete24h"
   transcriptionBackend: ModelBackend; // legacy speech backend field ("groq"|"local"); superseded by transcriptionProvider
   polishBackend: ModelBackend; // local models: polish backend
   transcriptionProvider: string; // Phase 3 providers B: speech→text backend ("groq"|"openai"|"deepgram"|"local"; "" = resolve from transcriptionBackend)
@@ -55,12 +52,14 @@ export interface Settings {
   onboardingComplete: boolean; // Phase 10: first-run flow finished
   launchAtStartup: boolean; // Phase 11: start Eve at OS login
   activationMode: ActivationMode; // Parity A1: hold / toggle / hybrid
+  autoStopSilenceSecs: number; // 4.5: toggle/hybrid auto-stop after N silent seconds (0 = off)
   modifierTrigger: string; // Parity A3: bare-modifier trigger id ("" = none)
   mouseTrigger: string; // Parity A4: mouse-button trigger id ("" = none)
   translateToEnglish: boolean; // Parity D: Translate all audio to English
   whisperPrompt: string; // Parity D: Initial prompt passed to the Whisper transcriber
   soundOnStart: boolean; // Parity E2: Play a sound when recording starts
   cjkAutocorrect: boolean; // Parity E5: Automatically correct spacing in CJK languages
+  liveNoiseGate: boolean; // 4.7: drop digital silence during capture (before upload)
   barPosition: "fixed" | "near_caret"; // Parity E6: Flow Bar window position
 }
 
@@ -73,10 +72,9 @@ export const DEFAULT_SETTINGS: Settings = {
   copyShortcut: "CmdOrCtrl+Shift+C",
   commandShortcut: "CmdOrCtrl+Shift+Alt+Space",
   scratchpadShortcut: "CmdOrCtrl+Shift+S",
+  undoShortcut: "CmdOrCtrl+Shift+Alt+Z",
   bubbleScale: 1.0,
   bubbleOpacity: 1.0,
-  audioStoragePolicy: "delete24h",
-  audioRetentionHours: 24,
   transcriptionBackend: "groq",
   polishBackend: "groq",
   transcriptionProvider: "",
@@ -101,12 +99,14 @@ export const DEFAULT_SETTINGS: Settings = {
   onboardingComplete: false,
   launchAtStartup: false,
   activationMode: "hold",
+  autoStopSilenceSecs: 0,
   modifierTrigger: "",
   mouseTrigger: "",
   translateToEnglish: false,
   whisperPrompt: "",
   soundOnStart: false,
   cjkAutocorrect: true,
+  liveNoiseGate: true,
   barPosition: "fixed",
 };
 
@@ -121,7 +121,6 @@ export interface Transcript {
   polishedText: string;
   cleanupLevel: string;
   language: string;
-  audioPath: string | null;
   appProcess: string;
   appTitle: string;
   appCategory: string;
@@ -205,10 +204,14 @@ export interface FlowStyle {
   id: number;
   name: string;
   appCategory: AppCategory;
+  /** 4.3: exact-process scope ("" = whole-category default). */
+  appProcess: string;
   tone: FlowTone;
   systemPrompt: string;
   writingSample: string;
   isActive: boolean;
+  /** 4.4: optional accelerator that arms this style for the next dictation. */
+  shortcut: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -228,9 +231,6 @@ export interface Transform {
   createdAt: number;
   updatedAt: number;
 }
-
-/** Convert a stored audio file path into an asset:// URL the `<audio>` tag can load. */
-export const audioSrc = (path: string): string => convertFileSrc(path);
 
 // ---------------------------------------------------------------------------
 // Scratchpad (Phase 9) — mirrors src-tauri/src/db/scratchpad.rs
@@ -426,6 +426,8 @@ export const api = {
   recoverTranscript: (id: number) => invoke<void>("recover_transcript", { id }),
   clearHistory: () => invoke<void>("clear_history"),
   getStats: (range: StatsRange) => invoke<Stats>("get_stats", { range }),
+  /** Paste text into whatever app currently has focus (History re-inject). */
+  pasteText: (text: string) => invoke<void>("paste_text", { text }),
   // Dictionary (Phase 4)
   getDictionary: (query?: string) =>
     invoke<DictionaryEntry[]>("get_dictionary", { query: query ?? null }),
@@ -451,14 +453,18 @@ export const api = {
     writingSample: string,
     isActive: boolean,
     name = "",
+    appProcess = "",
+    shortcut = "",
   ) =>
     invoke<number>("upsert_flow_style", {
       name,
       appCategory,
+      appProcess,
       tone,
       systemPrompt,
       writingSample,
       isActive,
+      shortcut,
     }),
   deleteFlowStyle: (id: number) => invoke<void>("delete_flow_style", { id }),
   // Command Mode + Transforms (Phase 7)
@@ -482,6 +488,7 @@ export const api = {
   // Scratchpad (Phase 9)
   setScratchpadShortcut: (shortcut: string) =>
     invoke<void>("set_scratchpad_shortcut", { shortcut }),
+  setUndoShortcut: (shortcut: string) => invoke<void>("set_undo_shortcut", { shortcut }),
   openScratchpad: () => invoke<void>("open_scratchpad"),
   getScratchpadTabs: () => invoke<ScratchpadTab[]>("get_scratchpad_tabs"),
   createScratchpadTab: (title?: string) =>
@@ -509,4 +516,18 @@ export const api = {
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   checkForUpdate: () => invoke<string | null>("check_for_update"),
   installUpdate: () => invoke<boolean>("install_update"),
+  // Backup bundle (4.6): settings (no secrets) + dictionary + snippets + styles
+  // + transforms (+ optional history) as one JSON file.
+  exportBackup: (path: string, includeHistory: boolean) =>
+    invoke<void>("export_backup", { path, includeHistory }),
+  importBackup: (path: string) => invoke<ImportSummary>("import_backup", { path }),
 };
+
+/** What a backup restore changed (mirrors ImportSummary in Rust). */
+export interface ImportSummary {
+  dictionary: number;
+  snippets: number;
+  flowStyles: number;
+  transforms: number;
+  transcripts: number;
+}

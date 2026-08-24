@@ -52,19 +52,16 @@ pub struct Settings {
     /// window. Dictating while it's focused routes text into the editor.
     #[serde(default = "default_scratchpad_shortcut")]
     pub scratchpad_shortcut: String,
+    /// 4.2: global shortcut that undoes (recalls) the last injection by
+    /// re-focusing its target and sending one Backspace per character.
+    #[serde(default = "default_undo_shortcut")]
+    pub undo_shortcut: String,
     /// Flow Bar size multiplier (1.0 = default). Phase 2 appearance setting.
     #[serde(default = "default_bubble_scale")]
     pub bubble_scale: f32,
     /// Flow Bar opacity (0.0–1.0). Phase 2 appearance setting.
     #[serde(default = "default_bubble_opacity")]
     pub bubble_opacity: f32,
-    /// Phase 3 audio retention: "store" (keep forever), "delete24h" (prune after
-    /// `audio_retention_hours`), or "never" (don't save audio at all).
-    #[serde(default = "default_audio_storage_policy")]
-    pub audio_storage_policy: String,
-    /// Hours to keep saved audio when the policy is "delete24h".
-    #[serde(default = "default_audio_retention_hours")]
-    pub audio_retention_hours: u32,
     /// Local-models: which backend runs speech→text. "groq" (cloud) or "local"
     /// (on-device whisper.cpp). Falls back to Groq if the local model fails.
     #[serde(default = "default_backend")]
@@ -181,6 +178,10 @@ pub struct Settings {
     /// behaves like push-to-talk).
     #[serde(default = "default_activation_mode")]
     pub activation_mode: String,
+    /// 4.5: hands-free auto-stop for toggle/hybrid mode - end the recording
+    /// after this many seconds below the silence threshold. 0 = off.
+    #[serde(default)]
+    pub auto_stop_silence_secs: u32,
     /// Parity A3: a bare modifier key (e.g. "right_alt") as an additional
     /// record trigger, handled by a low-level keyboard hook because the
     /// global-shortcut plugin can't express modifier-only accelerators.
@@ -204,6 +205,12 @@ pub struct Settings {
     /// Parity E5: Automatically correct spacing in CJK languages.
     #[serde(default = "default_true")]
     pub cjk_autocorrect: bool,
+    /// 4.7: live noise gate - drop digital silence in the capture callback
+    /// before it reaches the buffer (benefits the cloud path, which otherwise
+    /// uploads raw lead-in/tail silence). On by default; thresholds are
+    /// conservative so soft speech is never gated.
+    #[serde(default = "default_true")]
+    pub live_noise_gate: bool,
     /// Parity E6: Flow Bar window position ("fixed" or "near_caret").
     #[serde(default = "default_bar_position")]
     pub bar_position: String,
@@ -246,17 +253,14 @@ fn default_command_shortcut() -> String {
 fn default_scratchpad_shortcut() -> String {
     "CmdOrCtrl+Shift+S".into()
 }
+fn default_undo_shortcut() -> String {
+    "CmdOrCtrl+Shift+Alt+Z".into()
+}
 fn default_bubble_scale() -> f32 {
     1.0
 }
 fn default_bubble_opacity() -> f32 {
     1.0
-}
-fn default_audio_storage_policy() -> String {
-    "delete24h".into()
-}
-fn default_audio_retention_hours() -> u32 {
-    24
 }
 fn default_backend() -> String {
     // Store edition is offline-first: default both backends to the on-device
@@ -304,10 +308,9 @@ impl Default for Settings {
             copy_shortcut: default_copy_shortcut(),
             command_shortcut: default_command_shortcut(),
             scratchpad_shortcut: default_scratchpad_shortcut(),
+            undo_shortcut: default_undo_shortcut(),
             bubble_scale: default_bubble_scale(),
             bubble_opacity: default_bubble_opacity(),
-            audio_storage_policy: default_audio_storage_policy(),
-            audio_retention_hours: default_audio_retention_hours(),
             transcription_backend: default_backend(),
             polish_backend: default_backend(),
             transcription_provider: String::new(),
@@ -332,12 +335,14 @@ impl Default for Settings {
             onboarding_complete: false,
             launch_at_startup: false,
             activation_mode: default_activation_mode(),
+            auto_stop_silence_secs: 0,
             modifier_trigger: String::new(),
             mouse_trigger: String::new(),
             translate_to_english: false,
             whisper_prompt: String::new(),
             sound_on_start: false,
             cjk_autocorrect: true,
+            live_noise_gate: true,
             bar_position: "fixed".into(),
         }
     }

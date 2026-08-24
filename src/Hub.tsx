@@ -23,7 +23,9 @@ import {
   X,
   RefreshCw,
   Power,
+  Database,
 } from "lucide-react";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { api, DEFAULT_SETTINGS, effectiveLanguage, on, EVT, type Settings, type CleanupLevel, type Stats } from "./lib/api";
 import {
   ACTIVATION_MODES,
@@ -67,6 +69,13 @@ const SCRATCHPAD_SHORTCUT_CHOICES = [
   "CmdOrCtrl+Shift+N",
   "CmdOrCtrl+Alt+S",
   "Alt+S",
+];
+
+const UNDO_SHORTCUT_CHOICES = [
+  "CmdOrCtrl+Shift+Alt+Z",
+  "CmdOrCtrl+Shift+Z",
+  "CmdOrCtrl+Alt+Z",
+  "Alt+Z",
 ];
 
 type Nav =
@@ -478,6 +487,25 @@ function SettingsPanel({
           </p>
         </div>
 
+        {settings.activationMode !== "hold" && (
+          <div className="mt-4">
+            <Select
+              value={String(settings.autoStopSilenceSecs)}
+              onChange={(v) => persist({ ...settings, autoStopSilenceSecs: Number(v) })}
+              options={[
+                { value: "0", label: "Auto-stop: off" },
+                { value: "1", label: "Auto-stop after 1s silence" },
+                { value: "2", label: "Auto-stop after 2s silence" },
+                { value: "3", label: "Auto-stop after 3s silence" },
+                { value: "5", label: "Auto-stop after 5s silence" },
+              ]}
+            />
+            <p className="mt-2 text-xs text-ink-faint">
+              Hands-free: end the recording automatically when you've been quiet for this long.
+            </p>
+          </div>
+        )}
+
         {isWayland ? (
           <p className="mt-4 text-xs text-ink-faint">
             On Wayland, the desktop's global-shortcut portal owns your triggers: bare-modifier
@@ -535,10 +563,20 @@ function SettingsPanel({
             className="size-4 shrink-0 accent-accent"
           />
         </label>
+        <label className="flex items-center justify-between gap-4 mt-1.5 py-1.5 cursor-pointer">
+          <span className="text-sm text-ink-soft">Live noise gate</span>
+          <input
+            type="checkbox"
+            checked={settings.liveNoiseGate}
+            onChange={(e) => persist({ ...settings, liveNoiseGate: e.target.checked })}
+            className="size-4 shrink-0 accent-accent"
+          />
+        </label>
         <p className="mt-2 text-xs text-ink-faint">
           Which microphone to record from. “System default” follows your Windows input device.
           The choice applies to your next dictation; if the selected mic is unavailable, Eve
-          falls back to the default.
+          falls back to the default. The noise gate skips dead silence before upload without
+          touching soft speech.
         </p>
       </Section>
 
@@ -660,6 +698,23 @@ function SettingsPanel({
         >
           Open Scratchpad
         </button>
+      </Section>
+
+      <Section title="Undo last injection" icon={<Sparkles size={16} />}>
+        <Select
+          value={settings.undoShortcut}
+          onChange={async (v) => {
+            const next = { ...settings, undoShortcut: v };
+            setSettings(next);
+            await api.setUndoShortcut(v).catch(() => {});
+          }}
+          options={UNDO_SHORTCUT_CHOICES.map((s) => ({ value: s, label: s }))}
+        />
+        <p className="mt-2 text-xs text-ink-faint">
+          Press this to delete what Eve just pasted (re-focuses the target and sends one
+          Backspace per character). Best-effort: if you typed or moved the cursor since the paste,
+          the Backspaces land wherever the caret is now.
+        </p>
       </Section>
 
       <Section title="Vibe-coding" icon={<Code2 size={16} />}>
@@ -796,7 +851,95 @@ function SettingsPanel({
           <UpdateChecker nonce={updateNonce} />
         </div>
       </Section>
+
+      <BackupSection />
     </div>
+  );
+}
+
+/** 4.6: full backup bundle export/import (settings + dictionary + snippets +
+ * styles + transforms, optionally history; secrets never included). */
+function BackupSection() {
+  const [includeHistory, setIncludeHistory] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const onExport = async () => {
+    const path = await saveDialog({
+      defaultPath: `eve-backup-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (!path) return;
+    setBusy(true);
+    try {
+      await api.exportBackup(path, includeHistory);
+      alert("Backup saved.");
+    } catch {
+      alert("Couldn't write the backup file.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onImport = async () => {
+    const path = await openDialog({
+      multiple: false,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (!path || typeof path !== "string") return;
+    if (
+      !confirm(
+        "Restore this backup? Settings will be replaced and data rows merged into what's already here.",
+      )
+    )
+      return;
+    setBusy(true);
+    try {
+      const s = await api.importBackup(path);
+      alert(
+        `Restored: ${s.dictionary} dictionary, ${s.snippets} snippets, ${s.flowStyles} styles, ${s.transforms} transforms` +
+          (s.transcripts ? `, ${s.transcripts} transcripts` : "") +
+          ".",
+      );
+    } catch {
+      alert("That file isn't a valid Eve backup.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Section title="Backup & restore" icon={<Database size={16} />}>
+      <label className="flex cursor-pointer items-center justify-between gap-3">
+        <span className="text-sm text-ink-soft">Include history transcripts</span>
+        <input
+          type="checkbox"
+          checked={includeHistory}
+          onChange={(e) => setIncludeHistory(e.target.checked)}
+          className="size-4 shrink-0 accent-accent"
+        />
+      </label>
+      <p className="mt-2 text-xs text-ink-faint">
+        A single JSON file with your settings (shortcuts, providers,
+        privacy list), dictionary, snippets, Flow Styles, transforms, and optionally your
+        history. API keys are never included - they stay in the OS keychain.
+      </p>
+      <div className="mt-3 flex gap-2">
+        <button
+          onClick={onExport}
+          disabled={busy}
+          className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+        >
+          Export backup
+        </button>
+        <button
+          onClick={onImport}
+          disabled={busy}
+          className="rounded-xl border border-border px-4 py-2 text-sm text-ink-soft hover:bg-surface-2 disabled:opacity-50"
+        >
+          Import backup…
+        </button>
+      </div>
+    </Section>
   );
 }
 

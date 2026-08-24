@@ -8,8 +8,11 @@ import {
   ChevronLeft,
   ChevronRight,
   FileAudio,
+  ClipboardPaste,
+  Wand2,
+  X,
 } from "lucide-react";
-import { api, type Transcript } from "../lib/api";
+import { api, type Transcript, type Transform } from "../lib/api";
 
 const PER_PAGE = 20;
 
@@ -21,6 +24,12 @@ export function HistoryPage({ reloadSignal }: { reloadSignal?: number }) {
   const [loading, setLoading] = useState(true);
   // Rows soft-deleted this session, kept visible briefly so they can be recovered.
   const [recoverable, setRecoverable] = useState<Transcript[]>([]);
+  // Saved transforms for the per-card "Re-polish…" action (loaded once).
+  const [transforms, setTransforms] = useState<Transform[]>([]);
+
+  useEffect(() => {
+    api.getTransforms().then(setTransforms).catch(() => setTransforms([]));
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -129,7 +138,15 @@ export function HistoryPage({ reloadSignal }: { reloadSignal?: number }) {
         ) : items.length === 0 ? (
           <EmptyState searching={!!query.trim()} />
         ) : (
-          items.map((t) => <HistoryCard key={t.id} t={t} onDelete={() => onDelete(t)} query={query} />)
+          items.map((t) => (
+            <HistoryCard
+              key={t.id}
+              t={t}
+              transforms={transforms}
+              onDelete={() => onDelete(t)}
+              query={query}
+            />
+          ))
         )}
       </div>
 
@@ -158,13 +175,27 @@ export function HistoryPage({ reloadSignal }: { reloadSignal?: number }) {
   );
 }
 
-function HistoryCard({ t, onDelete, query }: { t: Transcript; onDelete: () => void; query: string }) {
+function HistoryCard({
+  t,
+  transforms,
+  onDelete,
+  query,
+}: {
+  t: Transcript;
+  transforms: Transform[];
+  onDelete: () => void;
+  query: string;
+}) {
   // Show polished by default; toggle to raw when they differ.
   const hasBoth = t.rawText.trim() !== t.polishedText.trim();
   const [showRaw, setShowRaw] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Result of a "Re-polish…" run over the raw transcript, shown in place.
+  const [repolished, setRepolished] = useState<{ name: string; text: string } | null>(null);
+  const [repolishing, setRepolishing] = useState(false);
+  const [pasted, setPasted] = useState(false);
 
-  const text = showRaw ? t.rawText : t.polishedText;
+  const text = repolished ? repolished.text : showRaw ? t.rawText : t.polishedText;
 
   const onCopy = async () => {
     try {
@@ -175,6 +206,32 @@ function HistoryCard({ t, onDelete, query }: { t: Transcript; onDelete: () => vo
       // Clipboard unavailable — nothing more we can do here.
     }
   };
+
+  const onPaste = async () => {
+    try {
+      await api.pasteText(text);
+      setPasted(true);
+      setTimeout(() => setPasted(false), 1200);
+    } catch {
+      // Injection failed (e.g. no focusable window) - nothing to show.
+    }
+  };
+
+  const onRepublish = async (id: string) => {
+    const transform = transforms.find((x) => String(x.id) === id);
+    if (!transform || repolishing) return;
+    const source = t.rawText.trim() || t.polishedText;
+    setRepolishing(true);
+    try {
+      const out = await api.applyTransform(transform.id, source);
+      if (out.trim()) setRepolished({ name: transform.name, text: out });
+    } catch {
+      // LLM failure - keep the current text on display.
+    } finally {
+      setRepolishing(false);
+    }
+  };
+
 
   return (
     <div className="rounded-2xl border border-border bg-surface p-4">
@@ -215,7 +272,7 @@ function HistoryCard({ t, onDelete, query }: { t: Transcript; onDelete: () => vo
           </>
         )}
 
-        {hasBoth && (
+        {hasBoth && !repolished && (
           <button
             onClick={() => setShowRaw((v) => !v)}
             className="ml-auto rounded-md border border-border px-2 py-0.5 text-ink-soft hover:bg-surface-2"
@@ -224,17 +281,58 @@ function HistoryCard({ t, onDelete, query }: { t: Transcript; onDelete: () => vo
           </button>
         )}
 
+        {repolished && (
+          <button
+            onClick={() => setRepolished(null)}
+            title="Back to the saved transcript"
+            className="ml-auto flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-accent hover:bg-surface-2"
+          >
+            <X size={12} /> {repolished.name}
+          </button>
+        )}
+
         <button
           onClick={onCopy}
           title="Copy text"
           className={
             "flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-ink-soft hover:bg-surface-2 " +
-            (hasBoth ? "" : "ml-auto")
+            (hasBoth || repolished ? "" : "ml-auto")
           }
         >
           {copied ? <Check size={12} /> : <Copy size={12} />}
           {copied ? "Copied" : "Copy"}
         </button>
+
+        <button
+          onClick={onPaste}
+          title="Paste into the focused app"
+          className="flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-ink-soft hover:bg-surface-2"
+        >
+          {pasted ? <Check size={12} /> : <ClipboardPaste size={12} />}
+          {pasted ? "Pasted" : "Paste"}
+        </button>
+
+        {!repolished && transforms.length > 0 && (
+          <span
+            className="flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-ink-soft"
+            title="Run a saved transform over the raw transcript"
+          >
+            <Wand2 size={12} className="text-ink-faint" />
+            <select
+              value=""
+              disabled={repolishing}
+              onChange={(e) => onRepublish(e.target.value)}
+              className="cursor-pointer bg-transparent text-xs outline-none disabled:opacity-50"
+            >
+              <option value="">{repolishing ? "Polishing…" : "Re-polish…"}</option>
+              {transforms.map((tr) => (
+                <option key={tr.id} value={String(tr.id)}>
+                  {tr.name}
+                </option>
+              ))}
+            </select>
+          </span>
+        )}
       </div>
     </div>
   );

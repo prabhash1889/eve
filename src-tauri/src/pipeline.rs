@@ -54,11 +54,15 @@ pub async fn process(app: AppHandle) {
         hwnd,
         context,
         to_scratchpad,
+        pending_style_id,
     ) = {
         let st = app.state::<AppState>();
         // Bind the guarded clone to a local so the MutexGuard temporary drops
         // before the block's value (the tuple) is returned.
         let context = st.current_context.lock().clone();
+        // 4.4: take (consume) a style armed by its accelerator - one-shot by
+        // design, so it applies to this dictation only.
+        let pending_style_id = st.pending_style_id.lock().take();
         (
             st.audio_buffer.clone(),
             st.sample_rate.clone(),
@@ -72,6 +76,7 @@ pub async fn process(app: AppHandle) {
             st.foreground_hwnd.load(Ordering::SeqCst),
             context,
             st.to_scratchpad.load(Ordering::SeqCst),
+            pending_style_id,
         )
     };
     let context = context.unwrap_or_else(AppContext::unknown);
@@ -202,8 +207,7 @@ pub async fn process(app: AppHandle) {
         }
     }
 
-    // Audio is never persisted — history keeps transcript text only.
-    let audio_bytes: Option<Vec<u8>> = None;
+    // 4.8: audio is never persisted - history keeps transcript text only.
 
     // Phase 4: load dictionary terms to boost recognition (Whisper `prompt`).
     // 1.P5: served from the hot-path cache (invalidated on every dictionary
@@ -304,8 +308,20 @@ pub async fn process(app: AppHandle) {
 
     // Phase 6: look up the active Flow Style for the focused app's category and
     // turn it into a StyleHint that shapes the polish prompt (tone, per-app
-    // context, optional custom instruction + writing sample).
-    let style = hot_cache.active_style(&db, context.category.as_str());
+    // context, optional custom instruction + writing sample). 4.4: a style
+    // armed by its accelerator wins over both the exact-app profile and the
+    // category default; a stale/deleted/disabled armed style is ignored.
+    let style = match pending_style_id {
+        Some(id) => {
+            let conn = db.lock();
+            crate::db::flow_styles::get(&conn, id)
+                .ok()
+                .flatten()
+                .filter(|s| s.is_active)
+        }
+        None => None,
+    }
+    .or_else(|| hot_cache.active_style(&db, context.category.as_str(), &context.process));
     let style_hint = style.map(|s| StyleHint {
         category: s.app_category,
         tone: s.tone,
@@ -442,10 +458,8 @@ pub async fn process(app: AppHandle) {
     );
     window_mgmt::hide_flowbar_after(app.clone(), 900);
 
-    let persist_app = app.clone();
     let _ = tauri::async_runtime::spawn_blocking(move || {
         persist(
-            &persist_app,
             &db,
             &raw,
             &text,
@@ -453,18 +467,16 @@ pub async fn process(app: AppHandle) {
             &lang_label,
             duration_ms,
             corrections,
-            audio_bytes,
             &context,
         );
     })
     .await;
 }
 
-/// Save the dictation to the history DB, optionally writing the WAV to disk for
-/// replay/retention. `app_*` fields carry the Phase 6 focused-app context.
+/// Save the dictation to the history DB. 4.8: no WAV is written - the audio
+/// replay plumbing was removed (YAGNI); history keeps transcript text only.
 #[allow(clippy::too_many_arguments)]
 fn persist(
-    app: &AppHandle,
     db: &Db,
     raw: &str,
     text: &str,
@@ -472,20 +484,11 @@ fn persist(
     language: &str,
     duration_ms: i64,
     corrections: i64,
-    wav: Option<Vec<u8>>,
     context: &AppContext,
 ) {
     let created_at = chrono::Utc::now().timestamp_millis();
     let word_count = text.split_whitespace().count() as i64;
     let was_polished = !matches!(level, CleanupLevel::None);
-
-    let audio_path = wav.and_then(|bytes| {
-        let dir = app.path().app_data_dir().ok()?.join("audio");
-        std::fs::create_dir_all(&dir).ok()?;
-        let path = dir.join(format!("{created_at}.wav"));
-        std::fs::write(&path, bytes).ok()?;
-        Some(path.to_string_lossy().into_owned())
-    });
 
     let row = queries::NewTranscript {
         created_at,
@@ -493,7 +496,6 @@ fn persist(
         polished_text: text.to_string(),
         cleanup_level: level.as_str().to_string(),
         language: language.to_string(),
-        audio_path,
         app_process: context.process.clone(),
         app_title: context.title.clone(),
         app_category: context.category.as_str().to_string(),

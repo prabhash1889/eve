@@ -4,10 +4,10 @@
 //! transcription. Structs serialize as `camelCase` for the TS mirror.
 
 use rusqlite::{params, Connection, Row};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// One dictionary term as shown on the Dictionary page.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DictionaryEntry {
     pub id: i64,

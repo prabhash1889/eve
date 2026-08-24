@@ -5,14 +5,15 @@
 //! primitives `on_press`/`on_release`. Esc → cancel.
 
 use std::sync::atomic::Ordering;
+use std::thread;
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 use crate::state::AppState;
-use crate::{events, llm, pipeline, window_mgmt};
+use crate::{events, injection, llm, pipeline, window_mgmt};
 
 /// Parity A1: in hybrid mode, a press shorter than this is a "tap" that arms a
 /// hands-free toggle; holding past it behaves like push-to-talk.
@@ -170,7 +171,10 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
     // Start the microphone before touching the Flow Bar: positioning it can
     // fall back to UIA COM (tens of ms on this callback thread), which would
     // delay capture start long enough to clip first syllables.
-    let device_name = st.settings.lock().input_device.clone();
+    let (device_name, live_noise_gate) = {
+        let s = st.settings.lock();
+        (s.input_device.clone(), s.live_noise_gate)
+    };
     st.capture.start(
         app.clone(),
         st.is_recording.clone(),
@@ -178,6 +182,7 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
         st.sample_rate.clone(),
         st.current_amplitude.clone(),
         device_name,
+        live_noise_gate,
     );
 
     // Tell the (event-only) Flow Bar how to size/fade itself for this session.
@@ -195,6 +200,66 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
         },
     );
     window_mgmt::position_flowbar_near_caret_async(app.clone());
+
+    // 4.5: hands-free auto-stop. In toggle/hybrid modes with the feature on, a
+    // watcher ends the recording after the configured seconds of silence - the
+    // user never has to press the trigger again to stop.
+    let mode = st.settings.lock().activation_mode.clone();
+    if (mode == "toggle" || mode == "hybrid") && st.settings.lock().auto_stop_silence_secs > 0 {
+        spawn_silence_watcher(app.clone(), st);
+    }
+}
+
+/// Peak-amplitude level below which a capture tick counts as silence for the
+/// auto-stop watcher. Deliberately low: it should only trip on true quiet, not
+/// on soft speech or ordinary room noise.
+const SILENCE_PEAK_THRESHOLD: f32 = 0.02;
+
+/// How often the watcher samples the amplitude (and how quickly it reacts once
+/// the silence budget is spent).
+const SILENCE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Minimum recording age before auto-stop may fire, so an immediate pause
+/// before speaking doesn't kill the session before it starts.
+const SILENCE_MIN_RECORD_MS: u64 = 1_000;
+
+fn spawn_silence_watcher(app: AppHandle, st: &AppState) {
+    let is_recording = st.is_recording.clone();
+    let amp = st.current_amplitude.clone();
+    let started = std::time::Instant::now();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut silent_since: Option<Instant> = None;
+        while is_recording.load(Ordering::SeqCst) {
+            thread::sleep(SILENCE_POLL_INTERVAL);
+            if !is_recording.load(Ordering::SeqCst) {
+                return;
+            }
+            // Re-read live so a settings change applies without a restart; 0
+            // disables mid-session and retires the watcher.
+            let limit_secs = app
+                .state::<AppState>()
+                .settings
+                .lock()
+                .auto_stop_silence_secs;
+            if limit_secs == 0 {
+                return;
+            }
+            if started.elapsed() < Duration::from_millis(SILENCE_MIN_RECORD_MS) {
+                continue;
+            }
+            let level = *amp.lock();
+            if level >= SILENCE_PEAK_THRESHOLD {
+                silent_since = None;
+            } else {
+                let since = *silent_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= Duration::from_secs(limit_secs.max(1) as u64) {
+                    let state = app.state::<AppState>();
+                    on_release(&app, &state);
+                    return;
+                }
+            }
+        }
+    });
 }
 
 pub fn on_release(app: &AppHandle, st: &AppState) {
@@ -245,6 +310,44 @@ pub fn on_copy(app: &AppHandle, st: &AppState) {
     window_mgmt::show_flowbar(app);
     let _ = app.emit_to(events::FLOWBAR, events::COPIED, ());
     window_mgmt::hide_flowbar_after(app.clone(), 1200);
+}
+
+/// Undo-last-injection shortcut (4.2): re-focus the last paste target and send
+/// one Backspace per injected character. No-op while a capture/pipeline is in
+/// flight (which covers the "never while INJECTING" rule - the injection runs
+/// inside the guarded pipeline), or when nothing has been injected yet.
+pub fn on_undo(app: &AppHandle, st: &AppState) {
+    if st.is_recording.load(Ordering::SeqCst) || st.is_processing.load(Ordering::SeqCst) {
+        return;
+    }
+    let Some(last) = injection::take_last_injection() else {
+        return;
+    };
+    if last.chars == 0 {
+        return;
+    }
+    window_mgmt::show_flowbar(app);
+    let _ = app.emit_to(
+        events::FLOWBAR,
+        events::STAGE,
+        events::StagePayload {
+            label: "Undoing".into(),
+        },
+    );
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || match injection::undo_last_injection(last) {
+        Ok(()) => {
+            let _ = handle.emit_to(
+                events::FLOWBAR,
+                events::DONE,
+                events::DonePayload { text: String::new() },
+            );
+            window_mgmt::hide_flowbar_after(handle, 900);
+        }
+        Err(_) => {
+            window_mgmt::fail(&handle, "Couldn't undo - target window is gone");
+        }
+    });
 }
 
 pub(crate) fn register_escape(app: &AppHandle, st: &AppState) {

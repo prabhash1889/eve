@@ -6,6 +6,7 @@
 compile_error!("`local-whisper` and `local-llm` are mutually exclusive (vendored ggml symbol clash)");
 
 mod audio;
+mod backup;
 mod command_mode;
 mod commands;
 mod config;
@@ -62,10 +63,19 @@ pub fn run() {
                     let is_copy = *st.copy_shortcut.lock() == *shortcut;
                     let is_command = *st.command_shortcut.lock() == *shortcut;
                     let is_scratchpad = *st.scratchpad_shortcut.lock() == *shortcut;
+                    // 4.2: undo-last-injection accelerator.
+                    let is_undo = *st.undo_shortcut.lock() == *shortcut;
                     // Phase 7: transform accelerators (linear-scanned, like the
                     // reserved shortcuts above).
                     let transform_id = st
                         .transform_shortcuts
+                        .lock()
+                        .iter()
+                        .find(|(sc, _)| sc == shortcut)
+                        .map(|(_, id)| *id);
+                    // 4.4: Flow Style override accelerators (linear-scanned).
+                    let style_id = st
+                        .style_shortcuts
                         .lock()
                         .iter()
                         .find(|(sc, _)| sc == shortcut)
@@ -82,8 +92,12 @@ pub fn run() {
                                 hotkey::on_copy(app, st);
                             } else if is_scratchpad {
                                 window_mgmt::open_scratchpad(app);
+                            } else if is_undo {
+                                hotkey::on_undo(app, st);
                             } else if let Some(id) = transform_id {
                                 command_mode::on_transform(app, st, id);
+                            } else if let Some(id) = style_id {
+                                command_mode::on_style_override(app, st, id);
                             }
                         }
                         ShortcutState::Released => {
@@ -93,6 +107,8 @@ pub fn run() {
                                 command_mode::on_release(app, st);
                             } else if transform_id.is_some() {
                                 command_mode::on_transform_released(st);
+                            } else if style_id.is_some() {
+                                command_mode::on_style_override_released(st);
                             }
                         }
                     }
@@ -133,21 +149,6 @@ pub fn run() {
                 bundled_models_dir,
             ));
 
-            // Retention: prune saved audio past the configured window. Done AFTER
-            // `manage()` and off the setup thread so it can't delay state
-            // registration — a release-build webview may `invoke("get_settings")`
-            // the instant it loads, and that call rejects if `AppState` isn't
-            // managed yet (which would strand the Hub on default settings and
-            // re-show first-run onboarding every launch).
-            {
-                let st = app.state::<AppState>();
-                let db = st.db.clone();
-                let settings = st.settings.lock().clone();
-                std::thread::spawn(move || {
-                    prune_audio_on_launch(&db, &settings);
-                });
-            }
-
             // Register the push-to-talk shortcut + the copy-last-transcript
             // shortcut. The copy shortcut is best-effort: a bad/duplicate
             // accelerator shouldn't stop the app from launching.
@@ -173,9 +174,14 @@ pub fn run() {
                     let _ = app.global_shortcut().register(command);
                     command_mode::register_transform_shortcuts(app.handle(), &state);
                 }
+                // 4.4: Flow Style override accelerators (best-effort).
+                command_mode::register_style_shortcuts(app.handle(), &state);
                 // Phase 9: Scratchpad open shortcut (best-effort).
                 let scratchpad = *state.scratchpad_shortcut.lock();
                 let _ = app.global_shortcut().register(scratchpad);
+                // 4.2: undo-last-injection shortcut (best-effort).
+                let undo = *state.undo_shortcut.lock();
+                let _ = app.global_shortcut().register(undo);
             }
             // Phase 4: the Wayland path - one GlobalShortcuts portal session binds
             // main/copy/command/scratchpad/transform and dispatches the compositor's
@@ -280,6 +286,7 @@ pub fn run() {
             commands::recover_transcript,
             commands::clear_history,
             commands::get_stats,
+            commands::paste_text,
             commands::get_dictionary,
             commands::upsert_dictionary_entry,
             commands::delete_dictionary_entry,
@@ -300,6 +307,7 @@ pub fn run() {
             commands::delete_transform,
             commands::apply_transform,
             commands::set_scratchpad_shortcut,
+            commands::set_undo_shortcut,
             commands::open_scratchpad,
             commands::get_scratchpad_tabs,
             commands::create_scratchpad_tab,
@@ -316,26 +324,11 @@ pub fn run() {
             commands::transcribe_files,
             commands::cancel_queue_item,
             commands::set_autostart,
+            commands::export_backup,
+            commands::import_backup,
             commands::check_for_update,
             commands::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-/// Phase 3 retention: when the policy is "delete24h", remove saved audio (file +
-/// DB pointer) older than `audio_retention_hours`. Best-effort; runs on launch.
-fn prune_audio_on_launch(db: &db::Db, settings: &config::Settings) {
-    if settings.audio_storage_policy != "delete24h" {
-        return;
-    }
-    let cutoff =
-        chrono::Utc::now().timestamp_millis() - (settings.audio_retention_hours as i64) * 3_600_000;
-    let stale = {
-        let conn = db.lock();
-        db::queries::prune_audio(&conn, cutoff).unwrap_or_default()
-    };
-    for path in stale {
-        let _ = std::fs::remove_file(&path);
-    }
 }

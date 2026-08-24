@@ -16,10 +16,33 @@ use windows::Win32::Foundation::HWND;
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-    KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, VIRTUAL_KEY, VK_C, VK_CONTROL, VK_V,
+    KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, VIRTUAL_KEY, VK_BACK, VK_C, VK_CONTROL, VK_V,
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{IsWindow, SetForegroundWindow};
+
+// --- 4.2: last-injection bookkeeping (undo / recall shortcut) -----------------
+
+/// What Eve last injected, remembered so the undo shortcut can delete it.
+#[derive(Debug, Clone, Copy)]
+pub struct LastInjection {
+    /// Foreground target the text went into (HWND as isize).
+    pub hwnd: isize,
+    /// Number of characters injected; one Backspace is sent per character.
+    pub chars: usize,
+}
+
+static LAST_INJECTION: parking_lot::Mutex<Option<LastInjection>> = parking_lot::Mutex::new(None);
+
+/// Remember a successful injection (called by [`inject`] on success only).
+fn record_last_injection(hwnd: isize, chars: usize) {
+    *LAST_INJECTION.lock() = Some(LastInjection { hwnd, chars });
+}
+
+/// Take (read-and-clear) the last-injection record.
+pub fn take_last_injection() -> Option<LastInjection> {
+    LAST_INJECTION.lock().take()
+}
 
 /// Restores a previously-saved clipboard value when dropped, so the user's prior
 /// clipboard comes back even if we bail (or panic) between writing our payload
@@ -79,10 +102,37 @@ pub fn inject(app: &AppHandle, text: &str, hwnd: isize, strategy: &str) -> anyho
     if text.is_empty() {
         return Ok(());
     }
-    if strategy == "type" {
-        return inject_type(text);
+    let result = if strategy == "type" {
+        inject_type(text)
+    } else {
+        inject_paste(app, text, hwnd)
+    };
+    // 4.2: remember successful injections so the undo shortcut can recall them.
+    if result.is_ok() {
+        record_last_injection(hwnd, text.chars().count());
     }
-    inject_paste(app, text, hwnd)
+    result
+}
+
+/// 4.2: delete the last injection by re-focusing its target and sending one
+/// Backspace per injected character. Best-effort by design: if the user (or the
+/// app) moved the cursor or typed since the paste, the backspaces hit whatever
+/// is now at the caret - this limitation is documented in the UI copy.
+#[cfg(windows)]
+pub fn undo_last_injection(last: LastInjection) -> anyhow::Result<()> {
+    if !restore_focus(last.hwnd) {
+        anyhow::bail!("Original target window is no longer available");
+    }
+    thread::sleep(Duration::from_millis(40));
+    send_backspaces(last.chars);
+    Ok(())
+}
+
+/// Non-Windows fallback for now: no cross-platform backspace helper exists yet,
+/// so undo is a documented no-op off Windows.
+#[cfg(not(windows))]
+pub fn undo_last_injection(_last: LastInjection) -> anyhow::Result<()> {
+    anyhow::bail!("Undo isn't supported on this platform yet")
 }
 
 #[cfg(windows)]
@@ -402,4 +452,30 @@ fn send_ctrl_v() {
 #[cfg(windows)]
 fn send_ctrl_c() {
     send_combo(VK_CONTROL, VK_C);
+}
+
+/// Send `count` Backspace presses via `SendInput` in small batches so target
+/// apps (and their UIs) can keep up. Capped well below any sane transcript
+/// length; each batch is press+release pairs of a single key, which every
+/// mainstream editor handles as one deletion per pair.
+#[cfg(windows)]
+fn send_backspaces(count: usize) {
+    const BATCH: usize = 64;
+    const MAX: usize = 10_000;
+    let mut remaining = count.min(MAX);
+    while remaining > 0 {
+        let n = remaining.min(BATCH);
+        let mut inputs = Vec::with_capacity(n * 2);
+        for _ in 0..n {
+            inputs.push(key_event(VK_BACK, KEYBD_EVENT_FLAGS(0)));
+            inputs.push(key_event(VK_BACK, KEYEVENTF_KEYUP));
+        }
+        unsafe {
+            SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        }
+        remaining -= n;
+        if remaining > 0 {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
