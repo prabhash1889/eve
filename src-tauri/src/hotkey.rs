@@ -139,10 +139,11 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
         return;
     }
 
-    // 1.P3: open a connection to the Groq host while the user is still talking
-    // so release-time transcription skips the TCP+TLS handshake. Fire-and-forget
-    // (spawned, errors discarded) - can never delay or fail this callback.
-    llm::prewarm_connection();
+    // 1.P3: open connections to the transcription + polish hosts while the user
+    // is still talking so release-time requests skip the TCP+TLS handshake.
+    // Fire-and-forget (spawned, errors discarded) - can never delay or fail
+    // this callback.
+    llm::prewarm_connection(&st.settings.lock().clone());
 
     crate::sound::play_start_sound(&st.settings.lock());
 

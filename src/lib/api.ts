@@ -33,6 +33,9 @@ export interface Settings {
   audioRetentionHours: number; // window for "delete24h"
   transcriptionBackend: ModelBackend; // local models: speech→text backend
   polishBackend: ModelBackend; // local models: polish backend
+  polishProvider: string; // cloud LLM for polish/Command Mode/Transforms ("groq"|"openai"|"openrouter"|"anthropic")
+  polishCloudModel: string; // model override for polishProvider ("" = provider default)
+  fallbackPolishProvider: string; // secondary provider on transient errors ("" = none)
   localWhisperModel: string; // catalog id of the selected local Whisper model
   localLlmModel: string; // catalog id of the selected local polish LLM
   localTranscriptionProfile: LocalProfile; // optimization: speed/quality profile
@@ -73,6 +76,9 @@ export const DEFAULT_SETTINGS: Settings = {
   audioRetentionHours: 24,
   transcriptionBackend: "groq",
   polishBackend: "groq",
+  polishProvider: "groq",
+  polishCloudModel: "",
+  fallbackPolishProvider: "",
   localWhisperModel: "",
   localLlmModel: "",
   localTranscriptionProfile: "balanced",

@@ -73,6 +73,21 @@ pub struct Settings {
     /// llama.cpp). Falls back to Groq on local failure.
     #[serde(default = "default_backend")]
     pub polish_backend: String,
+    /// Multi-provider polish (Phase 2 providers A): which cloud LLM runs polish,
+    /// Command Mode, and Transforms. One of "groq" | "openai" | "openrouter" |
+    /// "anthropic". An empty/unknown value falls back to "groq".
+    #[serde(default = "default_polish_provider")]
+    pub polish_provider: String,
+    /// Optional model override for `polish_provider`. Empty = the provider's
+    /// default chat model. OpenRouter ids are namespaced
+    /// (e.g. "anthropic/claude-3.5-haiku").
+    #[serde(default)]
+    pub polish_cloud_model: String,
+    /// Secondary cloud provider tried when the primary fails with a transient
+    /// error. Empty = none. Auth errors on the primary are never masked - they
+    /// surface so a wrong key is visible.
+    #[serde(default)]
+    pub fallback_polish_provider: String,
     /// Catalog id of the local speech model to use (whisper `whisper-*.bin` or
     /// `parakeet-*`). Empty until the user downloads and selects one, except in
     /// the Store edition where it defaults to the bundled Parakeet model.
@@ -235,6 +250,9 @@ fn default_backend() -> String {
         "groq".into()
     }
 }
+fn default_polish_provider() -> String {
+    "groq".into()
+}
 /// Default speech-to-text model id. The Store edition ships Parakeet bundled and
 /// selected by default; other builds start unset until the user downloads one.
 fn default_stt_model() -> String {
@@ -274,6 +292,9 @@ impl Default for Settings {
             audio_retention_hours: default_audio_retention_hours(),
             transcription_backend: default_backend(),
             polish_backend: default_backend(),
+            polish_provider: default_polish_provider(),
+            polish_cloud_model: String::new(),
+            fallback_polish_provider: String::new(),
             local_whisper_model: default_stt_model(),
             local_llm_model: String::new(),
             local_transcription_profile: default_local_profile(),

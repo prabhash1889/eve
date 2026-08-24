@@ -1,10 +1,11 @@
 //! Polish providers — the "flow" cleanup layer. v1 shipped a no-op pass-through;
-//! Phase 2 adds `GroqPolisher` (llama-3.1-8b-instant) behind this same trait.
+//! Phase 2 adds cloud polish behind this same trait, routed across providers.
 //!
-//! `pipeline::process` always installs `GroqPolisher` and passes the per-dictation
-//! `CleanupLevel`; the polisher itself short-circuits to a pass-through for
-//! `CleanupLevel::None`, so changing the level in Settings takes effect without
-//! rebuilding state. On any API error the pipeline falls back to the raw text.
+//! `pipeline::process` always installs the `RoutingPolisher` and passes the
+//! per-dictation `CleanupLevel`; the router short-circuits to a pass-through
+//! for `CleanupLevel::None`, so changing the level in Settings takes effect
+//! without rebuilding state. On any API error the pipeline falls back to the
+//! raw text.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -52,46 +53,6 @@ impl Polisher for NoOpPolisher {
         _style: Option<StyleHint>,
     ) -> anyhow::Result<String> {
         Ok(text)
-    }
-}
-
-/// Groq Llama (`llama-3.1-8b-instant`) over the OpenAI-compatible chat API.
-/// The HTTP round-trip lives in `llm::chat_with`; this just owns the model id
-/// and the prompt-building/unwrapping around it.
-pub struct GroqPolisher {
-    model: String,
-}
-
-impl GroqPolisher {
-    pub fn new() -> Self {
-        Self {
-            model: llm::DEFAULT_MODEL.into(),
-        }
-    }
-}
-
-#[async_trait]
-impl Polisher for GroqPolisher {
-    async fn polish(
-        &self,
-        text: String,
-        level: CleanupLevel,
-        style: Option<StyleHint>,
-    ) -> anyhow::Result<String> {
-        // No LLM round-trip when cleanup is off.
-        if matches!(level, CleanupLevel::None) || text.trim().is_empty() {
-            return Ok(text);
-        }
-
-        let system = system_prompt(level, style.as_ref());
-        let content = llm::chat_with(&system, &text, &self.model, 0.2).await?;
-
-        let cleaned = strip_wrapping(&content);
-        if cleaned.is_empty() {
-            // Model returned nothing usable — let the caller fall back to raw.
-            anyhow::bail!("Polish returned empty output");
-        }
-        Ok(cleaned)
     }
 }
 
@@ -460,11 +421,15 @@ fn generate(
     Ok(out)
 }
 
-/// Routes each polish call to Groq or the local LLM per the live `Settings`,
-/// falling back to Groq on local error when a key exists. `CleanupLevel::None`
-/// short-circuits before either backend is touched.
+/// Routes each polish call across the cloud LLM providers per the live
+/// `Settings` (Phase 2 providers A): primary provider -> configured fallback
+/// provider (only if its key exists) -> on-device local LLM as a last resort.
+/// Auth errors never fall back - a wrong key must surface, not be masked by a
+/// working secondary. `polish_backend == "local"` flips the order: the local
+/// model runs first and the cloud chain becomes its fallback (the pre-Phase-2
+/// behavior, generalized). `CleanupLevel::None` short-circuits before any
+/// backend is touched.
 pub struct RoutingPolisher {
-    groq: GroqPolisher,
     local: LocalPolisher,
     settings: Arc<Mutex<Settings>>,
 }
@@ -472,7 +437,6 @@ pub struct RoutingPolisher {
 impl RoutingPolisher {
     pub fn new(models_dir: PathBuf, settings: Arc<Mutex<Settings>>) -> Self {
         Self {
-            groq: GroqPolisher::new(),
             local: LocalPolisher::new(models_dir, settings.clone()),
             settings,
         }
@@ -490,16 +454,69 @@ impl Polisher for RoutingPolisher {
         if matches!(level, CleanupLevel::None) || text.trim().is_empty() {
             return Ok(text);
         }
-        let use_local = self.settings.lock().polish_backend == "local";
-        if use_local {
-            match self.local.polish(text.clone(), level, style.clone()).await {
-                Ok(out) => return Ok(out),
-                Err(e) if secrets::has_api_key() => {
-                    eprintln!("Local polish failed ({e}); falling back to Groq");
-                }
-                Err(e) => return Err(e),
+        // Snapshot the settings up front; never hold the guard across `.await`.
+        let s = self.settings.lock().clone();
+
+        // Primary + configured secondary. The secondary is skipped when it
+        // duplicates the primary or has no key configured (falling back to an
+        // unconfigured provider would just trade one error for a vaguer one).
+        let mut chain = vec![llm::resolve_chat(&s)];
+        if let Some(fb) = llm::CloudLlm::parse(&s.fallback_polish_provider) {
+            if !chain.iter().any(|c| c.provider == fb)
+                && secrets::has_provider_key(fb.key_slot())
+            {
+                chain.push(llm::CloudChat {
+                    provider: fb,
+                    model: fb.default_model().to_string(),
+                });
             }
         }
-        self.groq.polish(text, level, style).await
+
+        let local_first = s.polish_backend == "local";
+        if local_first {
+            match self.local.polish(text.clone(), level, style.clone()).await {
+                Ok(out) => return Ok(out),
+                Err(e) => eprintln!("Local polish failed ({e}); falling back to cloud"),
+            }
+        }
+
+        let mut last_err: Option<anyhow::Error> = None;
+        for target in &chain {
+            let system = system_prompt(level, style.as_ref());
+            match llm::chat_with(target, &system, &text, 0.2).await {
+                Ok(content) => {
+                    let cleaned = strip_wrapping(&content);
+                    if cleaned.is_empty() {
+                        // Model returned nothing usable - not a transport
+                        // failure, so don't burn the fallback chain; let the
+                        // caller degrade to raw text as before.
+                        anyhow::bail!("Polish returned empty output");
+                    }
+                    return Ok(cleaned);
+                }
+                Err(e) if llm::is_auth_error(&e) => return Err(e),
+                Err(e) => {
+                    eprintln!(
+                        "Polish via {} failed ({e}); trying next provider",
+                        target.provider.label()
+                    );
+                    last_err = Some(e);
+                }
+            }
+        }
+
+        if !local_first {
+            // Last resort: the on-device LLM, if built and usable.
+            match self.local.polish(text, level, style).await {
+                Ok(out) => return Ok(out),
+                Err(e) => {
+                    if last_err.is_none() {
+                        last_err = Some(e);
+                    }
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("No polish provider available")))
     }
 }

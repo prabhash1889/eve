@@ -123,6 +123,8 @@ async fn process_command(app: AppHandle) {
             st.foreground_hwnd.load(Ordering::SeqCst),
         )
     };
+    // Snapshot for the LLM step below; never hold the guard across `.await`.
+    let settings_snapshot = settings.lock().clone();
 
     // Deterministic stop handshake (mirrors `pipeline::process`): wait for the
     // capture thread to ack the stream drop + final sample flush instead of
@@ -263,7 +265,8 @@ async fn process_command(app: AppHandle) {
     .ok()
     .flatten();
 
-    let result = match run_command(selection.as_deref(), &instruction).await {
+    let result = match run_command(&settings_snapshot, selection.as_deref(), &instruction).await
+    {
         Ok(t) if !t.is_empty() => t,
         Ok(_) => {
             window_mgmt::fail(&app, "Command produced no text");
@@ -324,7 +327,7 @@ async fn run_transform_shortcut(app: AppHandle, id: i64, hwnd: isize) {
     let _processing =
         crate::pipeline::ProcessingGuard(app.state::<AppState>().is_processing.clone());
 
-    let (db, strategy, last_transcript, bubble) = {
+    let (db, strategy, last_transcript, bubble, settings_snapshot) = {
         let st = app.state::<AppState>();
         let s = st.settings.lock();
         (
@@ -332,6 +335,7 @@ async fn run_transform_shortcut(app: AppHandle, id: i64, hwnd: isize) {
             s.inject_strategy.clone(),
             st.last_transcript.clone(),
             (s.bubble_scale, s.bubble_opacity),
+            s.clone(),
         )
     };
 
@@ -368,7 +372,9 @@ async fn run_transform_shortcut(app: AppHandle, id: i64, hwnd: isize) {
         return;
     };
 
-    let result = match run_transform(&transform.system_prompt, &selection).await {
+    let result = match run_transform(&settings_snapshot, &transform.system_prompt, &selection)
+        .await
+    {
         Ok(t) if !t.is_empty() => t,
         Ok(_) => {
             window_mgmt::fail(&app, "Transform produced no text");
@@ -436,9 +442,14 @@ pub fn register_transform_shortcuts(app: &AppHandle, st: &AppState) {
 // --- LLM steps (also exposed as commands) ------------------------------------
 
 /// The Command Mode LLM step: rewrite `selection` per `instruction`, or generate
-/// fresh text from `instruction` when nothing is selected. Output is unwrapped
-/// so stray quotes/preambles don't leak into the injected text.
-pub async fn run_command(selection: Option<&str>, instruction: &str) -> anyhow::Result<String> {
+/// fresh text from `instruction` when nothing is selected. The cloud target
+/// (provider + model) resolves from the passed settings snapshot. Output is
+/// unwrapped so stray quotes/preambles don't leak into the injected text.
+pub async fn run_command(
+    settings: &crate::config::Settings,
+    selection: Option<&str>,
+    instruction: &str,
+) -> anyhow::Result<String> {
     let instruction = instruction.trim();
     let (system, user) = match selection.map(str::trim).filter(|s| !s.is_empty()) {
         Some(sel) => (
@@ -457,19 +468,25 @@ pub async fn run_command(selection: Option<&str>, instruction: &str) -> anyhow::
             instruction.to_string(),
         ),
     };
-    let out = llm::chat(&system, &user).await?;
+    let chat = llm::resolve_chat(settings);
+    let out = llm::chat(&chat, &system, &user).await?;
     Ok(polish::strip_wrapping(&out))
 }
 
 /// Apply a saved transform's `system_prompt` to `text`. Shared by the transform
 /// shortcut, the `apply_transform` command, and auto-apply in the pipeline.
-pub async fn run_transform(system_prompt: &str, text: &str) -> anyhow::Result<String> {
+pub async fn run_transform(
+    settings: &crate::config::Settings,
+    system_prompt: &str,
+    text: &str,
+) -> anyhow::Result<String> {
     let system = format!(
         "{}\n\nApply this to the user's text below. Output ONLY the resulting \
          text — no preamble, labels, quotes, or explanation.",
         system_prompt.trim()
     );
-    let out = llm::chat(&system, text).await?;
+    let chat = llm::resolve_chat(settings);
+    let out = llm::chat(&chat, &system, text).await?;
     Ok(polish::strip_wrapping(&out))
 }
 
@@ -507,9 +524,11 @@ async fn inject_and_finish(app: &AppHandle, text: &str, hwnd: isize, strategy: &
 /// Map an LLM/transcription error to a short Flow Bar message.
 fn command_error(err: &str) -> String {
     if err.contains("API key") {
-        "Set your Groq API key in Settings".into()
+        "Set your provider API key in Settings".into()
     } else if err.contains("401") || err.contains("invalid_api_key") {
-        "Invalid Groq API key".into()
+        "Invalid API key — check Settings".into()
+    } else if err.contains("403") {
+        "Access denied — check your API key".into()
     } else if err.contains("429") {
         "Rate limited — try again in a moment".into()
     } else {

@@ -516,10 +516,12 @@ pub fn set_command_shortcut(
 /// `command_mode::run_command` internally.
 #[tauri::command]
 pub async fn command_mode_rewrite(
+    state: State<'_, AppState>,
     selected_text: Option<String>,
     instruction: String,
 ) -> Result<String, String> {
-    command_mode::run_command(selected_text.as_deref(), &instruction)
+    let settings = state.settings.lock().clone();
+    command_mode::run_command(&settings, selected_text.as_deref(), &instruction)
         .await
         .map_err(|e| e.to_string())
 }
@@ -586,7 +588,8 @@ pub async fn apply_transform(
         transforms::get(&conn, id).map_err(|e| e.to_string())?
     };
     let transform = transform.ok_or_else(|| "Transform not found".to_string())?;
-    command_mode::run_transform(&transform.system_prompt, &text)
+    let settings = state.settings.lock().clone();
+    command_mode::run_transform(&settings, &transform.system_prompt, &text)
         .await
         .map_err(|e| e.to_string())
 }

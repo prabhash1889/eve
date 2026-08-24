@@ -350,10 +350,17 @@ pub async fn process(app: AppHandle) {
     // via the LLM; on error or empty output we keep the prior text so a
     // transform failure never blocks the dictation.
     let auto_transforms = hot_cache.auto_transforms(&db, context.category.as_str());
-    for t in auto_transforms {
-        if let Ok(out) = crate::command_mode::run_transform(&t.system_prompt, &text).await {
-            if !out.is_empty() {
-                text = out;
+    if !auto_transforms.is_empty() {
+        // Snapshot for the LLM calls; never hold the guard across `.await`.
+        let transform_settings = settings.lock().clone();
+        for t in auto_transforms {
+            if let Ok(out) =
+                crate::command_mode::run_transform(&transform_settings, &t.system_prompt, &text)
+                    .await
+            {
+                if !out.is_empty() {
+                    text = out;
+                }
             }
         }
     }
