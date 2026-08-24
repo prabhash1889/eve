@@ -55,8 +55,12 @@ fn select_input_device(host: &cpal::Host, name: &str) -> Option<cpal::Device> {
 /// A command to the persistent capture thread.
 enum CaptureCmd {
     /// Begin capturing from `device_name` (empty = system default). Any stream
-    /// already open is torn down first.
-    Start { device_name: String },
+    /// already open is torn down first. `noise_gate` enables the live RMS gate
+    /// that drops digital silence before it reaches the shared buffer.
+    Start {
+        device_name: String,
+        noise_gate: bool,
+    },
     /// Stop capturing and release the device. When `ack` is present, the
     /// capture thread sends on it after the stream is fully dropped and the
     /// final samples are visible in the shared buffer (the deterministic stop
@@ -96,6 +100,7 @@ impl CaptureHandle {
 
     /// Start recording. Spawns the capture thread on first use (binding the app
     /// handle and shared buffers), then reuses it for every later session.
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         &self,
         app: AppHandle,
@@ -104,12 +109,16 @@ impl CaptureHandle {
         sample_rate: Arc<AtomicU32>,
         amp: Arc<Mutex<f32>>,
         device_name: String,
+        noise_gate: bool,
     ) {
         let mut guard = self.tx.lock();
         let tx = guard.get_or_insert_with(|| {
             spawn_capture_thread(app, is_recording, buffer, sample_rate, amp)
         });
-        let _ = tx.send(CaptureCmd::Start { device_name });
+        let _ = tx.send(CaptureCmd::Start {
+            device_name,
+            noise_gate,
+        });
     }
 
     /// Stop the current recording and release the device. No-op if the thread
@@ -183,7 +192,10 @@ fn spawn_capture_thread(
             };
 
             match cmd {
-                Some(CaptureCmd::Start { device_name }) => {
+                Some(CaptureCmd::Start {
+                    device_name,
+                    noise_gate,
+                }) => {
                     // Serialized teardown: fully drop any prior stream before
                     // opening a new one so the device is never held by two
                     // streams at once.
@@ -203,6 +215,7 @@ fn spawn_capture_thread(
                         &sample_rate,
                         &app,
                         &ready_sent,
+                        noise_gate,
                     ) {
                         Ok(s) => {
                             if let Err(e) = s.play() {
@@ -252,10 +265,70 @@ fn spawn_capture_thread(
     tx
 }
 
+// --- 4.7: live noise gate -----------------------------------------------------
+
+/// Block RMS above which the gate opens (speech or real signal present).
+const GATE_OPEN_RMS: f32 = 0.005;
+/// Block RMS below which the hold countdown runs once open (hysteresis: lower
+/// than OPEN so ordinary speech pauses don't flap the gate).
+const GATE_CLOSE_RMS: f32 = 0.002;
+/// How long the gate stays open after the last above-close-threshold block,
+/// as a fraction of a second of samples - keeps soft word tails from being cut.
+const GATE_HOLD_SECS: f32 = 0.6;
+
+/// Per-stream live noise gate state (4.7). `enabled == false` short-circuits
+/// to always-append, matching the pre-4.7 behavior exactly.
+struct GateState {
+    enabled: bool,
+    open: bool,
+    /// Full "keep open" window in samples (rate × [`GATE_HOLD_SECS`]).
+    hold_full: usize,
+    /// Remaining "keep open" samples after the signal went quiet.
+    hold_samples: usize,
+}
+
+impl GateState {
+    fn new(enabled: bool, rate: u32) -> Self {
+        Self {
+            enabled,
+            open: false,
+            hold_full: (rate as f32 * GATE_HOLD_SECS) as usize,
+            hold_samples: 0,
+        }
+    }
+
+    /// Feed one callback block's RMS (mono-averaged) through the hysteresis.
+    fn update(&mut self, rms: f32, block_len: usize) {
+        if !self.enabled {
+            return;
+        }
+        if !self.open {
+            if rms >= GATE_OPEN_RMS {
+                self.open = true;
+                self.hold_samples = self.hold_full;
+            }
+        } else if rms >= GATE_CLOSE_RMS {
+            self.hold_samples = self.hold_full;
+        } else {
+            self.hold_samples = self.hold_samples.saturating_sub(block_len);
+            if self.hold_samples == 0 {
+                self.open = false;
+            }
+        }
+    }
+
+    fn should_append(&self) -> bool {
+        !self.enabled || self.open
+    }
+}
+
 /// Open a cpal input stream on the selected device, wiring its callback to
 /// append samples to `buffer`, track peak amplitude, and emit `READY` on the
 /// first non-empty block. Stores the negotiated sample rate. The returned
-/// stream is not yet playing.
+/// stream is not yet playing. With `noise_gate` on, blocks whose energy reads
+/// as silence are dropped before the buffer append (the waveform/amplitude
+/// feed still reflects the raw mic level).
+#[allow(clippy::too_many_arguments)]
 fn build_stream(
     host: &cpal::Host,
     device_name: &str,
@@ -264,6 +337,7 @@ fn build_stream(
     sample_rate: &Arc<AtomicU32>,
     app: &AppHandle,
     ready_sent: &Arc<AtomicBool>,
+    noise_gate: bool,
 ) -> Result<cpal::Stream, String> {
     let device =
         select_input_device(host, device_name).ok_or_else(|| "No microphone found".to_string())?;
@@ -274,7 +348,8 @@ fn build_stream(
     let sample_format = config.sample_format();
     let stream_config: cpal::StreamConfig = config.into();
     let channels = stream_config.channels as usize;
-    sample_rate.store(stream_config.sample_rate.0, Ordering::SeqCst);
+    let rate = stream_config.sample_rate.0;
+    sample_rate.store(rate, Ordering::SeqCst);
 
     let err_fn = |e| eprintln!("[audio] stream error: {e}");
 
@@ -284,13 +359,14 @@ fn build_stream(
             let a = amp.clone();
             let app_handle = app.clone();
             let ready_sent_clone = ready_sent.clone();
+            let mut gate = GateState::new(noise_gate, rate);
             device.build_input_stream(
                 &stream_config,
                 move |data: &[f32], _: &_| {
                     if !data.is_empty() && !ready_sent_clone.swap(true, Ordering::SeqCst) {
                         let _ = app_handle.emit_to(events::FLOWBAR, events::READY, ());
                     }
-                    ingest_f32(data, channels, &b, &a);
+                    ingest_f32(data, channels, &b, &a, &mut gate);
                 },
                 err_fn,
                 None,
@@ -301,13 +377,14 @@ fn build_stream(
             let a = amp.clone();
             let app_handle = app.clone();
             let ready_sent_clone = ready_sent.clone();
+            let mut gate = GateState::new(noise_gate, rate);
             device.build_input_stream(
                 &stream_config,
                 move |data: &[i16], _: &_| {
                     if !data.is_empty() && !ready_sent_clone.swap(true, Ordering::SeqCst) {
                         let _ = app_handle.emit_to(events::FLOWBAR, events::READY, ());
                     }
-                    ingest_i16(data, channels, &b, &a);
+                    ingest_i16(data, channels, &b, &a, &mut gate);
                 },
                 err_fn,
                 None,
@@ -319,40 +396,81 @@ fn build_stream(
     stream_result.map_err(|e| format!("Audio stream error: {e}"))
 }
 
-fn ingest_f32(data: &[f32], channels: usize, buffer: &Mutex<Vec<f32>>, amp: &Mutex<f32>) {
+fn ingest_f32(
+    data: &[f32],
+    channels: usize,
+    buffer: &Mutex<Vec<f32>>,
+    amp: &Mutex<f32>,
+    gate: &mut GateState,
+) {
+    // First pass: block RMS (over channel-averaged frames) for the gate, and
+    // the peak for the amplitude feed.
+    let mut sum_sq = 0.0f32;
+    let mut peak = 0.0f32;
+    let frames = data.len() / channels.max(1);
+    for frame in data.chunks(channels.max(1)) {
+        let m = if channels <= 1 {
+            *frame.first().unwrap_or(&0.0)
+        } else {
+            frame.iter().copied().sum::<f32>() / channels as f32
+        };
+        sum_sq += m * m;
+        peak = peak.max(m.abs());
+    }
+    let rms = if frames > 0 { (sum_sq / frames as f32).sqrt() } else { 0.0 };
+
+    gate.update(rms, data.len());
+
+    if !gate.should_append() {
+        *amp.lock() = peak;
+        return;
+    }
+
     let mut buf = buffer.lock();
     let full = buf.len() >= MAX_CAPTURE_SAMPLES;
-    let mut peak = 0.0f32;
     if channels <= 1 {
         if !full {
             buf.extend_from_slice(data);
         }
-        for &s in data {
-            peak = peak.max(s.abs());
-        }
-    } else {
+    } else if !full {
         for frame in data.chunks(channels) {
-            let m = frame.iter().copied().sum::<f32>() / channels as f32;
-            if !full {
-                buf.push(m);
-            }
-            peak = peak.max(m.abs());
+            buf.push(frame.iter().copied().sum::<f32>() / channels as f32);
         }
     }
     *amp.lock() = peak;
 }
 
-fn ingest_i16(data: &[i16], channels: usize, buffer: &Mutex<Vec<f32>>, amp: &Mutex<f32>) {
+fn ingest_i16(
+    data: &[i16],
+    channels: usize,
+    buffer: &Mutex<Vec<f32>>,
+    amp: &Mutex<f32>,
+    gate: &mut GateState,
+) {
+    let mut sum_sq = 0.0f32;
+    let mut peak = 0.0f32;
+    let ch = channels.max(1);
+    let frames = data.len() / ch;
+    let mut mono = Vec::with_capacity(frames);
+    for frame in data.chunks(ch) {
+        let m = frame.iter().map(|&s| s as f32 / 32768.0).sum::<f32>() / ch as f32;
+        mono.push(m);
+        sum_sq += m * m;
+        peak = peak.max(m.abs());
+    }
+    let rms = if frames > 0 { (sum_sq / frames as f32).sqrt() } else { 0.0 };
+
+    gate.update(rms, data.len());
+
+    if !gate.should_append() {
+        *amp.lock() = peak;
+        return;
+    }
+
     let mut buf = buffer.lock();
     let full = buf.len() >= MAX_CAPTURE_SAMPLES;
-    let mut peak = 0.0f32;
-    for frame in data.chunks(channels.max(1)) {
-        let sum: f32 = frame.iter().map(|&s| s as f32 / 32768.0).sum();
-        let m = sum / channels.max(1) as f32;
-        if !full {
-            buf.push(m);
-        }
-        peak = peak.max(m.abs());
+    if !full {
+        buf.extend_from_slice(&mono);
     }
     *amp.lock() = peak;
 }

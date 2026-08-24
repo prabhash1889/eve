@@ -63,6 +63,7 @@ export interface Settings {
   whisperPrompt: string; // Parity D: Initial prompt passed to the Whisper transcriber
   soundOnStart: boolean; // Parity E2: Play a sound when recording starts
   cjkAutocorrect: boolean; // Parity E5: Automatically correct spacing in CJK languages
+  liveNoiseGate: boolean; // 4.7: drop digital silence during capture (before upload)
   barPosition: "fixed" | "near_caret"; // Parity E6: Flow Bar window position
 }
 
@@ -111,6 +112,7 @@ export const DEFAULT_SETTINGS: Settings = {
   whisperPrompt: "",
   soundOnStart: false,
   cjkAutocorrect: true,
+  liveNoiseGate: true,
   barPosition: "fixed",
 };
 

@@ -212,6 +212,12 @@ pub struct Settings {
     /// Parity E5: Automatically correct spacing in CJK languages.
     #[serde(default = "default_true")]
     pub cjk_autocorrect: bool,
+    /// 4.7: live noise gate - drop digital silence in the capture callback
+    /// before it reaches the buffer (benefits the cloud path, which otherwise
+    /// uploads raw lead-in/tail silence). On by default; thresholds are
+    /// conservative so soft speech is never gated.
+    #[serde(default = "default_true")]
+    pub live_noise_gate: bool,
     /// Parity E6: Flow Bar window position ("fixed" or "near_caret").
     #[serde(default = "default_bar_position")]
     pub bar_position: String,
@@ -351,6 +357,7 @@ impl Default for Settings {
             whisper_prompt: String::new(),
             sound_on_start: false,
             cjk_autocorrect: true,
+            live_noise_gate: true,
             bar_position: "fixed".into(),
         }
     }

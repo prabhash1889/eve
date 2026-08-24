@@ -563,10 +563,20 @@ function SettingsPanel({
             className="size-4 shrink-0 accent-accent"
           />
         </label>
+        <label className="flex items-center justify-between gap-4 mt-1.5 py-1.5 cursor-pointer">
+          <span className="text-sm text-ink-soft">Live noise gate</span>
+          <input
+            type="checkbox"
+            checked={settings.liveNoiseGate}
+            onChange={(e) => persist({ ...settings, liveNoiseGate: e.target.checked })}
+            className="size-4 shrink-0 accent-accent"
+          />
+        </label>
         <p className="mt-2 text-xs text-ink-faint">
           Which microphone to record from. “System default” follows your Windows input device.
           The choice applies to your next dictation; if the selected mic is unavailable, Eve
-          falls back to the default.
+          falls back to the default. The noise gate skips dead silence before upload without
+          touching soft speech.
         </p>
       </Section>
 

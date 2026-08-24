@@ -71,7 +71,10 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
 
     hotkey::register_escape(app, st);
 
-    let device_name = st.settings.lock().input_device.clone();
+    let (device_name, live_noise_gate) = {
+        let s = st.settings.lock();
+        (s.input_device.clone(), s.live_noise_gate)
+    };
     st.capture.start(
         app.clone(),
         st.is_recording.clone(),
@@ -79,6 +82,7 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
         st.sample_rate.clone(),
         st.current_amplitude.clone(),
         device_name,
+        live_noise_gate,
     );
 }
 

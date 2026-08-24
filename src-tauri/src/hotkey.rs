@@ -171,7 +171,10 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
     // Start the microphone before touching the Flow Bar: positioning it can
     // fall back to UIA COM (tens of ms on this callback thread), which would
     // delay capture start long enough to clip first syllables.
-    let device_name = st.settings.lock().input_device.clone();
+    let (device_name, live_noise_gate) = {
+        let s = st.settings.lock();
+        (s.input_device.clone(), s.live_noise_gate)
+    };
     st.capture.start(
         app.clone(),
         st.is_recording.clone(),
@@ -179,6 +182,7 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
         st.sample_rate.clone(),
         st.current_amplitude.clone(),
         device_name,
+        live_noise_gate,
     );
 
     // Tell the (event-only) Flow Bar how to size/fade itself for this session.
