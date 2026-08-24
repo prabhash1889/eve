@@ -1221,7 +1221,9 @@ function ProvidersSection({
           placeholder={
             speechProvider === "local"
               ? "Local model is picked on the Models page"
-              : "Model — leave empty for the provider default"
+              : speechProvider === "openrouter"
+                ? "Model id e.g. openai/whisper-1 - empty = default"
+                : "Model — leave empty for the provider default"
           }
           disabled={speechProvider === "local"}
           className="mt-3 w-full rounded-xl border border-border bg-surface px-3 py-2 outline-none focus:border-accent text-sm font-mono disabled:opacity-50"
@@ -1229,7 +1231,7 @@ function ProvidersSection({
         <p className="mt-2 text-xs text-ink-faint">
           {speechProvider === "local"
             ? "Dictation runs on-device; on failure Eve falls back to your cloud speech provider when its key is set."
-            : "On rate limits or connection errors Eve switches to the fallback provider (if its key is configured). Deepgram doesn't support dictionary hints or translate-to-English."}
+            : "On rate limits or connection errors Eve switches to the fallback provider (if its key is configured). Deepgram and OpenRouter don't support translate-to-English, and dictionary hints are ignored there."}
         </p>
       </div>
 
