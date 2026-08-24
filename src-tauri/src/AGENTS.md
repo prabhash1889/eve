@@ -13,7 +13,9 @@ cloud LLM polish, and text injection into the focused app. Exposes commands and 
   `setup` (load settings, register shortcut, tray, position flowbar), and the
   `generate_handler!` command list.
 - `main.rs` — binary shim → `eve_lib::run()`.
-- `commands.rs` — `#[tauri::command]` functions invoked from the frontend.
+- `commands/` — `#[tauri::command]` functions invoked from the frontend, grouped
+  into topical submodules (`mod.rs` re-exports every command so
+  `lib.rs::generate_handler!` keeps flat `commands::x` paths).
 - `pipeline.rs::process` — the post-key-release flow.
 
 ## The dictation flow (across files)

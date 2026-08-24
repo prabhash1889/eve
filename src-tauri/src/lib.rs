@@ -10,6 +10,7 @@ mod backup;
 mod command_mode;
 mod commands;
 mod config;
+mod csv;
 mod context;
 mod db;
 mod events;

@@ -37,7 +37,7 @@ use crate::{command_mode, hotkey, window_mgmt};
 static REBIND: OnceLock<UnboundedSender<()>> = OnceLock::new();
 
 /// Ask the portal task to re-bind after a shortcut setting changed. Called from
-/// the Wayland arms of `commands::swap_global_shortcut` and
+/// the Wayland arms of `commands::shortcuts::swap_global_shortcut` and
 /// `command_mode::register_transform_shortcuts` once they've committed the
 /// change. A no-op if the task never started (portal unavailable) or has stopped.
 pub fn request_rebind() {
