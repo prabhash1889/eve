@@ -139,6 +139,7 @@ pub fn prewarm_connection(settings: &Settings) {
                 crate::transcription::CloudStt::Groq => "https://api.groq.com",
                 crate::transcription::CloudStt::OpenAi => "https://api.openai.com",
                 crate::transcription::CloudStt::Deepgram => "https://api.deepgram.com",
+                crate::transcription::CloudStt::OpenRouter => "https://openrouter.ai",
             });
         }    }
     // The polish target may be a different provider/host; warm whichever one

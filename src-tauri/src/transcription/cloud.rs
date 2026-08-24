@@ -10,7 +10,7 @@ use super::routing::CloudSpeechTarget;
 
 /// Cloud speech-to-text. Resolves the provider + model from live `Settings`
 /// per call, then dispatches to the OpenAI-compatible multipart adapter (Groq,
-/// OpenAI) or Deepgram's raw-body REST adapter.
+/// OpenAI, OpenRouter) or Deepgram's raw-body REST adapter.
 ///
 /// Note: cloud STT deliberately shares `llm::groq_client()` (the single
 /// process-wide reqwest client) so the trigger-down prewarm handshake is reused
@@ -33,7 +33,7 @@ impl CloudTranscriber {
         hints: Vec<String>,
     ) -> anyhow::Result<String> {
         match target.provider {
-            p @ (CloudStt::Groq | CloudStt::OpenAi) => {
+            p @ (CloudStt::Groq | CloudStt::OpenAi | CloudStt::OpenRouter) => {
                 self.openai_compat(p, &target.model, wav, language, hints)
                     .await
             }
@@ -42,9 +42,9 @@ impl CloudTranscriber {
     }
 
     /// OpenAI-compatible transcription API (`/audio/transcriptions` +
-    /// `/audio/translations`), shared verbatim in shape by Groq and OpenAI:
-    /// multipart form with `model`/`file`(/`language`/`prompt`) and a `{text}`
-    /// JSON response.
+    /// `/audio/translations`), shared verbatim in shape by Groq, OpenAI, and
+    /// OpenRouter: multipart form with `model`/`file`(/`language`/`prompt`)
+    /// and a `{text}` JSON response.
     async fn openai_compat(
         &self,
         provider: CloudStt,
@@ -106,12 +106,17 @@ impl CloudTranscriber {
             api_base(provider),
             if translate { "translations" } else { "transcriptions" }
         );
-        let resp = llm::groq_client()
+        let mut req = llm::groq_client()
             .post(endpoint)
-            .bearer_auth(key)
-            .multipart(form)
-            .send()
-            .await?;
+            .bearer_auth(key);
+        if matches!(provider, CloudStt::OpenRouter) {
+            // Same optional attribution headers `llm.rs` adds for OpenRouter
+            // chat traffic.
+            req = req
+                .header("HTTP-Referer", "https://eve.app")
+                .header("X-Title", "Eve");
+        }
+        let resp = req.multipart(form).send().await?;
 
         if !resp.status().is_success() {
             let status = resp.status();

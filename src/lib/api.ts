@@ -30,7 +30,7 @@ export interface Settings {
   bubbleOpacity: number; // Flow Bar opacity (0–1)
   transcriptionBackend: ModelBackend; // legacy speech backend field ("groq"|"local"); superseded by transcriptionProvider
   polishBackend: ModelBackend; // local models: polish backend
-  transcriptionProvider: string; // Phase 3 providers B: speech→text backend ("groq"|"openai"|"deepgram"|"local"; "" = resolve from transcriptionBackend)
+  transcriptionProvider: string; // Phase 3 providers B: speech→text backend ("groq"|"openai"|"deepgram"|"openrouter"|"local"; "" = resolve from transcriptionBackend)
   transcriptionCloudModel: string; // model override for transcriptionProvider ("" = provider default)
   fallbackTranscriptionProvider: string; // secondary cloud STT provider on transient errors ("" = none)
   polishProvider: string; // cloud LLM for polish/Command Mode/Transforms ("groq"|"openai"|"openrouter"|"anthropic")

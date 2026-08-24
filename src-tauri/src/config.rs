@@ -71,7 +71,8 @@ pub struct Settings {
     #[serde(default = "default_backend")]
     pub polish_backend: String,
     /// Multi-provider speech (Phase 3 providers B): which backend runs
-    /// speech-to-text. One of "groq" | "openai" | "deepgram" | "local". Empty =
+    /// speech-to-text. One of "groq" | "openai" | "deepgram" | "openrouter" |
+    /// "local". Empty =
     /// legacy install, resolve from `transcription_backend` ("local" -> local,
     /// anything else -> Groq) so existing settings keep working unchanged.
     #[serde(default)]
