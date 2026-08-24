@@ -170,7 +170,6 @@ pub fn merge_data(db: &Db, bundle: &BackupBundle) -> anyhow::Result<ImportSummar
                 polished_text: h.polished_text.clone(),
                 cleanup_level: h.cleanup_level.clone(),
                 language: h.language.clone(),
-                audio_path: None,
                 app_process: h.app_process.clone(),
                 app_title: h.app_title.clone(),
                 app_category: h.app_category.clone(),

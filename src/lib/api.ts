@@ -1,4 +1,4 @@
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn, type EventCallback } from "@tauri-apps/api/event";
 
 // ---------------------------------------------------------------------------
@@ -6,8 +6,6 @@ import { listen, type UnlistenFn, type EventCallback } from "@tauri-apps/api/eve
 // ---------------------------------------------------------------------------
 
 export type CleanupLevel = "none" | "light" | "medium" | "high";
-
-export type AudioStoragePolicy = "store" | "delete24h" | "never";
 
 /** Which backend runs an AI step: cloud Groq or on-device local model. */
 export type ModelBackend = "groq" | "local";
@@ -30,8 +28,6 @@ export interface Settings {
   undoShortcut: string; // 4.2: deletes the last injection (one Backspace per char)
   bubbleScale: number; // Flow Bar size multiplier (1.0 = default)
   bubbleOpacity: number; // Flow Bar opacity (0–1)
-  audioStoragePolicy: AudioStoragePolicy; // retention of saved audio (Phase 3)
-  audioRetentionHours: number; // window for "delete24h"
   transcriptionBackend: ModelBackend; // legacy speech backend field ("groq"|"local"); superseded by transcriptionProvider
   polishBackend: ModelBackend; // local models: polish backend
   transcriptionProvider: string; // Phase 3 providers B: speech→text backend ("groq"|"openai"|"deepgram"|"local"; "" = resolve from transcriptionBackend)
@@ -79,8 +75,6 @@ export const DEFAULT_SETTINGS: Settings = {
   undoShortcut: "CmdOrCtrl+Shift+Alt+Z",
   bubbleScale: 1.0,
   bubbleOpacity: 1.0,
-  audioStoragePolicy: "delete24h",
-  audioRetentionHours: 24,
   transcriptionBackend: "groq",
   polishBackend: "groq",
   transcriptionProvider: "",
@@ -127,7 +121,6 @@ export interface Transcript {
   polishedText: string;
   cleanupLevel: string;
   language: string;
-  audioPath: string | null;
   appProcess: string;
   appTitle: string;
   appCategory: string;
@@ -238,9 +231,6 @@ export interface Transform {
   createdAt: number;
   updatedAt: number;
 }
-
-/** Convert a stored audio file path into an asset:// URL the `<audio>` tag can load. */
-export const audioSrc = (path: string): string => convertFileSrc(path);
 
 // ---------------------------------------------------------------------------
 // Scratchpad (Phase 9) — mirrors src-tauri/src/db/scratchpad.rs

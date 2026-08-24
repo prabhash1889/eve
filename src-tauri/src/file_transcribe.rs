@@ -306,7 +306,6 @@ fn persist(
         polished_text: text.to_string(),
         cleanup_level: level.as_str().to_string(),
         language: language.to_string(),
-        audio_path: None,
         // No focused app for a file item; label History with the file name.
         app_process: String::new(),
         app_title: item.file_name.clone(),

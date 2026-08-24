@@ -149,21 +149,6 @@ pub fn run() {
                 bundled_models_dir,
             ));
 
-            // Retention: prune saved audio past the configured window. Done AFTER
-            // `manage()` and off the setup thread so it can't delay state
-            // registration — a release-build webview may `invoke("get_settings")`
-            // the instant it loads, and that call rejects if `AppState` isn't
-            // managed yet (which would strand the Hub on default settings and
-            // re-show first-run onboarding every launch).
-            {
-                let st = app.state::<AppState>();
-                let db = st.db.clone();
-                let settings = st.settings.lock().clone();
-                std::thread::spawn(move || {
-                    prune_audio_on_launch(&db, &settings);
-                });
-            }
-
             // Register the push-to-talk shortcut + the copy-last-transcript
             // shortcut. The copy shortcut is best-effort: a bad/duplicate
             // accelerator shouldn't stop the app from launching.
@@ -346,21 +331,4 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-/// Phase 3 retention: when the policy is "delete24h", remove saved audio (file +
-/// DB pointer) older than `audio_retention_hours`. Best-effort; runs on launch.
-fn prune_audio_on_launch(db: &db::Db, settings: &config::Settings) {
-    if settings.audio_storage_policy != "delete24h" {
-        return;
-    }
-    let cutoff =
-        chrono::Utc::now().timestamp_millis() - (settings.audio_retention_hours as i64) * 3_600_000;
-    let stale = {
-        let conn = db.lock();
-        db::queries::prune_audio(&conn, cutoff).unwrap_or_default()
-    };
-    for path in stale {
-        let _ = std::fs::remove_file(&path);
-    }
 }
