@@ -21,6 +21,8 @@ pub struct FlowStyle {
     pub system_prompt: String,
     pub writing_sample: String,
     pub is_active: bool,
+    /// 4.4: optional accelerator that arms this style for the next dictation.
+    pub shortcut: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -35,6 +37,7 @@ fn row_to_style(row: &Row) -> rusqlite::Result<FlowStyle> {
         system_prompt: row.get("system_prompt")?,
         writing_sample: row.get("writing_sample")?,
         is_active: row.get::<_, i64>("is_active")? != 0,
+        shortcut: row.get("shortcut")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
@@ -53,18 +56,20 @@ pub fn upsert(
     system_prompt: &str,
     writing_sample: &str,
     is_active: bool,
+    shortcut: &str,
     now: i64,
 ) -> rusqlite::Result<i64> {
     conn.execute(
         "INSERT INTO flow_styles
-            (name, app_category, app_process, tone, system_prompt, writing_sample, is_active, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?7)
+            (name, app_category, app_process, tone, system_prompt, writing_sample, is_active, shortcut, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
          ON CONFLICT(app_category, app_process) DO UPDATE SET
              name           = excluded.name,
              tone           = excluded.tone,
              system_prompt  = excluded.system_prompt,
              writing_sample = excluded.writing_sample,
              is_active      = excluded.is_active,
+             shortcut       = excluded.shortcut,
              updated_at     = excluded.updated_at",
         params![
             name,
@@ -74,6 +79,7 @@ pub fn upsert(
             system_prompt,
             writing_sample,
             is_active as i64,
+            shortcut.trim(),
             now
         ],
     )?;
@@ -97,6 +103,28 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<FlowStyle>> {
 pub fn delete(conn: &Connection, id: i64) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM flow_styles WHERE id = ?1", params![id])?;
     Ok(())
+}
+
+/// One style by id (the pipeline's one-shot hotkey override resolves its row).
+pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<FlowStyle>> {
+    let mut stmt = conn.prepare("SELECT * FROM flow_styles WHERE id = ?1")?;
+    let mut rows = stmt.query_map(params![id], row_to_style)?;
+    match rows.next() {
+        Some(r) => Ok(Some(r?)),
+        None => Ok(None),
+    }
+}
+
+/// `(id, accelerator)` for every active style with a non-empty shortcut, for
+/// the accelerator registry (4.4).
+pub fn active_shortcuts(conn: &Connection) -> rusqlite::Result<Vec<(i64, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, shortcut FROM flow_styles WHERE is_active <> 0 AND shortcut <> ''",
+    )?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 /// The active whole-category style (app_process = ''), or `None` if there

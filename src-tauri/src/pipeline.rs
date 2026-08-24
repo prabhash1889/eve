@@ -54,11 +54,15 @@ pub async fn process(app: AppHandle) {
         hwnd,
         context,
         to_scratchpad,
+        pending_style_id,
     ) = {
         let st = app.state::<AppState>();
         // Bind the guarded clone to a local so the MutexGuard temporary drops
         // before the block's value (the tuple) is returned.
         let context = st.current_context.lock().clone();
+        // 4.4: take (consume) a style armed by its accelerator - one-shot by
+        // design, so it applies to this dictation only.
+        let pending_style_id = st.pending_style_id.lock().take();
         (
             st.audio_buffer.clone(),
             st.sample_rate.clone(),
@@ -72,6 +76,7 @@ pub async fn process(app: AppHandle) {
             st.foreground_hwnd.load(Ordering::SeqCst),
             context,
             st.to_scratchpad.load(Ordering::SeqCst),
+            pending_style_id,
         )
     };
     let context = context.unwrap_or_else(AppContext::unknown);
@@ -304,8 +309,20 @@ pub async fn process(app: AppHandle) {
 
     // Phase 6: look up the active Flow Style for the focused app's category and
     // turn it into a StyleHint that shapes the polish prompt (tone, per-app
-    // context, optional custom instruction + writing sample).
-    let style = hot_cache.active_style(&db, context.category.as_str(), &context.process);
+    // context, optional custom instruction + writing sample). 4.4: a style
+    // armed by its accelerator wins over both the exact-app profile and the
+    // category default; a stale/deleted/disabled armed style is ignored.
+    let style = match pending_style_id {
+        Some(id) => {
+            let conn = db.lock();
+            crate::db::flow_styles::get(&conn, id)
+                .ok()
+                .flatten()
+                .filter(|s| s.is_active)
+        }
+        None => None,
+    }
+    .or_else(|| hot_cache.active_style(&db, context.category.as_str(), &context.process));
     let style_hint = style.map(|s| StyleHint {
         category: s.app_category,
         tone: s.tone,

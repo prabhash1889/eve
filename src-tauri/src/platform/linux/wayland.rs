@@ -120,6 +120,11 @@ fn dispatch(app: &AppHandle, id: &str, pressed: bool) {
                 .and_then(|s| s.parse::<i64>().ok())
             {
                 command_mode::on_transform(app, st, tid);
+            } else if let Some(sid) = other
+                .strip_prefix("style:")
+                .and_then(|s| s.parse::<i64>().ok())
+            {
+                command_mode::on_style_override(app, st, sid);
             }
         }
         _ => {}
@@ -174,6 +179,14 @@ fn collect_specs(app: &AppHandle) -> Vec<(String, &'static str, Option<String>)>
     };
     for (id, accel) in rows {
         specs.push((format!("transform:{id}"), "Transform selection", translate(&accel)));
+    }
+    // 4.4: Flow Style one-shot overrides ride the same portal session.
+    let style_rows = {
+        let conn = st.db.lock();
+        crate::db::flow_styles::active_shortcuts(&conn).unwrap_or_default()
+    };
+    for (id, accel) in style_rows {
+        specs.push((format!("style:{id}"), "Dictate with style", translate(&accel)));
     }
     specs
 }

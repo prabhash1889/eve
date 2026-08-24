@@ -200,6 +200,9 @@ pub struct AppState {
     /// `command_down`. Prevents the auto-repeat after a transform finishes from
     /// re-firing the transform (re-capturing the selection + re-injecting).
     pub transform_down: Arc<AtomicBool>,
+    /// 4.4: physical-down latch for style accelerators, mirroring
+    /// `transform_down` (drops key auto-repeat re-arming the override).
+    pub style_down: Arc<AtomicBool>,
     pub audio_buffer: Arc<Mutex<Vec<f32>>>,
     pub sample_rate: Arc<AtomicU32>,
     pub current_amplitude: Arc<Mutex<f32>>,
@@ -234,6 +237,13 @@ pub struct AppState {
     /// linear-scans it like the other reserved shortcuts. Rebuilt at launch and
     /// whenever transforms are edited.
     pub transform_shortcuts: Arc<Mutex<Vec<(Shortcut, i64)>>>,
+    /// 4.4: registered Flow Style accelerators paired with their style id,
+    /// same shape as `transform_shortcuts`. Pressing one arms that style for
+    /// the next dictation only.
+    pub style_shortcuts: Arc<Mutex<Vec<(Shortcut, i64)>>>,
+    /// 4.4: Flow Style id armed by its accelerator, consumed (taken) by the
+    /// next dictation pipeline run. `None` when no override is armed.
+    pub pending_style_id: Arc<Mutex<Option<i64>>>,
     pub last_transcript: Arc<Mutex<Option<String>>>,
     pub last_transcription_benchmark: Arc<Mutex<Option<TranscriptionBenchmark>>>,
     pub settings: Arc<Mutex<Settings>>,
@@ -297,6 +307,7 @@ impl AppState {
             trigger_down: Arc::new(AtomicBool::new(false)),
             command_down: Arc::new(AtomicBool::new(false)),
             transform_down: Arc::new(AtomicBool::new(false)),
+            style_down: Arc::new(AtomicBool::new(false)),
             audio_buffer: Arc::new(Mutex::new(Vec::new())),
             sample_rate: Arc::new(AtomicU32::new(16_000)),
             current_amplitude: Arc::new(Mutex::new(0.0)),
@@ -312,6 +323,8 @@ impl AppState {
             to_scratchpad: Arc::new(AtomicBool::new(false)),
             undo_shortcut: Arc::new(Mutex::new(undo)),
             transform_shortcuts: Arc::new(Mutex::new(Vec::new())),
+            style_shortcuts: Arc::new(Mutex::new(Vec::new())),
+            pending_style_id: Arc::new(Mutex::new(None)),
             last_transcript: Arc::new(Mutex::new(None)),
             last_transcription_benchmark: Arc::new(Mutex::new(None)),
             transcriber: Arc::new(RoutingTranscriber::new(

@@ -11,6 +11,8 @@ import {
   X,
 } from "lucide-react";
 import { api, type AppCategory, type FlowTone, type FlowStyle } from "../lib/api";
+import { ShortcutCapture } from "../components/ShortcutCapture";
+import { SHORTCUT_CHOICES } from "../lib/options";
 
 // The grid axes: app categories (rows) × tones (columns).
 const CATEGORIES: { value: AppCategory; label: string; icon: typeof Mail; hint: string }[] = [
@@ -239,6 +241,7 @@ function StyleFields({
 }) {
   const tone = style?.tone ?? DEFAULT_TONE;
   const isActive = style?.isActive ?? true;
+  const shortcut = style?.shortcut ?? "";
   const [sample, setSample] = useState(style?.writingSample ?? "");
   const [custom, setCustom] = useState(style?.systemPrompt ?? "");
 
@@ -253,6 +256,7 @@ function StyleFields({
     isActive?: boolean;
     writingSample?: string;
     systemPrompt?: string;
+    shortcut?: string;
   }) => {
     await api
       .upsertFlowStyle(
@@ -263,6 +267,7 @@ function StyleFields({
         next.isActive ?? isActive,
         style?.name || fallbackLabel,
         appProcess,
+        next.shortcut ?? shortcut,
       )
       .catch(() => {});
     onChanged();
@@ -327,6 +332,26 @@ function StyleFields({
             rows={2}
             className="w-full resize-y rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
           />
+        </label>
+        <label>
+          <span className="mb-1 block text-xs text-ink-faint">
+            Hotkey override (optional) - press to use this style for your next dictation
+          </span>
+          <ShortcutCapture
+            value={shortcut}
+            suggestions={SHORTCUT_CHOICES.filter((s) => s !== shortcut).slice(0, 3)}
+            onCommit={async (accel) => {
+              await save({ shortcut: accel });
+            }}
+          />
+          {shortcut && (
+            <button
+              onClick={() => save({ shortcut: "" })}
+              className="mt-1 text-xs text-ink-faint underline hover:text-danger"
+            >
+              Remove hotkey
+            </button>
+          )}
         </label>
       </div>
     </div>

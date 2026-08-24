@@ -213,6 +213,8 @@ export interface FlowStyle {
   systemPrompt: string;
   writingSample: string;
   isActive: boolean;
+  /** 4.4: optional accelerator that arms this style for the next dictation. */
+  shortcut: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -458,6 +460,7 @@ export const api = {
     isActive: boolean,
     name = "",
     appProcess = "",
+    shortcut = "",
   ) =>
     invoke<number>("upsert_flow_style", {
       name,
@@ -467,6 +470,7 @@ export const api = {
       systemPrompt,
       writingSample,
       isActive,
+      shortcut,
     }),
   deleteFlowStyle: (id: number) => invoke<void>("delete_flow_style", { id }),
   // Command Mode + Transforms (Phase 7)

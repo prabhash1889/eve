@@ -72,6 +72,13 @@ pub fn run() {
                         .iter()
                         .find(|(sc, _)| sc == shortcut)
                         .map(|(_, id)| *id);
+                    // 4.4: Flow Style override accelerators (linear-scanned).
+                    let style_id = st
+                        .style_shortcuts
+                        .lock()
+                        .iter()
+                        .find(|(sc, _)| sc == shortcut)
+                        .map(|(_, id)| *id);
                     match event.state() {
                         ShortcutState::Pressed => {
                             if is_main {
@@ -88,6 +95,8 @@ pub fn run() {
                                 hotkey::on_undo(app, st);
                             } else if let Some(id) = transform_id {
                                 command_mode::on_transform(app, st, id);
+                            } else if let Some(id) = style_id {
+                                command_mode::on_style_override(app, st, id);
                             }
                         }
                         ShortcutState::Released => {
@@ -97,6 +106,8 @@ pub fn run() {
                                 command_mode::on_release(app, st);
                             } else if transform_id.is_some() {
                                 command_mode::on_transform_released(st);
+                            } else if style_id.is_some() {
+                                command_mode::on_style_override_released(st);
                             }
                         }
                     }
@@ -177,6 +188,8 @@ pub fn run() {
                     let _ = app.global_shortcut().register(command);
                     command_mode::register_transform_shortcuts(app.handle(), &state);
                 }
+                // 4.4: Flow Style override accelerators (best-effort).
+                command_mode::register_style_shortcuts(app.handle(), &state);
                 // Phase 9: Scratchpad open shortcut (best-effort).
                 let scratchpad = *state.scratchpad_shortcut.lock();
                 let _ = app.global_shortcut().register(scratchpad);

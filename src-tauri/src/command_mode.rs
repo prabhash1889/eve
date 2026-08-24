@@ -417,13 +417,15 @@ pub fn register_transform_shortcuts(app: &AppHandle, st: &AppState) {
         current.clear();
     }
 
-    let reserved = [
+    let mut reserved = vec![
         *st.main_shortcut.lock(),
         *st.copy_shortcut.lock(),
         *st.command_shortcut.lock(),
         *st.undo_shortcut.lock(),
         st.escape_shortcut,
     ];
+    // Also exclude style accelerators so the two registries can't collide (4.4).
+    reserved.extend(st.style_shortcuts.lock().iter().map(|(sc, _)| *sc));
 
     let rows = {
         let conn = st.db.lock();
@@ -431,6 +433,99 @@ pub fn register_transform_shortcuts(app: &AppHandle, st: &AppState) {
     };
 
     let mut current = st.transform_shortcuts.lock();
+    for (id, accel) in rows {
+        let Ok(sc) = Shortcut::from_str(&accel) else {
+            continue;
+        };
+        if reserved.contains(&sc) || current.iter().any(|(existing, _)| *existing == sc) {
+            continue;
+        }
+        if gs.register(sc).is_ok() {
+            current.push((sc, id));
+        }
+    }
+}
+
+// --- Flow Style override accelerators (4.4) -----------------------------------
+
+/// A style accelerator fired: arm that Flow Style for the NEXT dictation only.
+/// No-op while a capture is in flight; harmless otherwise (the pending id is
+/// consumed by the next pipeline run, whenever that is).
+pub fn on_style_override(app: &AppHandle, st: &AppState, id: i64) {
+    // Physical-down latch: drop OS key auto-repeat (mirrors `on_transform`).
+    if st.style_down.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    if st.is_recording.load(Ordering::SeqCst) || st.is_processing.load(Ordering::SeqCst) {
+        return;
+    }
+    *st.pending_style_id.lock() = Some(id);
+
+    // Flash a confirmation on the Flow Bar with the armed style's name.
+    let name = {
+        let conn = st.db.lock();
+        crate::db::flow_styles::get(&conn, id)
+            .ok()
+            .flatten()
+            .map(|s| s.name)
+            .unwrap_or_else(|| "style".into())
+    };
+    window_mgmt::show_flowbar(app);
+    let _ = app.emit_to(
+        events::FLOWBAR,
+        events::STAGE,
+        events::StagePayload {
+            label: format!("Next dictation: {name}"),
+        },
+    );
+    window_mgmt::hide_flowbar_after(app.clone(), 1400);
+}
+
+/// Key-up for a style accelerator: clear its physical-down latch so the next
+/// fresh press is accepted (always re-arms, even when `on_style_override`
+/// refused the press).
+pub fn on_style_override_released(st: &AppState) {
+    st.style_down.store(false, Ordering::SeqCst);
+}
+
+/// Rebuild the global accelerators bound to Flow Styles: drop the previous set,
+/// then register each active style with a parseable shortcut not already taken
+/// by a reserved shortcut or a transform. Best-effort - a bad/duplicate
+/// accelerator is skipped, not fatal.
+pub fn register_style_shortcuts(app: &AppHandle, st: &AppState) {
+    // Wayland: the portal owns bindings; trigger a re-bind (rows committed above).
+    #[cfg(target_os = "linux")]
+    if crate::platform::is_wayland() {
+        crate::platform::linux::wayland::request_rebind();
+        return;
+    }
+
+    let gs = app.global_shortcut();
+
+    {
+        let mut current = st.style_shortcuts.lock();
+        for (sc, _) in current.iter() {
+            let _ = gs.unregister(*sc);
+        }
+        current.clear();
+    }
+
+    let mut reserved = vec![
+        *st.main_shortcut.lock(),
+        *st.copy_shortcut.lock(),
+        *st.command_shortcut.lock(),
+        *st.undo_shortcut.lock(),
+        st.escape_shortcut,
+    ];
+    // Also exclude transform accelerators so the two registries can't collide.
+    reserved.extend(st.transform_shortcuts.lock().iter().map(|(sc, _)| *sc));
+
+    let rows = {
+        let conn = st.db.lock();
+        crate::db::flow_styles::active_shortcuts(&conn).unwrap_or_default()
+    };
+
+    let mut current = st.style_shortcuts.lock();
     for (id, accel) in rows {
         let Ok(sc) = Shortcut::from_str(&accel) else {
             continue;

@@ -479,6 +479,7 @@ pub fn get_flow_styles(state: State<AppState>) -> Result<Vec<FlowStyle>, String>
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn upsert_flow_style(
+    app: AppHandle,
     state: State<AppState>,
     name: String,
     app_category: String,
@@ -487,6 +488,7 @@ pub fn upsert_flow_style(
     system_prompt: String,
     writing_sample: String,
     is_active: bool,
+    shortcut: String,
 ) -> Result<i64, String> {
     let category = app_category.trim();
     if category.is_empty() {
@@ -503,17 +505,25 @@ pub fn upsert_flow_style(
         system_prompt.trim(),
         writing_sample.trim(),
         is_active,
+        shortcut.trim(),
         now,
     )
     .map_err(|e| e.to_string())?;
     state.hot_cache.invalidate();
+    // 4.4: a changed/added/removed accelerator takes effect immediately.
+    command_mode::register_style_shortcuts(&app, &state);
     Ok(id)
 }
 
 #[tauri::command]
-pub fn delete_flow_style(state: State<AppState>, id: i64) -> Result<(), String> {
+pub fn delete_flow_style(
+    app: AppHandle,
+    state: State<AppState>,
+    id: i64,
+) -> Result<(), String> {
     flow_styles::delete(&state.db.lock(), id).map_err(|e| e.to_string())?;
     state.hot_cache.invalidate();
+    command_mode::register_style_shortcuts(&app, &state);
     Ok(())
 }
 
