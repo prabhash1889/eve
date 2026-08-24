@@ -52,6 +52,10 @@ pub struct Settings {
     /// window. Dictating while it's focused routes text into the editor.
     #[serde(default = "default_scratchpad_shortcut")]
     pub scratchpad_shortcut: String,
+    /// 4.2: global shortcut that undoes (recalls) the last injection by
+    /// re-focusing its target and sending one Backspace per character.
+    #[serde(default = "default_undo_shortcut")]
+    pub undo_shortcut: String,
     /// Flow Bar size multiplier (1.0 = default). Phase 2 appearance setting.
     #[serde(default = "default_bubble_scale")]
     pub bubble_scale: f32,
@@ -246,6 +250,9 @@ fn default_command_shortcut() -> String {
 fn default_scratchpad_shortcut() -> String {
     "CmdOrCtrl+Shift+S".into()
 }
+fn default_undo_shortcut() -> String {
+    "CmdOrCtrl+Shift+Alt+Z".into()
+}
 fn default_bubble_scale() -> f32 {
     1.0
 }
@@ -304,6 +311,7 @@ impl Default for Settings {
             copy_shortcut: default_copy_shortcut(),
             command_shortcut: default_command_shortcut(),
             scratchpad_shortcut: default_scratchpad_shortcut(),
+            undo_shortcut: default_undo_shortcut(),
             bubble_scale: default_bubble_scale(),
             bubble_opacity: default_bubble_opacity(),
             audio_storage_policy: default_audio_storage_policy(),

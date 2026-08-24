@@ -12,7 +12,7 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 use crate::state::AppState;
-use crate::{events, llm, pipeline, window_mgmt};
+use crate::{events, injection, llm, pipeline, window_mgmt};
 
 /// Parity A1: in hybrid mode, a press shorter than this is a "tap" that arms a
 /// hands-free toggle; holding past it behaves like push-to-talk.
@@ -245,6 +245,44 @@ pub fn on_copy(app: &AppHandle, st: &AppState) {
     window_mgmt::show_flowbar(app);
     let _ = app.emit_to(events::FLOWBAR, events::COPIED, ());
     window_mgmt::hide_flowbar_after(app.clone(), 1200);
+}
+
+/// Undo-last-injection shortcut (4.2): re-focus the last paste target and send
+/// one Backspace per injected character. No-op while a capture/pipeline is in
+/// flight (which covers the "never while INJECTING" rule - the injection runs
+/// inside the guarded pipeline), or when nothing has been injected yet.
+pub fn on_undo(app: &AppHandle, st: &AppState) {
+    if st.is_recording.load(Ordering::SeqCst) || st.is_processing.load(Ordering::SeqCst) {
+        return;
+    }
+    let Some(last) = injection::take_last_injection() else {
+        return;
+    };
+    if last.chars == 0 {
+        return;
+    }
+    window_mgmt::show_flowbar(app);
+    let _ = app.emit_to(
+        events::FLOWBAR,
+        events::STAGE,
+        events::StagePayload {
+            label: "Undoing".into(),
+        },
+    );
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || match injection::undo_last_injection(last) {
+        Ok(()) => {
+            let _ = handle.emit_to(
+                events::FLOWBAR,
+                events::DONE,
+                events::DonePayload { text: String::new() },
+            );
+            window_mgmt::hide_flowbar_after(handle, 900);
+        }
+        Err(_) => {
+            window_mgmt::fail(&handle, "Couldn't undo - target window is gone");
+        }
+    });
 }
 
 pub(crate) fn register_escape(app: &AppHandle, st: &AppState) {

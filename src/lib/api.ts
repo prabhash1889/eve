@@ -27,6 +27,7 @@ export interface Settings {
   copyShortcut: string;
   commandShortcut: string; // Phase 7: Command Mode push-to-talk shortcut
   scratchpadShortcut: string; // Phase 9: opens the floating Scratchpad window
+  undoShortcut: string; // 4.2: deletes the last injection (one Backspace per char)
   bubbleScale: number; // Flow Bar size multiplier (1.0 = default)
   bubbleOpacity: number; // Flow Bar opacity (0–1)
   audioStoragePolicy: AudioStoragePolicy; // retention of saved audio (Phase 3)
@@ -73,6 +74,7 @@ export const DEFAULT_SETTINGS: Settings = {
   copyShortcut: "CmdOrCtrl+Shift+C",
   commandShortcut: "CmdOrCtrl+Shift+Alt+Space",
   scratchpadShortcut: "CmdOrCtrl+Shift+S",
+  undoShortcut: "CmdOrCtrl+Shift+Alt+Z",
   bubbleScale: 1.0,
   bubbleOpacity: 1.0,
   audioStoragePolicy: "delete24h",
@@ -484,6 +486,7 @@ export const api = {
   // Scratchpad (Phase 9)
   setScratchpadShortcut: (shortcut: string) =>
     invoke<void>("set_scratchpad_shortcut", { shortcut }),
+  setUndoShortcut: (shortcut: string) => invoke<void>("set_undo_shortcut", { shortcut }),
   openScratchpad: () => invoke<void>("open_scratchpad"),
   getScratchpadTabs: () => invoke<ScratchpadTab[]>("get_scratchpad_tabs"),
   createScratchpadTab: (title?: string) =>

@@ -62,6 +62,8 @@ pub fn run() {
                     let is_copy = *st.copy_shortcut.lock() == *shortcut;
                     let is_command = *st.command_shortcut.lock() == *shortcut;
                     let is_scratchpad = *st.scratchpad_shortcut.lock() == *shortcut;
+                    // 4.2: undo-last-injection accelerator.
+                    let is_undo = *st.undo_shortcut.lock() == *shortcut;
                     // Phase 7: transform accelerators (linear-scanned, like the
                     // reserved shortcuts above).
                     let transform_id = st
@@ -82,6 +84,8 @@ pub fn run() {
                                 hotkey::on_copy(app, st);
                             } else if is_scratchpad {
                                 window_mgmt::open_scratchpad(app);
+                            } else if is_undo {
+                                hotkey::on_undo(app, st);
                             } else if let Some(id) = transform_id {
                                 command_mode::on_transform(app, st, id);
                             }
@@ -176,6 +180,9 @@ pub fn run() {
                 // Phase 9: Scratchpad open shortcut (best-effort).
                 let scratchpad = *state.scratchpad_shortcut.lock();
                 let _ = app.global_shortcut().register(scratchpad);
+                // 4.2: undo-last-injection shortcut (best-effort).
+                let undo = *state.undo_shortcut.lock();
+                let _ = app.global_shortcut().register(undo);
             }
             // Phase 4: the Wayland path - one GlobalShortcuts portal session binds
             // main/copy/command/scratchpad/transform and dispatches the compositor's
@@ -301,6 +308,7 @@ pub fn run() {
             commands::delete_transform,
             commands::apply_transform,
             commands::set_scratchpad_shortcut,
+            commands::set_undo_shortcut,
             commands::open_scratchpad,
             commands::get_scratchpad_tabs,
             commands::create_scratchpad_tab,

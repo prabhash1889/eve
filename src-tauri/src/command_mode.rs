@@ -421,6 +421,7 @@ pub fn register_transform_shortcuts(app: &AppHandle, st: &AppState) {
         *st.main_shortcut.lock(),
         *st.copy_shortcut.lock(),
         *st.command_shortcut.lock(),
+        *st.undo_shortcut.lock(),
         st.escape_shortcut,
     ];
 

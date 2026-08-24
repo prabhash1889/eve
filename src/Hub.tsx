@@ -69,6 +69,13 @@ const SCRATCHPAD_SHORTCUT_CHOICES = [
   "Alt+S",
 ];
 
+const UNDO_SHORTCUT_CHOICES = [
+  "CmdOrCtrl+Shift+Alt+Z",
+  "CmdOrCtrl+Shift+Z",
+  "CmdOrCtrl+Alt+Z",
+  "Alt+Z",
+];
+
 type Nav =
   | "dashboard"
   | "insights"
@@ -660,6 +667,23 @@ function SettingsPanel({
         >
           Open Scratchpad
         </button>
+      </Section>
+
+      <Section title="Undo last injection" icon={<Sparkles size={16} />}>
+        <Select
+          value={settings.undoShortcut}
+          onChange={async (v) => {
+            const next = { ...settings, undoShortcut: v };
+            setSettings(next);
+            await api.setUndoShortcut(v).catch(() => {});
+          }}
+          options={UNDO_SHORTCUT_CHOICES.map((s) => ({ value: s, label: s }))}
+        />
+        <p className="mt-2 text-xs text-ink-faint">
+          Press this to delete what Eve just pasted (re-focuses the target and sends one
+          Backspace per character). Best-effort: if you typed or moved the cursor since the paste,
+          the Backspaces land wherever the caret is now.
+        </p>
       </Section>
 
       <Section title="Vibe-coding" icon={<Code2 size={16} />}>

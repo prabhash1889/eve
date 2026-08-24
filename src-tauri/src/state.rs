@@ -202,6 +202,8 @@ pub struct AppState {
     /// routes the dictation into its editor instead of OS-pasting.
     pub scratchpad_shortcut: Arc<Mutex<Shortcut>>,
     pub to_scratchpad: Arc<AtomicBool>,
+    /// 4.2: global shortcut that deletes the last injection.
+    pub undo_shortcut: Arc<Mutex<Shortcut>>,
     /// Phase 7: registered transform accelerators paired with their transform
     /// id. A Vec (not a map) so we don't depend on `Shortcut: Hash`; the handler
     /// linear-scans it like the other reserved shortcuts. Rebuilt at launch and
@@ -252,6 +254,7 @@ impl AppState {
         let copy = parse_shortcut(&settings.copy_shortcut);
         let command = parse_shortcut(&settings.command_shortcut);
         let scratchpad = parse_shortcut(&settings.scratchpad_shortcut);
+        let undo = parse_shortcut(&settings.undo_shortcut);
         // "Escape" always parses, but fall back gracefully instead of panicking
         // at startup if a future toolkit change ever rejects it.
         let escape = parse_shortcut("Escape");
@@ -282,6 +285,7 @@ impl AppState {
             is_command_mode: Arc::new(AtomicBool::new(false)),
             scratchpad_shortcut: Arc::new(Mutex::new(scratchpad)),
             to_scratchpad: Arc::new(AtomicBool::new(false)),
+            undo_shortcut: Arc::new(Mutex::new(undo)),
             transform_shortcuts: Arc::new(Mutex::new(Vec::new())),
             last_transcript: Arc::new(Mutex::new(None)),
             last_transcription_benchmark: Arc::new(Mutex::new(None)),

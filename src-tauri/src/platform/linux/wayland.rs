@@ -112,6 +112,7 @@ fn dispatch(app: &AppHandle, id: &str, pressed: bool) {
             }
         }
         "copy" if pressed => hotkey::on_copy(app, st),
+        "undo" if pressed => hotkey::on_undo(app, st),
         "scratchpad" if pressed => window_mgmt::open_scratchpad(app),
         other if pressed => {
             if let Some(tid) = other
@@ -160,6 +161,11 @@ fn collect_specs(app: &AppHandle) -> Vec<(String, &'static str, Option<String>)>
             "scratchpad".to_string(),
             "Open scratchpad",
             translate(&s.scratchpad_shortcut),
+        ),
+        (
+            "undo".to_string(),
+            "Undo last injection",
+            translate(&s.undo_shortcut),
         ),
     ];
     let rows = {

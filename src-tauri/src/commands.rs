@@ -646,6 +646,27 @@ pub fn set_scratchpad_shortcut(
     Ok(())
 }
 
+/// Set (and re-register) the global shortcut that deletes the last injection
+/// (4.2 undo / recall).
+#[tauri::command]
+pub fn set_undo_shortcut(
+    app: AppHandle,
+    state: State<AppState>,
+    shortcut: String,
+) -> Result<(), String> {
+    let new_shortcut = state::parse_shortcut(&shortcut);
+    let old_shortcut = *state.undo_shortcut.lock();
+
+    swap_global_shortcut(&app, old_shortcut, new_shortcut)?;
+
+    *state.undo_shortcut.lock() = new_shortcut;
+
+    let mut s = state.settings.lock();
+    s.undo_shortcut = shortcut;
+    config::save(&state.settings_path, &s).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Show (and focus) the Scratchpad window — wired to the Hub sidebar item.
 #[tauri::command]
 pub fn open_scratchpad(app: AppHandle) {
