@@ -6,6 +6,7 @@
 compile_error!("`local-whisper` and `local-llm` are mutually exclusive (vendored ggml symbol clash)");
 
 mod audio;
+mod backup;
 mod command_mode;
 mod commands;
 mod config;
@@ -338,6 +339,8 @@ pub fn run() {
             commands::transcribe_files,
             commands::cancel_queue_item,
             commands::set_autostart,
+            commands::export_backup,
+            commands::import_backup,
             commands::check_for_update,
             commands::install_update,
         ])

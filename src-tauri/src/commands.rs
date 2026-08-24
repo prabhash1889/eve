@@ -733,6 +733,93 @@ pub fn cancel_queue_item(app: AppHandle, id: u64) {
     crate::file_transcribe::cancel(&app, id);
 }
 
+// --- 4.6: full backup bundle --------------------------------------------------
+
+/// Export settings (secrets excluded - keys live only in the OS keychain),
+/// dictionary, snippets, Flow Styles, transforms, and optionally all history to
+/// a single JSON file at `path`.
+#[tauri::command]
+pub fn export_backup(
+    state: State<AppState>,
+    path: String,
+    include_history: bool,
+) -> Result<(), String> {
+    let settings = state.settings.lock().clone();
+    let bundle =
+        crate::backup::build(&state.db, &settings, include_history).map_err(|e| e.to_string())?;
+    crate::backup::write_to(&bundle, std::path::Path::new(&path)).map_err(|e| e.to_string())
+}
+
+/// Restore a backup bundle written by [`export_backup`]: merge data rows and
+/// apply the bundled settings, re-registering shortcuts/triggers so everything
+/// is live without a restart.
+#[tauri::command]
+pub fn import_backup(
+    app: AppHandle,
+    state: State<AppState>,
+    path: String,
+) -> Result<crate::backup::ImportSummary, String> {
+    let bundle =
+        crate::backup::read_from(std::path::Path::new(&path)).map_err(|e| e.to_string())?;
+    let summary = crate::backup::merge_data(&state.db, &bundle).map_err(|e| e.to_string())?;
+
+    apply_bundled_settings(&app, &state, bundle.settings)?;
+
+    state.hot_cache.invalidate();
+    command_mode::register_transform_shortcuts(&app, &state);
+    command_mode::register_style_shortcuts(&app, &state);
+    Ok(summary)
+}
+
+/// Apply a settings snapshot from a bundle, swapping any registered global
+/// shortcut whose accelerator changed so the imported triggers work live.
+fn apply_bundled_settings(
+    app: &AppHandle,
+    state: &State<AppState>,
+    next: Settings,
+) -> Result<(), String> {
+    use std::str::FromStr;
+    let swap_if_changed = |field: &std::sync::Arc<parking_lot::Mutex<Shortcut>>,
+                           old_accel: &str,
+                           new_accel: &str|
+     -> Result<(), String> {
+        if old_accel == new_accel {
+            return Ok(());
+        }
+        let new_sc = Shortcut::from_str(new_accel)
+            .map_err(|_| format!("\"{new_accel}\" isn't a supported shortcut"))?;
+        swap_global_shortcut(app, *field.lock(), new_sc)?;
+        *field.lock() = new_sc;
+        Ok(())
+    };
+
+    let prev = state.settings.lock().clone();
+    swap_if_changed(&state.main_shortcut, &prev.shortcut, &next.shortcut)?;
+    swap_if_changed(&state.copy_shortcut, &prev.copy_shortcut, &next.copy_shortcut)?;
+    swap_if_changed(
+        &state.command_shortcut,
+        &prev.command_shortcut,
+        &next.command_shortcut,
+    )?;
+    swap_if_changed(
+        &state.scratchpad_shortcut,
+        &prev.scratchpad_shortcut,
+        &next.scratchpad_shortcut,
+    )?;
+    swap_if_changed(&state.undo_shortcut, &prev.undo_shortcut, &next.undo_shortcut)?;
+
+    // Republish bare-modifier / mouse-button triggers to the low-level backends.
+    #[cfg(windows)]
+    crate::hooks::update_triggers(&next);
+    #[cfg(target_os = "macos")]
+    crate::platform::macos::input::update_triggers(&next);
+    #[cfg(target_os = "linux")]
+    crate::platform::linux::x11::update_triggers(&next);
+
+    *state.settings.lock() = next.clone();
+    config::save(&state.settings_path, &next).map_err(|e| e.to_string())
+}
+
 // --- Local models ------------------------------------------------------------
 
 /// The local-model catalog with per-model installed/active/downloading flags.

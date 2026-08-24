@@ -23,7 +23,9 @@ import {
   X,
   RefreshCw,
   Power,
+  Database,
 } from "lucide-react";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { api, DEFAULT_SETTINGS, effectiveLanguage, on, EVT, type Settings, type CleanupLevel, type Stats } from "./lib/api";
 import {
   ACTIVATION_MODES,
@@ -839,7 +841,95 @@ function SettingsPanel({
           <UpdateChecker nonce={updateNonce} />
         </div>
       </Section>
+
+      <BackupSection />
     </div>
+  );
+}
+
+/** 4.6: full backup bundle export/import (settings + dictionary + snippets +
+ * styles + transforms, optionally history; secrets never included). */
+function BackupSection() {
+  const [includeHistory, setIncludeHistory] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const onExport = async () => {
+    const path = await saveDialog({
+      defaultPath: `eve-backup-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (!path) return;
+    setBusy(true);
+    try {
+      await api.exportBackup(path, includeHistory);
+      alert("Backup saved.");
+    } catch {
+      alert("Couldn't write the backup file.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onImport = async () => {
+    const path = await openDialog({
+      multiple: false,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (!path || typeof path !== "string") return;
+    if (
+      !confirm(
+        "Restore this backup? Settings will be replaced and data rows merged into what's already here.",
+      )
+    )
+      return;
+    setBusy(true);
+    try {
+      const s = await api.importBackup(path);
+      alert(
+        `Restored: ${s.dictionary} dictionary, ${s.snippets} snippets, ${s.flowStyles} styles, ${s.transforms} transforms` +
+          (s.transcripts ? `, ${s.transcripts} transcripts` : "") +
+          ".",
+      );
+    } catch {
+      alert("That file isn't a valid Eve backup.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Section title="Backup & restore" icon={<Database size={16} />}>
+      <label className="flex cursor-pointer items-center justify-between gap-3">
+        <span className="text-sm text-ink-soft">Include history transcripts</span>
+        <input
+          type="checkbox"
+          checked={includeHistory}
+          onChange={(e) => setIncludeHistory(e.target.checked)}
+          className="size-4 shrink-0 accent-accent"
+        />
+      </label>
+      <p className="mt-2 text-xs text-ink-faint">
+        A single JSON file with your settings (shortcuts, providers,
+        privacy list), dictionary, snippets, Flow Styles, transforms, and optionally your
+        history. API keys are never included - they stay in the OS keychain.
+      </p>
+      <div className="mt-3 flex gap-2">
+        <button
+          onClick={onExport}
+          disabled={busy}
+          className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+        >
+          Export backup
+        </button>
+        <button
+          onClick={onImport}
+          disabled={busy}
+          className="rounded-xl border border-border px-4 py-2 text-sm text-ink-soft hover:bg-surface-2 disabled:opacity-50"
+        >
+          Import backup…
+        </button>
+      </div>
+    </Section>
   );
 }
 

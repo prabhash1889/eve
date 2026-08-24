@@ -4,10 +4,10 @@
 //! for the TS mirror.
 
 use rusqlite::{params, Connection, Row};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// One Flow Style as shown on the Styles page.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FlowStyle {
     pub id: i64,

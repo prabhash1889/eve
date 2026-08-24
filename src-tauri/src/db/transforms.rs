@@ -4,10 +4,10 @@
 //! mirror.
 
 use rusqlite::{params, Connection, Row};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// One transform as shown on the Transforms page.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Transform {
     pub id: i64,

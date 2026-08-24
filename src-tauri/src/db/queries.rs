@@ -2,10 +2,11 @@
 //! match the TypeScript mirror in `src/lib/api.ts`.
 
 use rusqlite::{params, Connection, Row};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-/// A stored dictation, returned to the History page.
-#[derive(Debug, Clone, Serialize)]
+/// A stored dictation, returned to the History page. `Deserialize` backs the
+/// backup-bundle import (4.6).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Transcript {
     pub id: i64,
@@ -212,6 +213,18 @@ pub fn get_history(
         page,
         per_page,
     })
+}
+
+/// Every non-deleted transcript, newest first (no pagination). Used by the
+/// backup-bundle export (4.6).
+pub fn list_all_transcripts(conn: &Connection) -> rusqlite::Result<Vec<Transcript>> {
+    let mut stmt = conn.prepare(
+        "SELECT * FROM transcripts WHERE deleted_at IS NULL ORDER BY created_at DESC",
+    )?;
+    let rows = stmt
+        .query_map([], row_to_transcript)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 /// Soft delete: mark `deleted_at` so the row drops out of history but can be

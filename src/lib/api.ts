@@ -524,4 +524,18 @@ export const api = {
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   checkForUpdate: () => invoke<string | null>("check_for_update"),
   installUpdate: () => invoke<boolean>("install_update"),
+  // Backup bundle (4.6): settings (no secrets) + dictionary + snippets + styles
+  // + transforms (+ optional history) as one JSON file.
+  exportBackup: (path: string, includeHistory: boolean) =>
+    invoke<void>("export_backup", { path, includeHistory }),
+  importBackup: (path: string) => invoke<ImportSummary>("import_backup", { path }),
 };
+
+/** What a backup restore changed (mirrors ImportSummary in Rust). */
+export interface ImportSummary {
+  dictionary: number;
+  snippets: number;
+  flowStyles: number;
+  transforms: number;
+  transcripts: number;
+}
