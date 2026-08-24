@@ -485,6 +485,25 @@ function SettingsPanel({
           </p>
         </div>
 
+        {settings.activationMode !== "hold" && (
+          <div className="mt-4">
+            <Select
+              value={String(settings.autoStopSilenceSecs)}
+              onChange={(v) => persist({ ...settings, autoStopSilenceSecs: Number(v) })}
+              options={[
+                { value: "0", label: "Auto-stop: off" },
+                { value: "1", label: "Auto-stop after 1s silence" },
+                { value: "2", label: "Auto-stop after 2s silence" },
+                { value: "3", label: "Auto-stop after 3s silence" },
+                { value: "5", label: "Auto-stop after 5s silence" },
+              ]}
+            />
+            <p className="mt-2 text-xs text-ink-faint">
+              Hands-free: end the recording automatically when you've been quiet for this long.
+            </p>
+          </div>
+        )}
+
         {isWayland ? (
           <p className="mt-4 text-xs text-ink-faint">
             On Wayland, the desktop's global-shortcut portal owns your triggers: bare-modifier

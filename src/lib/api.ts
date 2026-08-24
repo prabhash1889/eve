@@ -56,6 +56,7 @@ export interface Settings {
   onboardingComplete: boolean; // Phase 10: first-run flow finished
   launchAtStartup: boolean; // Phase 11: start Eve at OS login
   activationMode: ActivationMode; // Parity A1: hold / toggle / hybrid
+  autoStopSilenceSecs: number; // 4.5: toggle/hybrid auto-stop after N silent seconds (0 = off)
   modifierTrigger: string; // Parity A3: bare-modifier trigger id ("" = none)
   mouseTrigger: string; // Parity A4: mouse-button trigger id ("" = none)
   translateToEnglish: boolean; // Parity D: Translate all audio to English
@@ -103,6 +104,7 @@ export const DEFAULT_SETTINGS: Settings = {
   onboardingComplete: false,
   launchAtStartup: false,
   activationMode: "hold",
+  autoStopSilenceSecs: 0,
   modifierTrigger: "",
   mouseTrigger: "",
   translateToEnglish: false,

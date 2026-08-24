@@ -185,6 +185,10 @@ pub struct Settings {
     /// behaves like push-to-talk).
     #[serde(default = "default_activation_mode")]
     pub activation_mode: String,
+    /// 4.5: hands-free auto-stop for toggle/hybrid mode - end the recording
+    /// after this many seconds below the silence threshold. 0 = off.
+    #[serde(default)]
+    pub auto_stop_silence_secs: u32,
     /// Parity A3: a bare modifier key (e.g. "right_alt") as an additional
     /// record trigger, handled by a low-level keyboard hook because the
     /// global-shortcut plugin can't express modifier-only accelerators.
@@ -340,6 +344,7 @@ impl Default for Settings {
             onboarding_complete: false,
             launch_at_startup: false,
             activation_mode: default_activation_mode(),
+            auto_stop_silence_secs: 0,
             modifier_trigger: String::new(),
             mouse_trigger: String::new(),
             translate_to_english: false,

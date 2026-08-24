@@ -5,9 +5,10 @@
 //! primitives `on_press`/`on_release`. Esc → cancel.
 
 use std::sync::atomic::Ordering;
+use std::thread;
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
@@ -195,6 +196,66 @@ pub fn on_press(app: &AppHandle, st: &AppState) {
         },
     );
     window_mgmt::position_flowbar_near_caret_async(app.clone());
+
+    // 4.5: hands-free auto-stop. In toggle/hybrid modes with the feature on, a
+    // watcher ends the recording after the configured seconds of silence - the
+    // user never has to press the trigger again to stop.
+    let mode = st.settings.lock().activation_mode.clone();
+    if (mode == "toggle" || mode == "hybrid") && st.settings.lock().auto_stop_silence_secs > 0 {
+        spawn_silence_watcher(app.clone(), st);
+    }
+}
+
+/// Peak-amplitude level below which a capture tick counts as silence for the
+/// auto-stop watcher. Deliberately low: it should only trip on true quiet, not
+/// on soft speech or ordinary room noise.
+const SILENCE_PEAK_THRESHOLD: f32 = 0.02;
+
+/// How often the watcher samples the amplitude (and how quickly it reacts once
+/// the silence budget is spent).
+const SILENCE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Minimum recording age before auto-stop may fire, so an immediate pause
+/// before speaking doesn't kill the session before it starts.
+const SILENCE_MIN_RECORD_MS: u64 = 1_000;
+
+fn spawn_silence_watcher(app: AppHandle, st: &AppState) {
+    let is_recording = st.is_recording.clone();
+    let amp = st.current_amplitude.clone();
+    let started = std::time::Instant::now();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut silent_since: Option<Instant> = None;
+        while is_recording.load(Ordering::SeqCst) {
+            thread::sleep(SILENCE_POLL_INTERVAL);
+            if !is_recording.load(Ordering::SeqCst) {
+                return;
+            }
+            // Re-read live so a settings change applies without a restart; 0
+            // disables mid-session and retires the watcher.
+            let limit_secs = app
+                .state::<AppState>()
+                .settings
+                .lock()
+                .auto_stop_silence_secs;
+            if limit_secs == 0 {
+                return;
+            }
+            if started.elapsed() < Duration::from_millis(SILENCE_MIN_RECORD_MS) {
+                continue;
+            }
+            let level = *amp.lock();
+            if level >= SILENCE_PEAK_THRESHOLD {
+                silent_since = None;
+            } else {
+                let since = *silent_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= Duration::from_secs(limit_secs.max(1) as u64) {
+                    let state = app.state::<AppState>();
+                    on_release(&app, &state);
+                    return;
+                }
+            }
+        }
+    });
 }
 
 pub fn on_release(app: &AppHandle, st: &AppState) {
