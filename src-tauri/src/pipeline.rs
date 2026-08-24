@@ -347,9 +347,27 @@ pub async fn process(app: AppHandle) {
         .await
         {
             Ok(Ok(p)) => p,
-            Ok(Err(_)) => fallback,
+            Ok(Err(_)) => {
+                // Phase 5.6: surface the silent degrade-to-raw fallback so the
+                // Flow Bar can hint that polish was skipped.
+                let _ = app.emit_to(
+                    events::FLOWBAR,
+                    events::DEGRADED,
+                    events::StagePayload {
+                        label: "Polish unavailable - using raw".to_string(),
+                    },
+                );
+                fallback
+            }
             Err(_) => {
                 eprintln!("[polish] timed out after {POLISH_TIMEOUT:?}; injecting raw transcript");
+                let _ = app.emit_to(
+                    events::FLOWBAR,
+                    events::DEGRADED,
+                    events::StagePayload {
+                        label: "Polish unavailable - using raw".to_string(),
+                    },
+                );
                 fallback
             }
         }

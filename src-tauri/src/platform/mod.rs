@@ -21,6 +21,10 @@ pub mod macos;
 #[cfg(target_os = "linux")]
 pub mod linux;
 
+/// Phase 5.5: caret retrieval (Win32 `GetGUIThreadInfo` + UIA COM on Windows,
+/// `None` stub elsewhere), moved out of `window_mgmt.rs`.
+pub mod caret;
+
 /// The app that had focus when a capture started: the paste-target `handle`, its
 /// resolved `ctx` (process/title/category for Flow Styles + history), and whether
 /// it is our own Scratchpad window (Phase 9 focus-aware routing).

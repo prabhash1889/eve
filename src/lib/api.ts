@@ -314,6 +314,8 @@ export const EVT = {
   paused: "session://paused",
   // Parity A1: capture buffer nearing the 15-minute ceiling (toggle mode).
   limit: "session://limit",
+  // Phase 5.6: polish failed/timed out; the raw course-corrected text was kept.
+  degraded: "session://degraded",
   // Phase 11: tray "Check for updates" → Hub runs the check.
   checkUpdate: "app://check-update",
   // Phase C: file-transcription queue lifecycle (emitted to the Hub window).
