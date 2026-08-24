@@ -26,6 +26,9 @@ pub const PAUSED: &str = "session://paused";
 /// Parity A1: the capture buffer is nearing its 15-minute ceiling (relevant in
 /// toggle mode, where recording runs hands-free). Emitted once per session.
 pub const LIMIT: &str = "session://limit";
+/// Phase 5.6 robustness: polish failed or timed out, so the raw
+/// course-corrected text was kept. The Flow Bar shows a subtle hint.
+pub const DEGRADED: &str = "session://degraded";
 
 /// Local-models: streamed during a model download (emitted to the Hub window).
 pub const MODEL_PROGRESS: &str = "model://progress";

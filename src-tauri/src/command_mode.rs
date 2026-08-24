@@ -18,8 +18,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 use crate::db::transforms;
+use crate::session;
 use crate::state::AppState;
-use crate::transcription::{local_backend_label_for, Audio, TranscriptionBenchmark};
+use crate::transcription::{local_backend_label_for, Audio};
 use crate::{audio, events, hotkey, injection, llm, polish, window_mgmt};
 
 // --- Command Mode push-to-talk ----------------------------------------------
@@ -96,10 +97,11 @@ pub fn on_release(app: &AppHandle, st: &AppState) {
     }
     // Mark the pipeline in-flight; `process_command` clears it via a drop guard
     // on every exit path, mirroring `hotkey::on_release` / `pipeline::process`.
+    // The guard also releases Esc (kept registered for the whole pipeline so it
+    // can cancel mid-processing, phase 5.3).
     st.is_processing.store(true, Ordering::SeqCst);
     st.is_command_mode.store(false, Ordering::SeqCst);
     st.capture.stop();
-    hotkey::unregister_escape(app, st);
     let _ = app.emit_to(events::FLOWBAR, events::PROCESSING, ());
 
     let handle = app.clone();
@@ -112,14 +114,21 @@ pub fn on_release(app: &AppHandle, st: &AppState) {
 /// selection → rewrite-or-generate via the LLM → inject.
 async fn process_command(app: AppHandle) {
     // Release the concurrency flag on every exit path (mirrors `pipeline::process`).
-    let _processing =
-        crate::pipeline::ProcessingGuard(app.state::<AppState>().is_processing.clone());
+    let _processing = crate::pipeline::ProcessingGuard(
+        app.state::<AppState>().is_processing.clone(),
+        app.clone(),
+    );
+    // Phase 5.3: fresh pipeline run - clear any stale cancel request.
+    app.state::<AppState>()
+        .cancel_requested
+        .store(false, Ordering::SeqCst);
 
-    let (buffer, sample_rate, settings, transcriber, last_transcript, last_benchmark, hwnd) = {
+    let (buffer, sample_rate, capture, settings, transcriber, last_transcript, last_benchmark, hwnd) = {
         let st = app.state::<AppState>();
         (
             st.audio_buffer.clone(),
             st.sample_rate.clone(),
+            st.capture.clone(),
             st.settings.clone(),
             st.transcriber.clone(),
             st.last_transcript.clone(),
@@ -130,36 +139,9 @@ async fn process_command(app: AppHandle) {
     // Snapshot for the LLM step below; never hold the guard across `.await`.
     let settings_snapshot = settings.lock().clone();
 
-    // Deterministic stop handshake (mirrors `pipeline::process`): wait for the
-    // capture thread to ack the stream drop + final sample flush instead of
-    // sleeping a fixed 60 ms. Timeout fallback = exactly the old behavior.
-    let app_for_handshake = app.clone();
-    let _ = tauri::async_runtime::spawn_blocking(move || {
-        app_for_handshake
-            .state::<AppState>()
-            .capture
-            .stop_and_wait(crate::audio::STOP_ACK_TIMEOUT);
-    })
-    .await;
-
-    let samples = {
-        let mut b = buffer.lock();
-        std::mem::take(&mut *b)
-    };
-    let rate = sample_rate.load(Ordering::SeqCst);
-    let duration_ms = (samples.len() as u64 * 1000) / rate.max(1) as u64;
-
-    if duration_ms < 1000 {
-        let _ = app.emit_to(
-            events::FLOWBAR,
-            events::ERROR,
-            events::ErrorPayload {
-                message: "Too short".to_string(),
-            },
-        );
-        window_mgmt::hide_flowbar_after(app, 1200);
-        return;
-    }
+    // Deterministic stop handshake + buffer drain (mirrors `pipeline::process`,
+    // shared via `session::stop_and_drain`).
+    let drained = session::stop_and_drain(&capture, buffer, sample_rate).await;
 
     let (language, strategy, speech_is_local, vad_enabled, correctness_rescue, profile, model) = {
         let s = settings.lock();
@@ -185,84 +167,99 @@ async fn process_command(app: AppHandle) {
         )
     };
 
-    // Build the same dual-form audio payload as dictation mode. The local path
-    // consumes samples directly; the WAV stays available for cloud fallback.
-    let backend_for_preprocess = speech_is_local;
-    let profile_for_preprocess = profile.clone();
-    let processed = match tauri::async_runtime::spawn_blocking(move || {
-        let mut resampled = audio::resample_to_16k(&samples, rate);
-        let mut vad_trimmed = false;
-        if backend_for_preprocess && vad_enabled {
-            let pre = audio::preprocess_local(
-                &resampled,
-                audio::VadParams::for_profile(&profile_for_preprocess, correctness_rescue),
-            );
-            if !pre.speech_detected {
-                return anyhow::Ok((resampled, Vec::new(), vad_trimmed, false));
-            }
-            vad_trimmed = pre.trimmed;
-            resampled = pre.samples;
-        }
-        let wav = audio::encode_wav(&resampled)?;
-        anyhow::Ok((resampled, wav, vad_trimmed, true))
-    })
+    // Build the same dual-form audio payload as dictation mode via
+    // `session::prepare_audio`, with Command Mode's own ordering: local VAD
+    // runs FIRST and the WAV encodes the TRIMMED clip afterwards (that post-VAD
+    // WAV is what a cloud fallback uploads), and it is always encoded.
+    let prepared = match session::prepare_audio(
+        drained.samples,
+        drained.rate,
+        session::PrepareOptions {
+            encode_before_vad: false,
+            need_wav: true,
+            vad: if speech_is_local && vad_enabled {
+                Some(audio::VadParams::for_profile(&profile, correctness_rescue))
+            } else {
+                None
+            },
+            min_duration_ms: Some(session::MIN_DURATION_MS),
+        },
+    )
     .await
     {
-        Ok(Ok(v)) => v,
-        Ok(Err(_)) | Err(_) => {
+        Ok(p) => p,
+        Err(session::PrepareError::TooShort) => {
+            let _ = app.emit_to(
+                events::FLOWBAR,
+                events::ERROR,
+                events::ErrorPayload {
+                    message: "Too short".to_string(),
+                },
+            );
+            window_mgmt::hide_flowbar_after(app, 1200);
+            return;
+        }
+        Err(session::PrepareError::AudioFailed) => {
             window_mgmt::fail(&app, "Audio processing failed");
             return;
         }
-    };
-    let (samples16k, wav, vad_trimmed, speech_detected) = processed;
-    if !speech_detected {
-        window_mgmt::fail(&app, "No speech detected");
-        return;
-    }
-
-    let transcribe_started = std::time::Instant::now();
-    let instruction = match transcriber
-        .transcribe_audio(
-            Audio {
-                samples: std::sync::Arc::new(samples16k),
-                wav,
-            },
-            language,
-            Vec::new(),
-        )
-        .await
-    {
-        Ok(t) => t,
-        Err(e) => {
-            window_mgmt::fail(&app, &command_error(&e.to_string()));
+        Err(session::PrepareError::NoSpeech) => {
+            window_mgmt::fail(&app, "No speech detected");
             return;
         }
     };
-    let transcribe_ms = transcribe_started.elapsed().as_millis() as u64;
+    // Phase 5.3: cancelled mid-flight? Bail quietly - on_cancel already idled
+    // the bar, so no further events are emitted from here.
+    if session::cancelled(&app) {
+        return;
+    }
+    let duration_ms = prepared.duration_ms;
+
+    let (instruction, benchmark) = match session::run_stt_benchmarked(
+        transcriber.as_ref(),
+        Audio {
+            samples: prepared.samples,
+            wav: prepared.wav,
+        },
+        language,
+        Vec::new(),
+        session::SttMeta {
+            mode: "command",
+            backend: if speech_is_local {
+                local_backend_label_for(&model).to_string()
+            } else {
+                crate::transcription::resolve_speech(&settings.lock())
+                    .label()
+                    .to_string()
+            },
+            // Preserve the historical default label when no model id resolves.
+            model: if model.is_empty() {
+                "whisper-large-v3-turbo".into()
+            } else {
+                model
+            },
+            profile,
+            clip_duration_ms: duration_ms.max(0) as u64,
+            vad_trimmed: prepared.vad_trimmed,
+        },
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            window_mgmt::fail(&app, &session::errors::command_error(&e.to_string()));
+            return;
+        }
+    };
+    // Phase 5.3: quiet cancel before touching the user's selection.
+    if session::cancelled(&app) {
+        return;
+    }
     if instruction.trim().is_empty() {
         window_mgmt::fail(&app, "No instruction heard");
         return;
     }
-    *last_benchmark.lock() = Some(TranscriptionBenchmark {
-        mode: "command".into(),
-        backend: if speech_is_local {
-            local_backend_label_for(&model).to_string()
-        } else {
-            crate::transcription::resolve_speech(&settings.lock())
-                .label()
-                .to_string()
-        },
-        model: if model.is_empty() {
-            "whisper-large-v3-turbo".into()
-        } else {
-            model
-        },
-        profile,
-        clip_duration_ms: duration_ms,
-        transcribe_ms,
-        words_produced: instruction.split_whitespace().count(),
-        vad_trimmed,
-    });
+    *last_benchmark.lock() = Some(benchmark);
 
     // Read the selection from the still-focused target app (blocking key sim).
     let app_for_sel = app.clone();
@@ -281,10 +278,16 @@ async fn process_command(app: AppHandle) {
             return;
         }
         Err(e) => {
-            window_mgmt::fail(&app, &command_error(&e.to_string()));
+            window_mgmt::fail(&app, &session::errors::command_error(&e.to_string()));
             return;
         }
     };
+
+    // Phase 5.3: quiet cancel before injecting - the result never lands in the
+    // target app once Esc was pressed.
+    if session::cancelled(&app) {
+        return;
+    }
 
     inject_and_finish(&app, &result, hwnd, &strategy).await;
     *last_transcript.lock() = Some(result);
@@ -332,8 +335,10 @@ pub fn on_transform_released(st: &AppState) {
 
 async fn run_transform_shortcut(app: AppHandle, id: i64, hwnd: isize) {
     // Release the concurrency flag on every exit path (mirrors `pipeline::process`).
-    let _processing =
-        crate::pipeline::ProcessingGuard(app.state::<AppState>().is_processing.clone());
+    let _processing = crate::pipeline::ProcessingGuard(
+        app.state::<AppState>().is_processing.clone(),
+        app.clone(),
+    );
 
     let (db, strategy, last_transcript, bubble, settings_snapshot) = {
         let st = app.state::<AppState>();
@@ -389,7 +394,7 @@ async fn run_transform_shortcut(app: AppHandle, id: i64, hwnd: isize) {
             return;
         }
         Err(e) => {
-            window_mgmt::fail(&app, &command_error(&e.to_string()));
+            window_mgmt::fail(&app, &session::errors::command_error(&e.to_string()));
             return;
         }
     };
@@ -625,17 +630,3 @@ async fn inject_and_finish(app: &AppHandle, text: &str, hwnd: isize, strategy: &
     window_mgmt::hide_flowbar_after(app.clone(), 900);
 }
 
-/// Map an LLM/transcription error to a short Flow Bar message.
-fn command_error(err: &str) -> String {
-    if err.contains("API key") {
-        "Set your provider API key in Settings".into()
-    } else if err.contains("401") || err.contains("invalid_api_key") {
-        "Invalid API key — check Settings".into()
-    } else if err.contains("403") {
-        "Access denied — check your API key".into()
-    } else if err.contains("429") {
-        "Rate limited — try again in a moment".into()
-    } else {
-        "Command failed — check your connection".into()
-    }
-}

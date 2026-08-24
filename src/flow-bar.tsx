@@ -49,6 +49,8 @@ function FlowBar() {
   // and warn when a hands-free recording nears the 15-minute buffer ceiling.
   const [toggleHint, setToggleHint] = useState(false);
   const [nearLimit, setNearLimit] = useState(false);
+  // Phase 5.6: polish failed/timed out and raw text was kept - subtle amber hint.
+  const [degraded, setDegraded] = useState(false);
 
   useEffect(() => {
     const unlisteners: Array<Promise<() => void>> = [
@@ -64,6 +66,7 @@ function FlowBar() {
         setPolished(false);
         setStageLabel("Transcribing");
         setNearLimit(false);
+        setDegraded(false);
         setLevels(new Array(BARS).fill(0.05));
       }),
       on(EVT.ready, () => {
@@ -87,15 +90,23 @@ function FlowBar() {
         setPolished(true);
         setState("preview");
       }),
-      on(EVT.done, () => setState("done")),
+      on(EVT.done, () => {
+        setState("done");
+        setDegraded(false);
+      }),
       on<ErrorPayload>(EVT.error, (e) => {
         setErrMsg(e.payload?.message ?? "Something went wrong");
         setState("error");
+        setDegraded(false);
       }),
-      on(EVT.cancel, () => setState("idle")),
+      on(EVT.cancel, () => {
+        setState("idle");
+        setDegraded(false);
+      }),
       on(EVT.copied, () => setState("copied")),
       on(EVT.paused, () => setState("paused")),
       on(EVT.limit, () => setNearLimit(true)),
+      on(EVT.degraded, () => setDegraded(true)),
     ];
     return () => {
       unlisteners.forEach((u) => u.then((fn) => fn()).catch(() => {}));
@@ -138,6 +149,9 @@ function FlowBar() {
           <span className="whitespace-nowrap text-xs text-ink-faint">tap to stop</span>
         )}
         {state === "processing" && <Dots label={stageLabel} />}
+        {(state === "processing" || state === "preview") && degraded && (
+          <span className="whitespace-nowrap text-xs text-amber-500">raw</span>
+        )}
         {state === "preview" && (
           <span className="flex items-center gap-1.5">
             {polished && <Sparkles size={13} className="shrink-0 text-accent" />}

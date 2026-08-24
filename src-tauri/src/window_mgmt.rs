@@ -10,7 +10,13 @@ use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, WebviewWindo
 use crate::events;
 use crate::state::AppState;
 
+/// Bumped every time a session becomes visible so a stale hide timer from a
+/// previous session (e.g. a `fail()` dismissal scheduled at +2600 ms) can never
+/// hide a newer recording's bar.
+static BAR_GENERATION: AtomicU64 = AtomicU64::new(0);
+
 pub fn show_flowbar(app: &AppHandle) {
+    BAR_GENERATION.fetch_add(1, Ordering::SeqCst);
     position_flowbar(app);
     if let Some(w) = app.get_webview_window(events::FLOWBAR) {
         let _ = w.show();
@@ -23,6 +29,7 @@ pub fn show_flowbar(app: &AppHandle) {
 /// moved next to the caret afterwards by
 /// [`position_flowbar_near_caret_async`].
 pub fn show_flowbar_default(app: &AppHandle) {
+    BAR_GENERATION.fetch_add(1, Ordering::SeqCst);
     if let Some(w) = app.get_webview_window(events::FLOWBAR) {
         let default_monitor = w.primary_monitor().ok().flatten();
         position_at_default(&w, default_monitor);
@@ -53,7 +60,7 @@ pub fn position_flowbar_near_caret_async(app: AppHandle) {
     }
     let generation = CARET_GENERATION.fetch_add(1, Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
-        let Some((cx, cy)) = get_caret_position() else {
+        let Some((cx, cy)) = crate::platform::caret::get_caret_position() else {
             return;
         };
         let Some(w) = app.get_webview_window(events::FLOWBAR) else {
@@ -80,7 +87,7 @@ pub fn position_flowbar(app: &AppHandle) {
         };
 
         if bar_position == "near_caret"
-            && get_caret_position()
+            && crate::platform::caret::get_caret_position()
                 .is_some_and(|(cx, cy)| position_near_caret(&w, cx, cy, default_monitor.clone()))
         {
             return;
@@ -149,113 +156,6 @@ fn position_at_default(w: &WebviewWindow, default_monitor: Option<Monitor>) {
     }
 }
 
-#[cfg(windows)]
-fn get_caret_position() -> Option<(i32, i32)> {
-    unsafe {
-        // 1. Try classic Win32 GetGUIThreadInfo
-        if let Some(pos) = get_caret_from_gui_thread_info() {
-            return Some(pos);
-        }
-        // 2. Try modern UI Automation
-        if let Some(pos) = get_caret_from_uia() {
-            return Some(pos);
-        }
-    }
-    None
-}
-
-#[cfg(not(windows))]
-fn get_caret_position() -> Option<(i32, i32)> {
-    None
-}
-
-#[cfg(windows)]
-unsafe fn get_caret_from_gui_thread_info() -> Option<(i32, i32)> {
-    use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, GUITHREADINFO};
-    use windows::Win32::Graphics::Gdi::ClientToScreen;
-    use windows::Win32::Foundation::POINT;
-
-    let mut info = GUITHREADINFO {
-        cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
-        ..Default::default()
-    };
-
-    if GetGUIThreadInfo(0, &mut info).is_ok() {
-        // `rcCaret` is relative to `hwndCaret`'s client area (which can be a
-        // child control of `hwndFocus`); a null `hwndCaret` means the thread
-        // has no caret at all. A caret at client x=0 or y=0 is legitimate, so
-        // only a degenerate (height-less) rect is rejected.
-        if !info.hwndCaret.is_invalid() && info.rcCaret.bottom > info.rcCaret.top {
-            let mut pt = POINT {
-                x: info.rcCaret.left,
-                y: info.rcCaret.top,
-            };
-            if ClientToScreen(info.hwndCaret, &mut pt).as_bool() {
-                return Some((pt.x, pt.y));
-            }
-        }
-    }
-    None
-}
-
-#[cfg(windows)]
-unsafe fn get_caret_from_uia() -> Option<(i32, i32)> {
-    use windows::Win32::UI::Accessibility::{
-        CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTextPattern2,
-        UIA_TextPattern2Id,
-    };
-    use windows::Win32::System::Com::{
-        CoInitializeEx, CoCreateInstance, CLSCTX_INPROC_SERVER,
-        COINIT_APARTMENTTHREADED,
-    };
-    use windows::Win32::System::Ole::{
-        SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetLBound, SafeArrayGetUBound,
-        SafeArrayUnaccessData,
-    };
-    use windows::core::Interface;
-
-    // Best effort COM initialization
-    let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-
-    let automation: IUIAutomation = CoCreateInstance(
-        &CUIAutomation,
-        None,
-        CLSCTX_INPROC_SERVER,
-    ).ok()?;
-
-    let focused: IUIAutomationElement = automation.GetFocusedElement().ok()?;
-
-    let pattern_ptr = focused.GetCurrentPattern(UIA_TextPattern2Id).ok()?;
-    let text_pattern2: IUIAutomationTextPattern2 = pattern_ptr.cast().ok()?;
-
-    let mut is_active = windows::Win32::Foundation::BOOL::default();
-    let range = text_pattern2.GetCaretRange(&mut is_active).ok()?;
-
-    let rects = range.GetBoundingRectangles().ok()?;
-    if rects.is_null() {
-        return None;
-    }
-
-    // The array holds [left, top, width, height] per rectangle. A degenerate
-    // caret range can legitimately return an *empty* (non-null) array, so
-    // bound-check before dereferencing. The array is owned by us: destroy it
-    // on every path or it leaks each time the bar is shown.
-    let mut pos = None;
-    let lbound = SafeArrayGetLBound(rects, 1).unwrap_or(0);
-    let ubound = SafeArrayGetUBound(rects, 1).unwrap_or(-1);
-    if ubound - lbound + 1 >= 4 {
-        let mut data_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-        if SafeArrayAccessData(rects, &mut data_ptr).is_ok() {
-            let f64_ptr = data_ptr as *const f64;
-            pos = Some((*f64_ptr as i32, (*f64_ptr.add(1)) as i32));
-            let _ = SafeArrayUnaccessData(rects);
-        }
-    }
-    let _ = SafeArrayDestroy(rects);
-
-    pos
-}
-
 /// Phase 9: show (and focus) the floating Scratchpad window. Created hidden in
 /// `tauri.conf.json`; opened via the Hub button or the global shortcut.
 pub fn open_scratchpad(app: &AppHandle) {
@@ -277,8 +177,14 @@ pub fn scratchpad_hwnd(app: &AppHandle) -> Option<isize> {
 }
 
 pub fn hide_flowbar_after(app: AppHandle, ms: u64) {
+    // Generation-guarded: if a new session shows the bar while we sleep, the
+    // timer is stale and must not hide the newer session's bar.
+    let generation = BAR_GENERATION.load(Ordering::SeqCst);
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(ms));
+        if BAR_GENERATION.load(Ordering::SeqCst) != generation {
+            return;
+        }
         if let Some(w) = app.get_webview_window(events::FLOWBAR) {
             let _ = w.hide();
         }

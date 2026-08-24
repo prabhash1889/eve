@@ -14,8 +14,13 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &update, &sep, &quit])?;
 
-    let _tray = TrayIconBuilder::with_id("eve-tray")
-        .icon(app.default_window_icon().unwrap().clone())
+    let mut tray = TrayIconBuilder::with_id("eve-tray");
+    // Graceful fallback: a missing default icon should not panic the app at
+    // startup; the tray just runs with the platform default glyph.
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    let _tray = tray
         .tooltip("Eve — voice dictation")
         .menu(&menu)
         .show_menu_on_left_click(true)

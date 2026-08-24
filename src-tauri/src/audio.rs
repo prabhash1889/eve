@@ -81,8 +81,13 @@ pub const STOP_ACK_TIMEOUT: Duration = Duration::from_millis(60);
 /// slow-starting thread plus a new one, both racing to open the mic - was the
 /// source of the rapid-tap failures where the next press intermittently died
 /// with a device-busy error or hijacked the wrong session.
+///
+/// Cheaply clonable: clones share the same command channel, which lets
+/// `session::stop_and_drain` move a handle onto the blocking pool for the
+/// stop handshake.
+#[derive(Clone)]
 pub struct CaptureHandle {
-    tx: Mutex<Option<Sender<CaptureCmd>>>,
+    tx: std::sync::Arc<Mutex<Option<Sender<CaptureCmd>>>>,
 }
 
 impl Default for CaptureHandle {
@@ -94,7 +99,7 @@ impl Default for CaptureHandle {
 impl CaptureHandle {
     pub fn new() -> Self {
         Self {
-            tx: Mutex::new(None),
+            tx: std::sync::Arc::new(Mutex::new(None)),
         }
     }
 
@@ -692,4 +697,117 @@ pub fn prepare_16k(
         Vec::new()
     };
     Ok((resampled, wav))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resample_16k_passthrough_is_no_copy_identity() {
+        let samples = vec![0.1f32, -0.2, 0.3, 0.4];
+        let out = resample_to_16k(&samples, 16_000);
+        assert_eq!(out, samples);
+        assert!(resample_to_16k(&[], 44_100).is_empty());
+    }
+
+    #[test]
+    fn resample_scales_length_and_interpolates() {
+        // A ramp at 32 kHz halves to 16 kHz.
+        let samples: Vec<f32> = (0..1600).map(|i| i as f32).collect();
+        let out = resample_to_16k(&samples, 32_000);
+        assert_eq!(out.len(), 800);
+        // Every output sample is an interpolation of its two source neighbors,
+        // so it must lie between them.
+        for w in out.windows(2) {
+            assert!(w[0] <= w[1] + 1e-3, "monotonic ramp stays monotonic");
+        }
+        // First output sample equals the first input sample (frac = 0).
+        assert!((out[0] - samples[0]).abs() < 1e-4);
+    }
+
+    #[test]
+    fn vad_params_map_profiles_and_rescue() {
+        let fast = VadParams::for_profile("fast", false);
+        let balanced = VadParams::for_profile("balanced", false);
+        let accurate = VadParams::for_profile("accurate", false);
+        let rescue = VadParams::for_profile("balanced", true);
+        let unknown = VadParams::for_profile("nonsense", false);
+
+        // Fast is the most aggressive (largest multiplier, smallest pad).
+        assert!(fast.threshold_mult > balanced.threshold_mult);
+        assert!(fast.pad_ms < balanced.pad_ms);
+        // Accurate keeps more around speech than balanced.
+        assert!(accurate.pad_ms > balanced.pad_ms);
+        // Rescue overrides everything with gentle settings.
+        assert_eq!(rescue.pad_ms, 320);
+        // Unknown profiles fall back to balanced.
+        assert_eq!(unknown.threshold_mult, balanced.threshold_mult);
+        assert_eq!(unknown.pad_ms, balanced.pad_ms);
+    }
+
+    #[test]
+    fn preprocess_local_detects_speech_and_trims_leading_silence() {
+        let rate = 16_000usize;
+        let win = rate * 30 / 1000; // matches the 30 ms analysis window
+        let mut samples = vec![0.0f32; win * 20]; // ~600 ms of silence lead-in
+        // Then a loud sine burst (~600 ms).
+        for i in 0..win * 20 {
+            samples.push(0.5 * (i as f32 * 0.1).sin());
+        }
+        let params = VadParams::for_profile("balanced", false);
+        let pre = preprocess_local(&samples, params);
+        assert!(pre.speech_detected);
+        assert!(pre.trimmed, "leading silence should be trimmed");
+        assert!(pre.samples.len() < samples.len());
+    }
+
+    #[test]
+    fn preprocess_local_reports_all_silence_as_no_speech() {
+        let samples = vec![0.0f32; 16_000]; // one second of digital silence
+        let params = VadParams::for_profile("balanced", false);
+        let pre = preprocess_local(&samples, params);
+        assert!(!pre.speech_detected);
+        assert!(!pre.trimmed);
+        // Original samples are returned untouched so nothing is mangled.
+        assert_eq!(pre.samples.len(), samples.len());
+    }
+
+    #[test]
+    fn encode_wav_round_trips_through_hound() {
+        // Full-scale sweep including values that clamp at both rails.
+        let samples: Vec<f32> = (-500..500)
+            .map(|i| (i as f32 / 500.0).clamp(-1.0, 1.0))
+            .collect();
+        let wav = encode_wav(&samples).unwrap();
+
+        let cursor = std::io::Cursor::new(&wav);
+        let mut reader = hound::WavReader::new(cursor).unwrap();
+        let spec = reader.spec();
+        assert_eq!(spec.channels, 1);
+        assert_eq!(spec.sample_rate, 16_000);
+        assert_eq!(spec.bits_per_sample, 16);
+        assert_eq!(spec.sample_format, hound::SampleFormat::Int);
+
+        let decoded: Vec<i16> = reader.samples::<i16>().map(|s| s.unwrap()).collect();
+        assert_eq!(decoded.len(), samples.len());
+        // Conversion math: s.clamp(-1,1) * 32767 as i16.
+        for (src, dec) in samples.iter().zip(&decoded) {
+            let expect = (src.clamp(-1.0, 1.0) * 32767.0) as i16;
+            assert_eq!(*dec, expect);
+        }
+    }
+
+    #[test]
+    fn prepare_16k_skips_wav_when_not_needed() {
+        let samples = vec![0.25f32; 160];
+        let (out, wav) = prepare_16k(samples.clone(), 16_000, false).unwrap();
+        assert_eq!(out, samples);
+        assert!(wav.is_empty(), "no WAV is built when need_wav is false");
+
+        let (_resampled, wav) = prepare_16k(samples, 48_000, true).unwrap();
+        assert!(!wav.is_empty());
+        // Resampled length: 160 @ 48 kHz -> ~53 samples @ 16 kHz.
+        assert_eq!(_resampled.len(), 53);
+    }
 }

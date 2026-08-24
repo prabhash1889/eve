@@ -1,5 +1,5 @@
-//! User settings, persisted as JSON in the app config directory.
-//! The API key is NOT stored here — it lives in the OS keychain (see `secrets`).
+﻿//! User settings, persisted as JSON in the app config directory.
+//! The API key is NOT stored here â€” it lives in the OS keychain (see `secrets`).
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -25,7 +25,7 @@ impl CleanupLevel {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub shortcut: String,
@@ -59,10 +59,10 @@ pub struct Settings {
     /// Flow Bar size multiplier (1.0 = default). Phase 2 appearance setting.
     #[serde(default = "default_bubble_scale")]
     pub bubble_scale: f32,
-    /// Flow Bar opacity (0.0–1.0). Phase 2 appearance setting.
+    /// Flow Bar opacity (0.0â€“1.0). Phase 2 appearance setting.
     #[serde(default = "default_bubble_opacity")]
     pub bubble_opacity: f32,
-    /// Local-models: which backend runs speech→text. "groq" (cloud) or "local"
+    /// Local-models: which backend runs speechâ†’text. "groq" (cloud) or "local"
     /// (on-device whisper.cpp). Falls back to Groq if the local model fails.
     #[serde(default = "default_backend")]
     pub transcription_backend: String,
@@ -111,14 +111,14 @@ pub struct Settings {
     /// Catalog id of the local polish LLM to use (e.g. "qwen2.5-1.5b-instruct").
     #[serde(default)]
     pub local_llm_model: String,
-    /// Phase 4 (optimization): local transcription performance profile —
+    /// Phase 4 (optimization): local transcription performance profile â€”
     /// "fast", "balanced", or "accurate". Guides model recommendations and tunes
     /// how aggressively silence is trimmed (VAD). Does not silently replace the
     /// user's selected model.
     #[serde(default = "default_local_profile")]
     pub local_transcription_profile: String,
     /// Phase 4 (optimization): explicit whisper.cpp thread count. `None` lets Eve
-    /// pick from the available cores (cores − 2, clamped to 1..=8).
+    /// pick from the available cores (cores âˆ’ 2, clamped to 1..=8).
     #[serde(default)]
     pub local_whisper_threads: Option<u32>,
     /// Phase 3 (optimization): trim leading/trailing silence (and normalize) the
@@ -126,7 +126,7 @@ pub struct Settings {
     #[serde(default = "default_true")]
     pub local_vad_enabled: bool,
     /// Local Whisper: opt into beam search on the *balanced* profile for higher
-    /// quality at the cost of speed. Off by default — greedy decoding is ~2–3×
+    /// quality at the cost of speed. Off by default â€” greedy decoding is ~2â€“3Ã—
     /// faster and fine for dictation. Fast always stays greedy; accurate and
     /// correctness rescue always use beam search regardless of this toggle.
     #[serde(default)]
@@ -227,7 +227,7 @@ fn default_context_awareness() -> bool {
 }
 /// Sensitive desktop apps where dictation is suppressed by default. Process
 /// names only (browsers can't be matched this way); users edit the list in
-/// Settings → Privacy.
+/// Settings â†’ Privacy.
 fn default_paused_apps() -> Vec<String> {
     vec![
         // Windows executables.
@@ -363,4 +363,168 @@ pub fn save(path: &Path, settings: &Settings) -> std::io::Result<()> {
     let json = serde_json::to_string_pretty(settings)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(path, json)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn save_then_load_round_trips_every_field() {
+        let mut s = Settings::default();
+        s.shortcut = "F9".into();
+        s.language = "de".into();
+        s.cleanup_level = CleanupLevel::High;
+        s.inject_strategy = "type".into();
+        s.input_device = "Mic Array".into();
+        s.copy_shortcut = "CmdOrCtrl+Shift+X".into();
+        s.command_shortcut = "CmdOrCtrl+Shift+Alt+C".into();
+        s.scratchpad_shortcut = "CmdOrCtrl+Shift+D".into();
+        s.undo_shortcut = "CmdOrCtrl+Shift+Alt+Y".into();
+        s.bubble_scale = 1.5;
+        s.bubble_opacity = 0.75;
+        s.transcription_provider = "deepgram".into();
+        s.transcription_cloud_model = "nova-2".into();
+        s.fallback_transcription_provider = "openai".into();
+        s.polish_provider = "openrouter".into();
+        s.polish_cloud_model = "anthropic/claude-3.5-haiku".into();
+        s.fallback_polish_provider = "groq".into();
+        s.local_whisper_model = "whisper-small.bin".into();
+        s.local_llm_model = "qwen2.5-1.5b-instruct".into();
+        s.local_transcription_profile = "accurate".into();
+        s.local_whisper_threads = Some(4);
+        s.local_vad_enabled = false;
+        s.local_beam_search_enabled = true;
+        s.local_correctness_rescue = true;
+        s.local_prewarm_enabled = false;
+        s.debug_timing = true;
+        s.vibe_coding = false;
+        s.languages = vec!["en".into(), "de".into()];
+        s.paused_apps = vec!["secret.exe".into()];
+        s.context_awareness = false;
+        s.onboarding_complete = true;
+        s.launch_at_startup = true;
+        s.activation_mode = "hybrid".into();
+        s.auto_stop_silence_secs = 5;
+        s.modifier_trigger = "right_alt".into();
+        s.mouse_trigger = "x1".into();
+        s.translate_to_english = true;
+        s.whisper_prompt = "vocab".into();
+        s.sound_on_start = true;
+        s.cjk_autocorrect = false;
+        s.live_noise_gate = false;
+        s.bar_position = "near_caret".into();
+
+        let dir = std::env::temp_dir().join(format!("eve-config-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        save(&path, &s).unwrap();
+        let loaded = load(&path);
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(loaded.shortcut, s.shortcut);
+        assert_eq!(loaded.language, s.language);
+        assert_eq!(loaded.cleanup_level, s.cleanup_level);
+        assert_eq!(loaded.inject_strategy, s.inject_strategy);
+        assert_eq!(loaded.input_device, s.input_device);
+        assert_eq!(loaded.copy_shortcut, s.copy_shortcut);
+        assert_eq!(loaded.command_shortcut, s.command_shortcut);
+        assert_eq!(loaded.scratchpad_shortcut, s.scratchpad_shortcut);
+        assert_eq!(loaded.undo_shortcut, s.undo_shortcut);
+        assert_eq!(loaded.bubble_scale, s.bubble_scale);
+        assert_eq!(loaded.bubble_opacity, s.bubble_opacity);
+        assert_eq!(loaded.transcription_provider, s.transcription_provider);
+        assert_eq!(loaded.transcription_cloud_model, s.transcription_cloud_model);
+        assert_eq!(
+            loaded.fallback_transcription_provider,
+            s.fallback_transcription_provider
+        );
+        assert_eq!(loaded.polish_provider, s.polish_provider);
+        assert_eq!(loaded.polish_cloud_model, s.polish_cloud_model);
+        assert_eq!(loaded.fallback_polish_provider, s.fallback_polish_provider);
+        assert_eq!(loaded.local_whisper_model, s.local_whisper_model);
+        assert_eq!(loaded.local_llm_model, s.local_llm_model);
+        assert_eq!(
+            loaded.local_transcription_profile,
+            s.local_transcription_profile
+        );
+        assert_eq!(loaded.local_whisper_threads, s.local_whisper_threads);
+        assert_eq!(loaded.local_vad_enabled, s.local_vad_enabled);
+        assert_eq!(loaded.local_beam_search_enabled, s.local_beam_search_enabled);
+        assert_eq!(loaded.local_correctness_rescue, s.local_correctness_rescue);
+        assert_eq!(loaded.local_prewarm_enabled, s.local_prewarm_enabled);
+        assert_eq!(loaded.debug_timing, s.debug_timing);
+        assert_eq!(loaded.vibe_coding, s.vibe_coding);
+        assert_eq!(loaded.languages, s.languages);
+        assert_eq!(loaded.paused_apps, s.paused_apps);
+        assert_eq!(loaded.context_awareness, s.context_awareness);
+        assert_eq!(loaded.onboarding_complete, s.onboarding_complete);
+        assert_eq!(loaded.launch_at_startup, s.launch_at_startup);
+        assert_eq!(loaded.activation_mode, s.activation_mode);
+        assert_eq!(loaded.auto_stop_silence_secs, s.auto_stop_silence_secs);
+        assert_eq!(loaded.modifier_trigger, s.modifier_trigger);
+        assert_eq!(loaded.mouse_trigger, s.mouse_trigger);
+        assert_eq!(loaded.translate_to_english, s.translate_to_english);
+        assert_eq!(loaded.whisper_prompt, s.whisper_prompt);
+        assert_eq!(loaded.sound_on_start, s.sound_on_start);
+        assert_eq!(loaded.cjk_autocorrect, s.cjk_autocorrect);
+        assert_eq!(loaded.live_noise_gate, s.live_noise_gate);
+        assert_eq!(loaded.bar_position, s.bar_position);
+    }
+
+    /// A settings.json written by an older Eve (only the original fields) must
+    /// deserialize with serde defaults filling every later field - never reset
+    /// the whole file to `Default`.
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn legacy_settings_json_gets_serde_defaults() {
+        let legacy = r#"{
+            "shortcut": "F9",
+            "language": "en",
+            "cleanupLevel": "light",
+            "injectStrategy": "paste"
+        }"#;
+        let s: Settings = serde_json::from_str(legacy).unwrap();
+        assert_eq!(s.shortcut, "F9");
+        assert_eq!(s.cleanup_level, CleanupLevel::Light);
+        // Serde defaults for fields added later.
+        assert_eq!(s.copy_shortcut, default_copy_shortcut());
+        assert_eq!(s.command_shortcut, default_command_shortcut());
+        assert_eq!(s.scratchpad_shortcut, default_scratchpad_shortcut());
+        assert_eq!(s.undo_shortcut, default_undo_shortcut());
+        assert_eq!(s.bubble_scale, 1.0);
+        assert_eq!(s.bubble_opacity, 1.0);
+        assert_eq!(s.transcription_backend, default_backend());
+        assert_eq!(s.polish_backend, default_backend());
+        assert_eq!(s.transcription_provider, "");
+        assert_eq!(s.fallback_transcription_provider, "");
+        assert_eq!(s.polish_provider, "groq");
+        assert_eq!(s.polish_cloud_model, "");
+        assert_eq!(s.fallback_polish_provider, "");
+        assert!(s.local_vad_enabled);
+        assert!(!s.debug_timing);
+        assert!(s.vibe_coding);
+        assert_eq!(s.languages, vec!["auto".to_string()]);
+        assert!(s.paused_apps.contains(&"1password.exe".to_string()));
+        assert!(s.context_awareness);
+        assert_eq!(s.activation_mode, "hold");
+        assert!(s.cjk_autocorrect);
+        assert!(s.live_noise_gate);
+        assert_eq!(s.bar_position, "fixed");
+    }
+
+    #[test]
+    fn malformed_or_missing_settings_fall_back_to_default() {
+        let dir = std::env::temp_dir().join(format!("eve-config-test2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let missing = dir.join("absent.json");
+        assert_eq!(load(&missing).shortcut, Settings::default().shortcut);
+
+        let bad = dir.join("bad.json");
+        std::fs::write(&bad, "{not json").unwrap();
+        let s = load(&bad);
+        std::fs::remove_file(&bad).ok();
+        assert_eq!(s, Settings::default());
+    }
 }

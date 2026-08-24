@@ -13,7 +13,9 @@ cloud LLM polish, and text injection into the focused app. Exposes commands and 
   `setup` (load settings, register shortcut, tray, position flowbar), and the
   `generate_handler!` command list.
 - `main.rs` — binary shim → `eve_lib::run()`.
-- `commands.rs` — `#[tauri::command]` functions invoked from the frontend.
+- `commands/` — `#[tauri::command]` functions invoked from the frontend, grouped
+  into topical submodules (`mod.rs` re-exports every command so
+  `lib.rs::generate_handler!` keeps flat `commands::x` paths).
 - `pipeline.rs::process` — the post-key-release flow.
 
 ## The dictation flow (across files)
@@ -26,7 +28,9 @@ Groq/OpenAI/Deepgram or local whisper.cpp/Parakeet) →
 `text_processing::course_correct` → `Polisher` (`polish.rs`, cloud LLM; no-op for
 `CleanupLevel::None`) → `text_processing::finalize` (spoken punctuation + lists) →
 `injection::inject` (clipboard + `SetForegroundWindow` + Ctrl+V) → emit `done`.
-`Esc` → `hotkey::on_cancel` (clear buffer, hide bar). `copy_shortcut` →
+`Esc` → `hotkey::on_cancel` (while recording: clear buffer, hide bar; while
+processing: set the `cancel_requested` flag the pipeline checks at stage
+boundaries and bail quietly). `copy_shortcut` →
 `hotkey::on_copy` (copy `last_transcript` to clipboard).
 
 ## Contracts & Invariants
