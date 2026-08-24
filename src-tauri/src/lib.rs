@@ -280,6 +280,7 @@ pub fn run() {
             commands::recover_transcript,
             commands::clear_history,
             commands::get_stats,
+            commands::paste_text,
             commands::get_dictionary,
             commands::upsert_dictionary_entry,
             commands::delete_dictionary_entry,

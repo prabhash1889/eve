@@ -426,6 +426,8 @@ export const api = {
   recoverTranscript: (id: number) => invoke<void>("recover_transcript", { id }),
   clearHistory: () => invoke<void>("clear_history"),
   getStats: (range: StatsRange) => invoke<Stats>("get_stats", { range }),
+  /** Paste text into whatever app currently has focus (History re-inject). */
+  pasteText: (text: string) => invoke<void>("paste_text", { text }),
   // Dictionary (Phase 4)
   getDictionary: (query?: string) =>
     invoke<DictionaryEntry[]>("get_dictionary", { query: query ?? null }),
