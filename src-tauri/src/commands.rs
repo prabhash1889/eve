@@ -176,6 +176,37 @@ pub fn clear_api_key() -> Result<(), String> {
     secrets::delete_api_key().map_err(|e| e.to_string())
 }
 
+// --- Phase 2 providers: per-provider API keys ---------------------------------
+
+/// Parse a provider id from the wire; unknown ids surface as an error rather
+/// than silently writing to the wrong keychain slot.
+fn parse_provider(provider: &str) -> Result<secrets::ProviderKey, String> {
+    secrets::ProviderKey::parse(provider)
+        .ok_or_else(|| format!("Unknown provider \"{provider}\""))
+}
+
+/// Store an API key for one of the supported cloud providers. The key goes to
+/// the OS keychain via `secrets.rs` - never to settings or disk.
+#[tauri::command]
+pub fn store_provider_key(provider: String, key: String) -> Result<(), String> {
+    let p = parse_provider(&provider)?;
+    secrets::set_provider_key(p, &key).map_err(|e| e.to_string())
+}
+
+/// Whether a key is configured for the given provider.
+#[tauri::command]
+pub fn has_provider_key(provider: String) -> Result<bool, String> {
+    let p = parse_provider(&provider)?;
+    Ok(secrets::has_provider_key(p))
+}
+
+/// Remove the stored key for the given provider.
+#[tauri::command]
+pub fn clear_provider_key(provider: String) -> Result<(), String> {
+    let p = parse_provider(&provider)?;
+    secrets::delete_provider_key(p).map_err(|e| e.to_string())
+}
+
 // --- Phase 3: history & stats -------------------------------------------------
 
 #[tauri::command]

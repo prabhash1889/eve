@@ -1,51 +1,113 @@
 //! Secure API-key storage backed by the OS credential store (Windows Credential
-//! Manager via the `keyring` crate). The key never touches the settings JSON.
+//! Manager via the `keyring` crate). Keys never touch the settings JSON.
+//!
+//! Multi-provider (Phase 2): each supported provider gets its own keychain
+//! entry under one service name, addressed through the [`ProviderKey`] enum.
+//! Groq deliberately keeps the exact account name the original single-slot
+//! version always used (`groq_api_key`), so existing installs read their stored
+//! key with zero migration - the legacy-read/write-through concern is moot by
+//! construction.
 //!
 //! Reads are served from a small in-process cache so the per-session hot path
-//! (transcription → polish → command mode) doesn't pay a keychain round-trip on
-//! every call. The cached value lives only in process memory - the same trust
-//! domain as `reqwest` and every other holder of the decrypted key - and is
-//! invalidated whenever the keychain value changes. It is never logged or
+//! (transcription -> polish -> command mode) doesn't pay a keychain round-trip
+//! on every call. Cached values live only in process memory - the same trust
+//! domain as `reqwest` and every other holder of a decrypted key - and are
+//! invalidated whenever the keychain value changes. They are never logged or
 //! persisted anywhere outside the OS keychain.
 
+use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
 use keyring::Entry;
 
 const SERVICE: &str = "eve-dictation";
-const ACCOUNT: &str = "groq_api_key";
 
-/// In-process mirror of the keychain entry: `Some(Some(key))` = known key,
-/// `Some(None)` = known absence, `None` = not read since startup/invalidation.
-static CACHE: Mutex<Option<Option<String>>> = Mutex::new(None);
+/// Which provider's credential an operation targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderKey {
+    Groq,
+    OpenAi,
+    OpenRouter,
+    Anthropic,
+}
 
-fn cache() -> MutexGuard<'static, Option<Option<String>>> {
+impl ProviderKey {
+    /// Parse the wire form used by the IPC commands and settings strings.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "groq" => Some(ProviderKey::Groq),
+            "openai" => Some(ProviderKey::OpenAi),
+            "openrouter" => Some(ProviderKey::OpenRouter),
+            "anthropic" => Some(ProviderKey::Anthropic),
+            _ => None,
+        }
+    }
+
+    /// Human label for error messages ("Set your OpenAI API key...").
+    pub fn label(self) -> &'static str {
+        match self {
+            ProviderKey::Groq => "Groq",
+            ProviderKey::OpenAi => "OpenAI",
+            ProviderKey::OpenRouter => "OpenRouter",
+            ProviderKey::Anthropic => "Anthropic",
+        }
+    }
+
+    /// Stable OS-keychain account name for this provider.
+    fn account(self) -> &'static str {
+        match self {
+            // Legacy compatibility: identical to the pre-multi-provider slot.
+            ProviderKey::Groq => "groq_api_key",
+            ProviderKey::OpenAi => "openai_api_key",
+            ProviderKey::OpenRouter => "openrouter_api_key",
+            ProviderKey::Anthropic => "anthropic_api_key",
+        }
+    }
+}
+
+/// In-process mirror of the keychain entries, keyed by account name:
+/// `Some(Some(key))` = known key, `Some(None)` = known absence, absent entry =
+/// not read since startup/invalidation.
+static CACHE: Mutex<Option<HashMap<&'static str, Option<String>>>> = Mutex::new(None);
+
+fn cache() -> MutexGuard<'static, Option<HashMap<&'static str, Option<String>>>> {
     CACHE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn entry() -> keyring::Result<Entry> {
-    Entry::new(SERVICE, ACCOUNT)
+/// Snapshot one provider's cached value without holding the guard.
+fn cached(account: &'static str) -> Option<Option<String>> {
+    cache().as_ref().and_then(|m| m.get(account).cloned())
 }
 
-pub fn set_api_key(key: &str) -> anyhow::Result<()> {
-    entry()?.set_password(key)?;
+fn set_cache(account: &'static str, value: Option<String>) {
+    cache()
+        .get_or_insert_with(HashMap::new)
+        .insert(account, value);
+}
+
+fn entry(p: ProviderKey) -> keyring::Result<Entry> {
+    Entry::new(SERVICE, p.account())
+}
+
+pub fn set_provider_key(p: ProviderKey, key: &str) -> anyhow::Result<()> {
+    entry(p)?.set_password(key)?;
     // Only after the keychain write succeeded do we adopt the new value.
-    *cache() = Some(Some(key.to_string()));
+    set_cache(p.account(), Some(key.to_string()));
     Ok(())
 }
 
-pub fn get_api_key() -> anyhow::Result<String> {
-    if let Some(cached) = cache().clone() {
-        return cached.ok_or_else(|| anyhow::anyhow!("Set your Groq API key in Settings"));
+pub fn get_provider_key(p: ProviderKey) -> anyhow::Result<String> {
+    if let Some(cached) = cached(p.account()) {
+        return cached.ok_or_else(|| anyhow::anyhow!("Set your {} API key in Settings", p.label()));
     }
-    match entry()?.get_password() {
+    match entry(p)?.get_password() {
         Ok(key) => {
-            *cache() = Some(Some(key.clone()));
+            set_cache(p.account(), Some(key.clone()));
             Ok(key)
         }
         Err(keyring::Error::NoEntry) => {
-            *cache() = Some(None);
-            anyhow::bail!("Set your Groq API key in Settings");
+            set_cache(p.account(), None);
+            anyhow::bail!("Set your {} API key in Settings", p.label());
         }
         // Keychain itself failed (locked/unavailable). Don't cache the failure -
         // the next read retries the OS call.
@@ -53,18 +115,18 @@ pub fn get_api_key() -> anyhow::Result<String> {
     }
 }
 
-pub fn has_api_key() -> bool {
-    if let Some(cached) = cache().clone() {
+pub fn has_provider_key(p: ProviderKey) -> bool {
+    if let Some(cached) = cached(p.account()) {
         return cached.is_some();
     }
-    match entry().and_then(|e| e.get_password()) {
+    match entry(p).and_then(|e| e.get_password()) {
         Ok(key) => {
-            *cache() = Some(Some(key));
+            set_cache(p.account(), Some(key));
             true
         }
         // Genuinely no credential stored — the only case that means "no key".
         Err(keyring::Error::NoEntry) => {
-            *cache() = Some(None);
+            set_cache(p.account(), None);
             false
         }
         // The keychain itself is unavailable/locked/erroring. Don't silently
@@ -77,22 +139,22 @@ pub fn has_api_key() -> bool {
     }
 }
 
-/// Fail-open variant of [`has_api_key`] for callers that skip Groq-keyed work
+/// Fail-open variant of [`has_provider_key`] for callers that skip keyed work
 /// when the answer is "no": `false` only when the key is KNOWN absent. A
 /// transient keychain failure returns `true` so the caller does the keyed work
 /// (e.g. still encodes the WAV) instead of silently skipping something a
 /// fallback might need moments later.
-pub fn has_api_key_fail_open() -> bool {
-    if let Some(cached) = cache().clone() {
+pub fn has_provider_key_fail_open(p: ProviderKey) -> bool {
+    if let Some(cached) = cached(p.account()) {
         return cached.is_some();
     }
-    match entry().and_then(|e| e.get_password()) {
+    match entry(p).and_then(|e| e.get_password()) {
         Ok(key) => {
-            *cache() = Some(Some(key));
+            set_cache(p.account(), Some(key));
             true
         }
         Err(keyring::Error::NoEntry) => {
-            *cache() = Some(None);
+            set_cache(p.account(), None);
             false
         }
         Err(e) => {
@@ -102,10 +164,35 @@ pub fn has_api_key_fail_open() -> bool {
     }
 }
 
-pub fn delete_api_key() -> anyhow::Result<()> {    // Ignore "not found" so removing twice is harmless.
-    if let Ok(e) = entry() {
+pub fn delete_provider_key(p: ProviderKey) -> anyhow::Result<()> {
+    // Ignore "not found" so removing twice is harmless.
+    if let Ok(e) = entry(p) {
         let _ = e.delete_credential();
     }
-    *cache() = Some(None);
+    set_cache(p.account(), None);
     Ok(())
+}
+
+// --- Groq legacy shims --------------------------------------------------------
+// Kept so the existing transcription/pipeline hot path (still Groq-only until
+// Phase 3) reads naturally. New code should use the per-provider variants.
+
+pub fn set_api_key(key: &str) -> anyhow::Result<()> {
+    set_provider_key(ProviderKey::Groq, key)
+}
+
+pub fn get_api_key() -> anyhow::Result<String> {
+    get_provider_key(ProviderKey::Groq)
+}
+
+pub fn has_api_key() -> bool {
+    has_provider_key(ProviderKey::Groq)
+}
+
+pub fn has_api_key_fail_open() -> bool {
+    has_provider_key_fail_open(ProviderKey::Groq)
+}
+
+pub fn delete_api_key() -> anyhow::Result<()> {
+    delete_provider_key(ProviderKey::Groq)
 }

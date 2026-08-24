@@ -402,6 +402,11 @@ export const api = {
   storeApiKey: (key: string) => invoke<void>("store_api_key", { key }),
   hasApiKey: () => invoke<boolean>("has_api_key"),
   clearApiKey: () => invoke<void>("clear_api_key"),
+  // Phase 2 providers: per-provider API keys (same keychain, one slot per provider)
+  storeProviderKey: (provider: string, key: string) =>
+    invoke<void>("store_provider_key", { provider, key }),
+  hasProviderKey: (provider: string) => invoke<boolean>("has_provider_key", { provider }),
+  clearProviderKey: (provider: string) => invoke<void>("clear_provider_key", { provider }),
   // History (Phase 3)
   getHistory: (page: number, perPage: number, query?: string) =>
     invoke<HistoryPage>("get_history", { page, perPage, query: query ?? null }),
