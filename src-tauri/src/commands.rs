@@ -471,14 +471,18 @@ pub fn get_flow_styles(state: State<AppState>) -> Result<Vec<FlowStyle>, String>
     flow_styles::list(&state.db.lock()).map_err(|e| e.to_string())
 }
 
-/// Insert or update the Flow Style for an app category (one style per category).
-/// `name` defaults to the category label when blank.
+/// Insert or update a Flow Style for an app category. `app_process` empty =
+/// whole-category default; otherwise the style is scoped to that exact process
+/// name (normalized to lowercase, matching how capture reports processes) and
+/// takes precedence over the category default in the pipeline. `name` defaults
+/// to the category label when blank.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn upsert_flow_style(
     state: State<AppState>,
     name: String,
     app_category: String,
+    app_process: String,
     tone: String,
     system_prompt: String,
     writing_sample: String,
@@ -488,19 +492,13 @@ pub fn upsert_flow_style(
     if category.is_empty() {
         return Err("Category cannot be empty".into());
     }
-    let name = {
-        let n = name.trim();
-        if n.is_empty() {
-            category
-        } else {
-            n
-        }
-    };
+    let process = app_process.trim().to_ascii_lowercase();
     let now = chrono::Utc::now().timestamp_millis();
     let id = flow_styles::upsert(
         &state.db.lock(),
-        name,
+        name.trim(),
         category,
+        &process,
         tone.trim(),
         system_prompt.trim(),
         writing_sample.trim(),

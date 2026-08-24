@@ -207,6 +207,8 @@ export interface FlowStyle {
   id: number;
   name: string;
   appCategory: AppCategory;
+  /** 4.3: exact-process scope ("" = whole-category default). */
+  appProcess: string;
   tone: FlowTone;
   systemPrompt: string;
   writingSample: string;
@@ -455,10 +457,12 @@ export const api = {
     writingSample: string,
     isActive: boolean,
     name = "",
+    appProcess = "",
   ) =>
     invoke<number>("upsert_flow_style", {
       name,
       appCategory,
+      appProcess,
       tone,
       systemPrompt,
       writingSample,

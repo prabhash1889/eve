@@ -305,7 +305,7 @@ pub async fn process(app: AppHandle) {
     // Phase 6: look up the active Flow Style for the focused app's category and
     // turn it into a StyleHint that shapes the polish prompt (tone, per-app
     // context, optional custom instruction + writing sample).
-    let style = hot_cache.active_style(&db, context.category.as_str());
+    let style = hot_cache.active_style(&db, context.category.as_str(), &context.process);
     let style_hint = style.map(|s| StyleHint {
         category: s.app_category,
         tone: s.tone,

@@ -100,9 +100,34 @@ impl HotPathCache {
         self.inner.lock().expansions.get_or_insert(fresh).clone()
     }
 
-    /// The active Flow Style for a category, or `None` (same fallback shape as
-    /// the pipeline's former direct read: a query error yielded no style).
-    pub fn active_style(&self, db: &Db, category: &str) -> Option<FlowStyle> {
+    /// The active Flow Style for the focused app: the exact-process profile
+    /// (4.3) when one exists, else the whole-category default - or `None`
+    /// (same fallback shape as the pipeline's former direct read: a query
+    /// error yielded no style). Cache keys are `"{category}"` and
+    /// `"{category}|{process}"` respectively.
+    pub fn active_style(&self, db: &Db, category: &str, process: &str) -> Option<FlowStyle> {
+        let proc = process.trim().to_ascii_lowercase();
+        if !proc.is_empty() {
+            let key = format!("{category}|{proc}");
+            if let Some(cached) = self.inner.lock().styles.get(&key) {
+                return cached.clone();
+            }
+            let fresh = {
+                let conn = db.lock();
+                flow_styles::active_for_process(&conn, category, &proc)
+                    .ok()
+                    .flatten()
+            };
+            self.inner
+                .lock()
+                .styles
+                .insert(key, fresh.clone());
+            if fresh.is_some() {
+                return fresh;
+            }
+            // No exact-app match: fall through to the category default below,
+            // but don't cache it under this key (the exact-app row may appear).
+        }
         if let Some(cached) = self.inner.lock().styles.get(category) {
             return cached.clone();
         }
