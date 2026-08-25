@@ -91,12 +91,24 @@ type Nav =
 export function Hub() {
   const [nav, setNav] = useState<Nav>("dashboard");
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
-  const [hasKey, setHasKey] = useState(false);
+  // Per-provider key presence (multi-provider): drives the dashboard status
+  // card and the file-queue hint. Values live only in the OS keychain; we
+  // track booleans, never the keys themselves.
+  const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({});
   const [loaded, setLoaded] = useState(false);
   // Bumped when the tray "Check for updates" item fires, so the Settings panel
   // can auto-run the check.
   const [updateNonce, setUpdateNonce] = useState(0);
   const [theme, setThemeState] = useState<ThemeId>(() => loadTheme());
+
+  const refreshKeys = () => {
+    PROVIDERS.forEach((p) => {
+      api
+        .hasProviderKey(p.id)
+        .then((has) => setKeyStatus((s) => ({ ...s, [p.id]: has })))
+        .catch(() => {});
+    });
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -122,7 +134,7 @@ export function Hub() {
         });
     };
     loadSettings();
-    api.hasApiKey().then(setHasKey).catch(() => {});
+    refreshKeys();
     return () => {
       cancelled = true;
     };
@@ -152,7 +164,7 @@ export function Hub() {
           settings={settings}
           onComplete={(next) => {
             setSettings(next);
-            api.hasApiKey().then(setHasKey).catch(() => {});
+            refreshKeys();
           }}
         />
       </div>
@@ -179,14 +191,11 @@ export function Hub() {
         <NavItem icon={<BarChart3 size={18} />} label="Insights" active={nav === "insights"} onClick={() => setNav("insights")} />
         <NavItem icon={<BookMarked size={18} />} label="Dictionary" active={nav === "dictionary"} onClick={() => setNav("dictionary")} />
         <NavItem icon={<Zap size={18} />} label="Snippets" active={nav === "snippets"} onClick={() => setNav("snippets")} />
-        {/* Styles + Transforms are LLM-polish features; the offline Store build
-            has no polish model, so they are hidden there. */}
-        {!isStore && (
-          <>
-            <NavItem icon={<Sparkles size={18} />} label="Styles" active={nav === "styles"} onClick={() => setNav("styles")} />
-            <NavItem icon={<Wand2 size={18} />} label="Transforms" active={nav === "transforms"} onClick={() => setNav("transforms")} />
-          </>
-        )}
+        {/* Styles + Transforms are LLM-polish features; they apply once a cloud
+            provider key is configured (including in the Store build, where they
+            simply stay inert until a key is added). */}
+        <NavItem icon={<Sparkles size={18} />} label="Styles" active={nav === "styles"} onClick={() => setNav("styles")} />
+        <NavItem icon={<Wand2 size={18} />} label="Transforms" active={nav === "transforms"} onClick={() => setNav("transforms")} />
         <NavItem icon={<NotebookPen size={18} />} label="Scratchpad" onClick={() => api.openScratchpad().catch(() => {})} />
         {/* Store edition runs offline on the bundled Parakeet model - there is
             no cloud/whisper choice to configure, so the catalog is hidden. */}
@@ -204,7 +213,11 @@ export function Hub() {
       <main className="flex-1 overflow-y-auto">
         <div className="mx-auto max-w-2xl px-10 py-10">
           {nav === "dashboard" ? (
-            <Dashboard settings={settings} hasKey={hasKey} onConfigure={() => setNav("settings")} />
+            <Dashboard
+              settings={settings}
+              keyStatus={keyStatus}
+              onConfigure={() => setNav("settings")}
+            />
           ) : nav === "insights" ? (
             <InsightsPage />
           ) : nav === "dictionary" ? (
@@ -316,11 +329,11 @@ function ThemePicker({ value, onChange }: { value: ThemeId; onChange: (id: Theme
 
 function Dashboard({
   settings,
-  hasKey,
+  keyStatus,
   onConfigure,
 }: {
   settings: Settings;
-  hasKey: boolean;
+  keyStatus: Record<string, boolean>;
   onConfigure: () => void;
 }) {
   // Bumped when a queued file finishes so the embedded History list reloads.
@@ -346,41 +359,64 @@ function Dashboard({
           </div>
         </div>
 
-        {!isStore && (
-          <div className="rounded-2xl border border-border bg-surface p-5">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm text-ink-faint">Groq API key</div>
-                <div className="mt-1 flex items-center gap-2">
-                  {hasKey ? (
-                    <>
-                      <Check size={18} className="text-accent" />
-                      <span>Configured</span>
-                    </>
-                  ) : (
-                    <span className="text-danger">Not set — required to transcribe</span>
-                  )}
-                </div>
-              </div>
-              {!hasKey && (
-                <button
-                  onClick={onConfigure}
-                  className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90"
-                >
-                  Add key
-                </button>
-              )}
-            </div>
-          </div>
-        )}
+        <ProvidersCard keyStatus={keyStatus} onConfigure={onConfigure} />
       </div>
 
       <div className="mt-6">
-        <FileQueue hasKey={hasKey} onItemDone={() => setHistoryReload((n) => n + 1)} />
+        <FileQueue
+          hasKey={PROVIDERS.some((p) => keyStatus[p.id])}
+          onItemDone={() => setHistoryReload((n) => n + 1)}
+        />
       </div>
 
       <div className="mt-10">
         <HistoryPage reloadSignal={historyReload} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Dashboard status for the cloud providers (multi-provider). Shows which
+ * providers have keys configured, with an add-key shortcut when none do. In
+ * the Store build no key is required - on-device Parakeet is the default.
+ */
+function ProvidersCard({
+  keyStatus,
+  onConfigure,
+}: {
+  keyStatus: Record<string, boolean>;
+  onConfigure: () => void;
+}) {
+  const configured = PROVIDERS.filter((p) => keyStatus[p.id]);
+  return (
+    <div className="rounded-2xl border border-border bg-surface p-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-sm text-ink-faint">Cloud providers</div>
+          <div className="mt-1 flex items-center gap-2">
+            {configured.length > 0 ? (
+              <>
+                <Check size={18} className="text-accent" />
+                <span>Configured — {configured.map((p) => p.label).join(", ")}</span>
+              </>
+            ) : isStore ? (
+              <span className="text-ink-soft">
+                Optional — dictation runs on-device until you add a key
+              </span>
+            ) : (
+              <span className="text-danger">None configured — needed for cloud speech</span>
+            )}
+          </div>
+        </div>
+        {configured.length === 0 && (
+          <button
+            onClick={onConfigure}
+            className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+          >
+            Add key
+          </button>
+        )}
       </div>
     </div>
   );
