@@ -53,8 +53,12 @@ export function Onboarding({
   const [hasKey, setHasKey] = useState(false);
   const [finishError, setFinishError] = useState<string | null>(null);
 
+  // Any configured provider counts - keys are stored per provider, and any
+  // one of them can power cloud speech/polish.
   useEffect(() => {
-    api.hasApiKey().then(setHasKey).catch(() => {});
+    Promise.all(PROVIDERS.map((p) => api.hasProviderKey(p.id).catch(() => false))).then(
+      (results) => setHasKey(results.some(Boolean)),
+    );
     // Mark onboarding as seen the moment it first appears, so first-run is
     // truly once-only: even if the user closes the window before reaching the
     // final step, it won't reappear on the next launch. `finish()` re-saves the
@@ -65,11 +69,12 @@ export function Onboarding({
 
   // Step 2 forks on the chosen mode; both branches have the same length so the
   // current index stays valid when the user flips the choice and navigates.
-  // The Store edition is offline-first (bundled English Parakeet, no cloud key
-  // and no polish config), so it drops the transcription / key / language /
-  // cleanup steps entirely - just welcome, hotkey, and a mic check.
+  // The Store edition is offline-first (bundled English Parakeet dictation, no
+  // model downloads), so it drops the transcription / local-model steps - but
+  // with multi-provider support it offers an optional cloud key that unlocks
+  // AI cleanup, Command Mode, Styles, and Transforms.
   const base = isStore
-    ? ["Welcome", "Hotkey", "Mic check"]
+    ? ["Welcome", "Hotkey", "API key", "Mic check"]
     : mode === "private"
       ? ["Welcome", "Transcription", "Local model", "Hotkey", "Languages", "Mic check", "Cleanup"]
       : ["Welcome", "Transcription", "API key", "Hotkey", "Languages", "Mic check", "Cleanup"];
@@ -261,7 +266,12 @@ function Welcome() {
       </p>
       <ul className="mt-4 space-y-2 text-sm text-ink-soft">
         {(isStore
-          ? ["Pick a push-to-talk hotkey", "Test your microphone", "Start dictating anywhere"]
+          ? [
+              "Dictates fully offline on the bundled Parakeet model",
+              "Pick a push-to-talk hotkey",
+              "Optional: add a cloud AI key for cleanup + commands",
+              "Test your microphone",
+            ]
           : [
               "Choose cloud or private transcription",
               "Pick a push-to-talk hotkey",
@@ -573,7 +583,11 @@ function ApiKeyStep({
       <StepHeader
         icon={<KeyRound size={20} />}
         title="Provider API key"
-        subtitle="Eve uses your chosen provider for fast transcription and cleanup. Your key is stored in the OS credential store, never on disk."
+        subtitle={
+          isStore
+            ? "Optional. A cloud key powers AI cleanup, Command Mode, Styles, and Transforms. Dictation itself stays on your device unless you change it in Settings → Providers."
+            : "Eve uses your chosen provider for fast transcription and cleanup. Your key is stored in the OS credential store, never on disk."
+        }
       />
       {hasKey && !saved ? (
         <div className="flex items-center gap-2 rounded-xl border border-accent/40 bg-accent-soft/40 px-4 py-3 text-sm">
@@ -618,8 +632,9 @@ function ApiKeyStep({
         <p className="mt-3 text-xs text-danger">{error}</p>
       )}
       <p className="mt-3 text-xs text-ink-faint">
-        Groq offers a free tier at console.groq.com. This step is skippable - you can add keys
-        later in Settings → Providers - but Eve can't transcribe in cloud mode without one.
+        {isStore
+          ? "This step is skippable - everything works offline without it. You can manage keys anytime in Settings → Providers."
+          : "Groq offers a free tier at console.groq.com. This step is skippable - you can add keys later in Settings → Providers - but Eve can't transcribe in cloud mode without one."}
       </p>
     </div>
   );

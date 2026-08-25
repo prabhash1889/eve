@@ -1,15 +1,20 @@
 # Microsoft Store packaging (MSIX)
 
-The Store build of Eve is an offline-first, trimmed edition:
+The Store build of Eve is offline-first **by default**:
 
 - **Backend:** `local-parakeet` + `store-edition` Cargo features. No whisper is
-  compiled in; Groq stays in the binary but is never the default and is hidden
-  in the UI. Defaults: `transcriptionBackend = local`, Parakeet selected.
-- **Frontend:** built with `VITE_EVE_EDITION=store`, which hides the Groq key,
-  backend pickers, and the Local models catalog (`src/lib/edition.ts`).
+  compiled in; the cloud providers stay in the binary and are available, but
+  on-device Parakeet is the default speech backend with no key needed.
+  Defaults: `transcriptionBackend = local`, bundled Parakeet selected.
+- **Frontend:** built with `VITE_EVE_EDITION=store`. The Local models catalog
+  is hidden (whisper.cpp isn't compiled into that build), but everything else -
+  Providers (per-provider keys, speech/polish routing), Cleanup level, Command
+  Mode, Styles, Transforms - renders exactly like the full build
+  (`src/lib/edition.ts`).
 - **Model:** NVIDIA Parakeet TDT 0.6B v2 is bundled as an app resource and loaded
-  from the read-only resource dir, so transcription works with no download and no
-  API key. English only.
+  from the read-only resource dir, so dictation works with no download and no
+  API key. English only. Users who add a cloud provider key can route speech
+  and/or polish through it in Settings → Providers.
 
 ## One-time setup
 
@@ -67,8 +72,9 @@ npm run build:msix      # pack -> build/<version>/Eve-<version>-store.msix
   paste-into-focused-app, not keylogging (the hook only flips atomics - see
   `src-tauri/src/hooks.rs`).
 - **Privacy policy** is mandatory (the app captures microphone audio). State that
-  transcription is on-device by default and that the optional Groq path (not
-  exposed in the Store build) would send audio to Groq.
+  transcription is on-device by default, and that if the user opts in by adding
+  a cloud provider key and selecting that provider, audio is sent to that
+  provider while dictating.
 
 ## Local sideload test (optional)
 

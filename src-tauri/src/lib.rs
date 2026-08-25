@@ -168,9 +168,11 @@ pub fn run() {
                 let copy = *state.copy_shortcut.lock();
                 let _ = app.global_shortcut().register(copy);
                 // Phase 7: Command Mode + any transform accelerators (best-effort).
-                // Both rewrite/generate via an LLM, so the offline Store edition
-                // (no polish model) skips them - it is dictation-only.
-                #[cfg(not(feature = "store-edition"))]
+                // Both rewrite/generate via a cloud LLM. The Store edition used
+                // to skip these (offline-first, no key), but with multi-provider
+                // support exposed there they register too: without a configured
+                // key the command surfaces its friendly "set your API key"
+                // error, and dictation itself is unaffected.
                 {
                     let command = *state.command_shortcut.lock();
                     let _ = app.global_shortcut().register(command);

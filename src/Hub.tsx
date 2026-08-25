@@ -91,12 +91,24 @@ type Nav =
 export function Hub() {
   const [nav, setNav] = useState<Nav>("dashboard");
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
-  const [hasKey, setHasKey] = useState(false);
+  // Per-provider key presence (multi-provider): drives the dashboard status
+  // card and the file-queue hint. Values live only in the OS keychain; we
+  // track booleans, never the keys themselves.
+  const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({});
   const [loaded, setLoaded] = useState(false);
   // Bumped when the tray "Check for updates" item fires, so the Settings panel
   // can auto-run the check.
   const [updateNonce, setUpdateNonce] = useState(0);
   const [theme, setThemeState] = useState<ThemeId>(() => loadTheme());
+
+  const refreshKeys = () => {
+    PROVIDERS.forEach((p) => {
+      api
+        .hasProviderKey(p.id)
+        .then((has) => setKeyStatus((s) => ({ ...s, [p.id]: has })))
+        .catch(() => {});
+    });
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -122,7 +134,7 @@ export function Hub() {
         });
     };
     loadSettings();
-    api.hasApiKey().then(setHasKey).catch(() => {});
+    refreshKeys();
     return () => {
       cancelled = true;
     };
@@ -152,7 +164,7 @@ export function Hub() {
           settings={settings}
           onComplete={(next) => {
             setSettings(next);
-            api.hasApiKey().then(setHasKey).catch(() => {});
+            refreshKeys();
           }}
         />
       </div>
@@ -179,14 +191,11 @@ export function Hub() {
         <NavItem icon={<BarChart3 size={18} />} label="Insights" active={nav === "insights"} onClick={() => setNav("insights")} />
         <NavItem icon={<BookMarked size={18} />} label="Dictionary" active={nav === "dictionary"} onClick={() => setNav("dictionary")} />
         <NavItem icon={<Zap size={18} />} label="Snippets" active={nav === "snippets"} onClick={() => setNav("snippets")} />
-        {/* Styles + Transforms are LLM-polish features; the offline Store build
-            has no polish model, so they are hidden there. */}
-        {!isStore && (
-          <>
-            <NavItem icon={<Sparkles size={18} />} label="Styles" active={nav === "styles"} onClick={() => setNav("styles")} />
-            <NavItem icon={<Wand2 size={18} />} label="Transforms" active={nav === "transforms"} onClick={() => setNav("transforms")} />
-          </>
-        )}
+        {/* Styles + Transforms are LLM-polish features; they apply once a cloud
+            provider key is configured (including in the Store build, where they
+            simply stay inert until a key is added). */}
+        <NavItem icon={<Sparkles size={18} />} label="Styles" active={nav === "styles"} onClick={() => setNav("styles")} />
+        <NavItem icon={<Wand2 size={18} />} label="Transforms" active={nav === "transforms"} onClick={() => setNav("transforms")} />
         <NavItem icon={<NotebookPen size={18} />} label="Scratchpad" onClick={() => api.openScratchpad().catch(() => {})} />
         {/* Store edition runs offline on the bundled Parakeet model - there is
             no cloud/whisper choice to configure, so the catalog is hidden. */}
@@ -204,7 +213,11 @@ export function Hub() {
       <main className="flex-1 overflow-y-auto">
         <div className="mx-auto max-w-2xl px-10 py-10">
           {nav === "dashboard" ? (
-            <Dashboard settings={settings} hasKey={hasKey} onConfigure={() => setNav("settings")} />
+            <Dashboard
+              settings={settings}
+              keyStatus={keyStatus}
+              onConfigure={() => setNav("settings")}
+            />
           ) : nav === "insights" ? (
             <InsightsPage />
           ) : nav === "dictionary" ? (
@@ -316,11 +329,11 @@ function ThemePicker({ value, onChange }: { value: ThemeId; onChange: (id: Theme
 
 function Dashboard({
   settings,
-  hasKey,
+  keyStatus,
   onConfigure,
 }: {
   settings: Settings;
-  hasKey: boolean;
+  keyStatus: Record<string, boolean>;
   onConfigure: () => void;
 }) {
   // Bumped when a queued file finishes so the embedded History list reloads.
@@ -346,41 +359,64 @@ function Dashboard({
           </div>
         </div>
 
-        {!isStore && (
-          <div className="rounded-2xl border border-border bg-surface p-5">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm text-ink-faint">Groq API key</div>
-                <div className="mt-1 flex items-center gap-2">
-                  {hasKey ? (
-                    <>
-                      <Check size={18} className="text-accent" />
-                      <span>Configured</span>
-                    </>
-                  ) : (
-                    <span className="text-danger">Not set — required to transcribe</span>
-                  )}
-                </div>
-              </div>
-              {!hasKey && (
-                <button
-                  onClick={onConfigure}
-                  className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90"
-                >
-                  Add key
-                </button>
-              )}
-            </div>
-          </div>
-        )}
+        <ProvidersCard keyStatus={keyStatus} onConfigure={onConfigure} />
       </div>
 
       <div className="mt-6">
-        <FileQueue hasKey={hasKey} onItemDone={() => setHistoryReload((n) => n + 1)} />
+        <FileQueue
+          hasKey={PROVIDERS.some((p) => keyStatus[p.id])}
+          onItemDone={() => setHistoryReload((n) => n + 1)}
+        />
       </div>
 
       <div className="mt-10">
         <HistoryPage reloadSignal={historyReload} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Dashboard status for the cloud providers (multi-provider). Shows which
+ * providers have keys configured, with an add-key shortcut when none do. In
+ * the Store build no key is required - on-device Parakeet is the default.
+ */
+function ProvidersCard({
+  keyStatus,
+  onConfigure,
+}: {
+  keyStatus: Record<string, boolean>;
+  onConfigure: () => void;
+}) {
+  const configured = PROVIDERS.filter((p) => keyStatus[p.id]);
+  return (
+    <div className="rounded-2xl border border-border bg-surface p-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-sm text-ink-faint">Cloud providers</div>
+          <div className="mt-1 flex items-center gap-2">
+            {configured.length > 0 ? (
+              <>
+                <Check size={18} className="text-accent" />
+                <span>Configured — {configured.map((p) => p.label).join(", ")}</span>
+              </>
+            ) : isStore ? (
+              <span className="text-ink-soft">
+                Optional — dictation runs on-device until you add a key
+              </span>
+            ) : (
+              <span className="text-danger">None configured — needed for cloud speech</span>
+            )}
+          </div>
+        </div>
+        {configured.length === 0 && (
+          <button
+            onClick={onConfigure}
+            className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+          >
+            Add key
+          </button>
+        )}
       </div>
     </div>
   );
@@ -462,7 +498,7 @@ function SettingsPanel({
     <div>
       <h1 className="font-serif text-3xl">Settings</h1>
 
-      {!isStore && <ProvidersSection settings={settings} persist={persist} />}
+      <ProvidersSection settings={settings} persist={persist} />
 
       <Section title="Record trigger">
         <ShortcutCapture
@@ -625,22 +661,18 @@ function SettingsPanel({
         </p>
       </Section>
 
-      {/* Cleanup level is LLM polish; the offline Store build has no polish
-          model, so it stays on deterministic cleanup and the selector is hidden. */}
-      {!isStore && (
-        <Section title="Cleanup level">
-          <Select
-            value={settings.cleanupLevel}
-            onChange={(v) => persist({ ...settings, cleanupLevel: v as CleanupLevel })}
-            options={CLEANUP.map((c) => ({ value: c.value, label: c.label }))}
-          />
-          <p className="mt-2 text-xs text-ink-faint">
-            {CLEANUP.find((c) => c.value === settings.cleanupLevel)?.hint}
-            {settings.cleanupLevel !== "none" &&
-              " · uses your cloud LLM provider (needs its API key)"}
-          </p>
-        </Section>
-      )}
+      <Section title="Cleanup level">
+        <Select
+          value={settings.cleanupLevel}
+          onChange={(v) => persist({ ...settings, cleanupLevel: v as CleanupLevel })}
+          options={CLEANUP.map((c) => ({ value: c.value, label: c.label }))}
+        />
+        <p className="mt-2 text-xs text-ink-faint">
+          {CLEANUP.find((c) => c.value === settings.cleanupLevel)?.hint}
+          {settings.cleanupLevel !== "none" &&
+            " · uses your cloud LLM provider (needs its API key)"}
+        </p>
+      </Section>
 
       <Section title="Copy last transcript" icon={<Sparkles size={16} />}>
         <Select
@@ -657,26 +689,22 @@ function SettingsPanel({
         </p>
       </Section>
 
-      {/* Command Mode rewrites/generates via an LLM; hidden in the offline
-          Store build, which has no polish model. */}
-      {!isStore && (
-        <Section title="Command Mode" icon={<Wand2 size={16} />}>
-          <Select
-            value={settings.commandShortcut}
-            onChange={async (v) => {
-              const next = { ...settings, commandShortcut: v };
-              setSettings(next);
-              await api.setCommandShortcut(v).catch(() => {});
-            }}
-            options={COMMAND_SHORTCUT_CHOICES.map((s) => ({ value: s, label: s }))}
-          />
-          <p className="mt-2 text-xs text-ink-faint">
-            Hold this and speak an instruction. With text selected, Eve rewrites it; with
-            nothing selected, it generates text at your cursor. Uses your cloud LLM
-            provider (needs its API key).
-          </p>
-        </Section>
-      )}
+      <Section title="Command Mode" icon={<Wand2 size={16} />}>
+        <Select
+          value={settings.commandShortcut}
+          onChange={async (v) => {
+            const next = { ...settings, commandShortcut: v };
+            setSettings(next);
+            await api.setCommandShortcut(v).catch(() => {});
+          }}
+          options={COMMAND_SHORTCUT_CHOICES.map((s) => ({ value: s, label: s }))}
+        />
+        <p className="mt-2 text-xs text-ink-faint">
+          Hold this and speak an instruction. With text selected, Eve rewrites it; with
+          nothing selected, it generates text at your cursor. Uses your cloud LLM
+          provider (needs its API key).
+        </p>
+      </Section>
 
       <Section title="Scratchpad" icon={<NotebookPen size={16} />}>
         <Select
@@ -1220,7 +1248,9 @@ function ProvidersSection({
           onChange={(e) => persist({ ...settings, transcriptionCloudModel: e.target.value })}
           placeholder={
             speechProvider === "local"
-              ? "Local model is picked on the Models page"
+              ? isStore
+                ? "Local dictation runs on the bundled Parakeet model"
+                : "Local model is picked on the Models page"
               : speechProvider === "openrouter"
                 ? "Model id e.g. openai/whisper-1 - empty = default"
                 : "Model — leave empty for the provider default"
@@ -1230,7 +1260,9 @@ function ProvidersSection({
         />
         <p className="mt-2 text-xs text-ink-faint">
           {speechProvider === "local"
-            ? "Dictation runs on-device; on failure Eve falls back to your cloud speech provider when its key is set."
+            ? isStore
+              ? "Dictation runs on-device on the bundled Parakeet model; add a cloud provider key and select it above to transcribe in the cloud instead."
+              : "Dictation runs on-device; on failure Eve falls back to your cloud speech provider when its key is set."
             : "On rate limits or connection errors Eve switches to the fallback provider (if its key is configured). Deepgram and OpenRouter don't support translate-to-English, and dictionary hints are ignored there."}
         </p>
       </div>
