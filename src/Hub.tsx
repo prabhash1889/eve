@@ -462,7 +462,7 @@ function SettingsPanel({
     <div>
       <h1 className="font-serif text-3xl">Settings</h1>
 
-      {!isStore && <ProvidersSection settings={settings} persist={persist} />}
+      <ProvidersSection settings={settings} persist={persist} />
 
       <Section title="Record trigger">
         <ShortcutCapture
@@ -625,22 +625,18 @@ function SettingsPanel({
         </p>
       </Section>
 
-      {/* Cleanup level is LLM polish; the offline Store build has no polish
-          model, so it stays on deterministic cleanup and the selector is hidden. */}
-      {!isStore && (
-        <Section title="Cleanup level">
-          <Select
-            value={settings.cleanupLevel}
-            onChange={(v) => persist({ ...settings, cleanupLevel: v as CleanupLevel })}
-            options={CLEANUP.map((c) => ({ value: c.value, label: c.label }))}
-          />
-          <p className="mt-2 text-xs text-ink-faint">
-            {CLEANUP.find((c) => c.value === settings.cleanupLevel)?.hint}
-            {settings.cleanupLevel !== "none" &&
-              " · uses your cloud LLM provider (needs its API key)"}
-          </p>
-        </Section>
-      )}
+      <Section title="Cleanup level">
+        <Select
+          value={settings.cleanupLevel}
+          onChange={(v) => persist({ ...settings, cleanupLevel: v as CleanupLevel })}
+          options={CLEANUP.map((c) => ({ value: c.value, label: c.label }))}
+        />
+        <p className="mt-2 text-xs text-ink-faint">
+          {CLEANUP.find((c) => c.value === settings.cleanupLevel)?.hint}
+          {settings.cleanupLevel !== "none" &&
+            " · uses your cloud LLM provider (needs its API key)"}
+        </p>
+      </Section>
 
       <Section title="Copy last transcript" icon={<Sparkles size={16} />}>
         <Select
@@ -657,26 +653,22 @@ function SettingsPanel({
         </p>
       </Section>
 
-      {/* Command Mode rewrites/generates via an LLM; hidden in the offline
-          Store build, which has no polish model. */}
-      {!isStore && (
-        <Section title="Command Mode" icon={<Wand2 size={16} />}>
-          <Select
-            value={settings.commandShortcut}
-            onChange={async (v) => {
-              const next = { ...settings, commandShortcut: v };
-              setSettings(next);
-              await api.setCommandShortcut(v).catch(() => {});
-            }}
-            options={COMMAND_SHORTCUT_CHOICES.map((s) => ({ value: s, label: s }))}
-          />
-          <p className="mt-2 text-xs text-ink-faint">
-            Hold this and speak an instruction. With text selected, Eve rewrites it; with
-            nothing selected, it generates text at your cursor. Uses your cloud LLM
-            provider (needs its API key).
-          </p>
-        </Section>
-      )}
+      <Section title="Command Mode" icon={<Wand2 size={16} />}>
+        <Select
+          value={settings.commandShortcut}
+          onChange={async (v) => {
+            const next = { ...settings, commandShortcut: v };
+            setSettings(next);
+            await api.setCommandShortcut(v).catch(() => {});
+          }}
+          options={COMMAND_SHORTCUT_CHOICES.map((s) => ({ value: s, label: s }))}
+        />
+        <p className="mt-2 text-xs text-ink-faint">
+          Hold this and speak an instruction. With text selected, Eve rewrites it; with
+          nothing selected, it generates text at your cursor. Uses your cloud LLM
+          provider (needs its API key).
+        </p>
+      </Section>
 
       <Section title="Scratchpad" icon={<NotebookPen size={16} />}>
         <Select
@@ -1220,7 +1212,9 @@ function ProvidersSection({
           onChange={(e) => persist({ ...settings, transcriptionCloudModel: e.target.value })}
           placeholder={
             speechProvider === "local"
-              ? "Local model is picked on the Models page"
+              ? isStore
+                ? "Local dictation runs on the bundled Parakeet model"
+                : "Local model is picked on the Models page"
               : speechProvider === "openrouter"
                 ? "Model id e.g. openai/whisper-1 - empty = default"
                 : "Model — leave empty for the provider default"
@@ -1230,7 +1224,9 @@ function ProvidersSection({
         />
         <p className="mt-2 text-xs text-ink-faint">
           {speechProvider === "local"
-            ? "Dictation runs on-device; on failure Eve falls back to your cloud speech provider when its key is set."
+            ? isStore
+              ? "Dictation runs on-device on the bundled Parakeet model; add a cloud provider key and select it above to transcribe in the cloud instead."
+              : "Dictation runs on-device; on failure Eve falls back to your cloud speech provider when its key is set."
             : "On rate limits or connection errors Eve switches to the fallback provider (if its key is configured). Deepgram and OpenRouter don't support translate-to-English, and dictionary hints are ignored there."}
         </p>
       </div>
